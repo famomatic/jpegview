@@ -10,7 +10,7 @@
 #include "EXIFReader.h"
 #include "RawMetadata.h"
 #include "MaxImageDef.h"
-#include "libjpeg-turbo\include\turbojpeg.h"
+#include "turbojpeg.h"
 #include <math.h>
 #include <assert.h>
 

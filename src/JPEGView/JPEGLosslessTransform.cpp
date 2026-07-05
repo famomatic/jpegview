@@ -1,7 +1,7 @@
 #include "StdAfx.h"
 #include "JPEGLosslessTransform.h"
 #include "Helpers.h"
-#include "libjpeg-turbo\include\turbojpeg.h"
+#include "turbojpeg.h"
 
 CJPEGLosslessTransform::EResult _DoTransformation(LPCTSTR sInputFile, LPCTSTR sOutputFile, tjtransform &transform);
 unsigned char* _ReadFile(LPCTSTR sFileName, unsigned int & nLengthBytes);

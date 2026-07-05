@@ -1,7 +1,7 @@
 
 #include "stdafx.h"
 #include "TJPEGWrapper.h"
-#include "libjpeg-turbo\include\turbojpeg.h"
+#include "turbojpeg.h"
 #include "MaxImageDef.h"
 
 void * TurboJpeg::ReadImage(int &width,

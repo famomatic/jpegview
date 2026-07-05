@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "jpegview",
+  "version-string": "1.3.46",
+  "description": "A fast image viewer with editing capabilities",
+  "dependencies": [
+    "libjpeg-turbo",
+    {
+      "name": "libpng",
+      "features": ["apng"]
+    },
+    "zlib",
+    "libwebp",
+    "lcms",
+    "libraw",
+    "libjxl",
+    {
+      "name": "libheif",
+      "features": ["aom"]
+    },
+    "libavif"
+  ],
+  "builtin-baseline": "d87340acc46bdeda386037b38aca30136e667e47"
+}

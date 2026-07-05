@@ -1,5 +1,5 @@
-name: Action - Build JPEGView (CMake)
-description: Configure and build JPEGView with CMake + Visual Studio 2022
+name: Action - Build JPEGView (CMake + vcpkg)
+description: Configure and build JPEGView with CMake, Visual Studio 2022, and vcpkg
 
 inputs:
   patch-version:
@@ -48,12 +48,30 @@ runs:
         Select-String -Path src/JPEGView/resource.h -Pattern "JPEGVIEW_"
         Select-String -Path src/JPEGView.Setup/Product.wxs -Pattern "<Product"
 
-    - name: Configure (CMake)
+    - name: Select vcpkg triplet
+      id: triplet
+      shell: powershell
+      run: |
+        if ("${{ inputs.platform-arch }}" -eq "x64") {
+          echo "triplet=x64-windows-static" >> $env:GITHUB_OUTPUT
+        } else {
+          # Custom triplet works around an MSVC ICE in libraw's x86 Debug build.
+          echo "triplet=x86-windows-static-jpegview" >> $env:GITHUB_OUTPUT
+        }
+
+    - name: Configure (CMake + vcpkg manifest mode)
       shell: cmd
+      env:
+        VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.triplet }}
       run: |
         set SETUP_OPT=
         if "${{ inputs.build-setup }}"=="true" set SETUP_OPT=-DJPEGVIEW_BUILD_SETUP=ON
-        cmake -B build -S . -G "Visual Studio 17 2022" -A ${{ inputs.platform-arch }} %SETUP_OPT%
+        cmake -B build -S . -G "Visual Studio 17 2022" -A ${{ inputs.platform-arch }} ^
+          -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+          -DVCPKG_TARGET_TRIPLET=${{ steps.triplet.outputs.triplet }} ^
+          -DVCPKG_OVERLAY_PORTS=%CD%/vcpkg-triplets ^
+          -DVCPKG_OVERLAY_TRIPLETS=%CD%/vcpkg-triplets ^
+          %SETUP_OPT%
 
     - name: Build
       shell: cmd

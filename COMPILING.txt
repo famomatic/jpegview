@@ -6,9 +6,27 @@ To compile JPEGView you need:
 - CMake 3.20 or later (https://cmake.org/download/)
 - Visual Studio 2022 (v143 toolset), Community or Professional edition
   (JPEGView 32-bit (x86) and 64-bit (x64) versions are both supported)
+- vcpkg (https://github.com/microsoft/vcpkg) for the image codec dependencies
+  (libjpeg-turbo, libpng[apng], zlib, libwebp, lcms2, libraw, libjxl, libheif,
+  libavif).  The static-* triplet is required because JPEGView links the
+  static CRT (/MT, /MTd).
 - Windows Template Library (WTL), Version 8.1+
   (http://sourceforge.net/projects/wtl/) installed to deps/WTL-sf
-  (automatically populated by cloning the submodule: git submodule update --init deps/WTL-sf)
+  (automatically populated by cloning the submodule:
+   git submodule update --init deps/WTL-sf)
+
+
+One-time vcpkg setup
+---------------------
+
+Clone and bootstrap vcpkg somewhere, e.g. D:\vcpkg:
+
+    git clone https://github.com/microsoft/vcpkg.git D:\vcpkg
+    D:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+Set VCPKG_ROOT so CMake and the shell can find it:
+
+    setx VCPKG_ROOT D:\vcpkg
 
 
 Building from the command line
@@ -16,18 +34,29 @@ Building from the command line
 
 Configure (x64 Release, for example):
 
-    cmake -B build -G "Visual Studio 17 2022" -A x64
+    cmake -B build -S . -G "Visual Studio 17 2022" -A x64 ^
+        -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+        -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
+        -DCMAKE_GENERATOR_INSTANCE="C:/Program Files/Microsoft Visual Studio/2022/Community"
     cmake --build build --config Release
 
-The compiled JPEGView.exe, WICLoader.dll and all required runtime DLLs/config
-files are placed under build/out/<config>/ (e.g. build/out/Release/).
+The compiled JPEGView.exe and WICLoader.dll, plus config files, are placed
+under build/out/<config>/ (e.g. build/out/Release/).
 
-To build the 32-bit version, use -A Win32 and a separate build directory:
+To build the 32-bit version, use a separate build directory and the x86
+static triplet:
 
-    cmake -B build32 -G "Visual Studio 17 2022" -A Win32
+    cmake -B build32 -S . -G "Visual Studio 17 2022" -A Win32 ^
+        -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+        -DVCPKG_TARGET_TRIPLET=x86-windows-static ^
+        -DCMAKE_GENERATOR_INSTANCE="C:/Program Files/Microsoft Visual Studio/2022/Community"
     cmake --build build32 --config Release
 
 Both Debug and Release configurations are supported.
+
+Note: CMAKE_GENERATOR_INSTANCE is only needed when the machine has a
+BuildTools VS instance that lacks ATL; it pins the full Community/Professional
+install.  On GitHub Actions windows-2022 runners it can be omitted.
 
 
 Building the MSI installer
@@ -37,7 +66,10 @@ To also build the WiX MSI installer, enable the JPEGVIEW_BUILD_SETUP option.
 This requires WiX Toolset v3.11 or later (https://wixtoolset.org/releases/)
 with candle.exe and light.exe available on PATH (or the WIX env var set).
 
-    cmake -B build -G "Visual Studio 17 2022" -A x64 -DJPEGVIEW_BUILD_SETUP=ON
+    cmake -B build -S . -G "Visual Studio 17 2022" -A x64 ^
+        -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+        -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
+        -DJPEGVIEW_BUILD_SETUP=ON
     cmake --build build --config Release --target JPEGView.Setup
 
 The resulting .msi is written to build/msi/.
@@ -45,8 +77,8 @@ The resulting .msi is written to build/msi/.
 
 Please note:
 - 64-bit Windows 7 or later is needed to run the 64-bit version.
-- The 32-bit version targets modern Windows (XP/Win7-era special-casing has
-  been removed along with the VS2017 project files).
+- Image codec libraries are now resolved through vcpkg instead of the
+  previously committed prebuilt binaries under src/JPEGView/{lib,bin}*.
 
 
 NOTE: Visual Studio 2022 is the current active JPEGView development environment.
@@ -55,9 +87,6 @@ NOTE: Visual Studio 2022 is the current active JPEGView development environment.
 Legacy notes
 ************
 
-NOTE: after the tag "last-cpp14-code", there is code that requires C++17.  This
-code will not work on previous versions of Visual Studio.  An #ifdef is used
-to disable that feature when compiling for standard below C++17.
-
-The old VS2017/VS2019 solution and .vcxproj files have been removed.  If you
-still need them, clone the tag v1.2.45.
+The old VS2017/VS2019 solution, .vcxproj files, and the committed prebuilt
+third-party libraries have been removed.  If you still need them, clone a tag
+before the CMake+vcpkg migration.

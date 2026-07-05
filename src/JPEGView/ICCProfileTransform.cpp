@@ -6,8 +6,8 @@
 
 #ifndef WINXP
 
-// This define is necessary for 32-bit builds to work, for some reason
-#define CMS_DLL
+// lcms2 is now linked statically via vcpkg; CMS_DLL (dllimport) must NOT be
+// defined, otherwise the linker treats lcms2 symbols as imports.
 #include "lcms2.h"
 #define TYPE_LabA_8 (COLORSPACE_SH(PT_Lab)|EXTRA_SH(1)|CHANNELS_SH(3)|BYTES_SH(1))
 

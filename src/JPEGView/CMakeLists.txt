@@ -85,13 +85,17 @@ add_executable(JPEGView WIN32
     XMMImage.cpp
     ZoomNavigator.cpp
     ZoomNavigatorCtl.cpp
+    CrtDbgStub.cpp
     res/JPEGView.ico)
 
 target_precompile_headers(JPEGView PRIVATE stdafx.h)
 
+# WTL is a vendored header-only submodule; image codec deps come from vcpkg.
+# QOI is a header-only submodule kept under extras/third_party/qoi.
 target_include_directories(JPEGView PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
-    ${JPEGVIEW_THIRDPARTY_INCLUDE_DIRS})
+    "${WTL_INCLUDE_DIR}"
+    "${CMAKE_SOURCE_DIR}/extras/third_party/qoi")
 
 set_target_properties(JPEGView PROPERTIES
     OUTPUT_NAME "JPEGView"
@@ -120,7 +124,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
             COMPILE_OPTIONS "/arch:AVX")
     endif()
 
-    # Static runtime to match the prebuilt third-party libs (/MT, /MTd).
+    # Static runtime (/MT, /MTd) to match the vcpkg static-* triplet.
     set(_rt "$<$<CONFIG:Debug>:MultiThreadedDebug>$<$<NOT:$<CONFIG:Debug>>:MultiThreaded>")
     set_property(TARGET JPEGView PROPERTY MSVC_RUNTIME_LIBRARY "${_rt}")
 
@@ -128,65 +132,25 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         $<$<CONFIG:Debug>:/Od;/ZI>
         $<$<CONFIG:Release>:/O2>)
 
-    # Per-platform selection of prebuilt lib dirs and runtime DLL folders.
-    if(CMAKE_VS_PLATFORM_NAME STREQUAL "x64")
-        set(_tp_lib_dirs ${JPEGVIEW_THIRDPARTY_LIB_DIRS_X64})
-        set(_dep_dirs
-            libjxl/bin64 libheif/bin64 libavif/bin64 lcms2/bin64 libraw/bin64)
-        set(_is_x64 TRUE)
-    else()
-        set(_tp_lib_dirs ${JPEGVIEW_THIRDPARTY_LIB_DIRS_X86})
-        set(_dep_dirs
-            libjxl/bin   libheif/bin   libavif/bin   lcms2/bin   libraw/bin)
-        set(_is_x64 FALSE)
-    endif()
-
-    set(_common_libs
-        Dbghelp
-        gdiplus
-        turbojpeg-static
-        libpng16
-        zlib
-        jxl_dec
-        jxl_threads
-        heif
-        libwebp
-        libwebpdemux
-        avif
-        lcms2
-        libraw)
-
+    # Link the vcpkg-provided static codec libraries plus Windows system libs.
     target_link_libraries(JPEGView PRIVATE
         WICLoader
-        ${_common_libs})
-    if(_is_x64)
+        ${JPEGVIEW_DEP_TARGETS}
+        Dbghelp
+        gdiplus)
+
+    if(CMAKE_VS_PLATFORM_NAME STREQUAL "x64")
         target_link_libraries(JPEGView PRIVATE
             legacy_stdio_definitions
             legacy_stdio_wide_specifiers)
     endif()
 
-    target_link_directories(JPEGView PRIVATE ${_tp_lib_dirs})
-
-    # Delay-load the runtime DLLs (mirrors the vcxproj DelayLoadDLLs).
-    set(_delayloads
-        "/DELAYLOAD:WICLoader.dll"
-        "/DELAYLOAD:jxl_dec.dll"
-        "/DELAYLOAD:jxl_threads.dll"
-        "/DELAYLOAD:heif.dll"
-        "/DELAYLOAD:avif.dll"
-        "/DELAYLOAD:lcms2.dll"
-        "/DELAYLOAD:libraw.dll")
-    target_link_options(JPEGView PRIVATE ${_delayloads} "/ignore:4099")
-    # The Debug static runtime drags in LIBCMT; ignore it as the old vcxproj did.
-    target_link_options(JPEGView PRIVATE "$<$<CONFIG:Debug>:/NODEFAULTLIB:LIBCMT>")
-    target_link_libraries(JPEGView PRIVATE delayimp)
-
     target_link_options(JPEGView PRIVATE /SUBSYSTEM:WINDOWS)
 endif()
 
 # ---------------------------------------------------------------------------
-# Post-build: copy config files, third-party DLLs, and LICENSE into the
-# runtime output directory.  This replaces JPEGView.vcxproj-postbuild-event.bat.
+# Post-build: copy config files and LICENSE next to JPEGView.exe.
+# With static vcpkg linkage the codec libs are linked in, so no DLL copies.
 # ---------------------------------------------------------------------------
 set(_out_dir "$<TARGET_FILE_DIR:JPEGView>")
 
@@ -205,11 +169,3 @@ add_custom_command(TARGET JPEGView POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/../../LICENSE.txt" "${_out_dir}"
     VERBATIM)
-
-# Third-party runtime DLLs: bin (x86) or bin64 (x64), selected above.
-foreach(_d ${_dep_dirs})
-    add_custom_command(TARGET JPEGView POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/${_d}" "${_out_dir}"
-        VERBATIM)
-endforeach()
