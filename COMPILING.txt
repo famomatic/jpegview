@@ -28,35 +28,36 @@ Set VCPKG_ROOT so CMake and the shell can find it:
 
     setx VCPKG_ROOT D:\vcpkg
 
+Then install the codec dependencies for both architectures (static triplets):
 
-Building from the command line
-------------------------------
+    vcpkg install --triplet x64-windows-static --x-manifest-root=<jpegview> --x-install-root=D:\vcpkg\installed
+    vcpkg install --triplet x86-windows-static-jpegview --x-manifest-root=<jpegview> --x-install-root=D:\vcpkg\installed-x86 --overlay-triplets=<jpegview>/vcpkg-triplets
 
-Configure (x64 Release, for example):
+The x86-windows-static-jpegview custom triplet works around an MSVC internal
+compiler error in libraw's x86 Debug build.  If your vcpkg install root or VS
+install differs, adjust the paths in CMakePresets.json accordingly.
 
-    cmake -B build -S . -G "Visual Studio 17 2022" -A x64 ^
-        -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
-        -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
-        -DCMAKE_GENERATOR_INSTANCE="C:/Program Files/Microsoft Visual Studio/2022/Community"
-    cmake --build build --config Release
+
+Building with CMake presets
+---------------------------
+
+Four presets are defined in CMakePresets.json, one per architecture/config:
+
+    cmake --preset x64-debug
+    cmake --build --preset x64-debug
+
+    cmake --preset x64-release
+    cmake --build --preset x64-release
+
+    cmake --preset x86-debug
+    cmake --build --preset x86-debug
+
+    cmake --preset x86-release
+    cmake --build --preset x86-release
 
 The compiled JPEGView.exe and WICLoader.dll, plus config files, are placed
-under build/out/<config>/ (e.g. build/out/Release/).
-
-To build the 32-bit version, use a separate build directory and the x86
-static triplet:
-
-    cmake -B build32 -S . -G "Visual Studio 17 2022" -A Win32 ^
-        -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
-        -DVCPKG_TARGET_TRIPLET=x86-windows-static ^
-        -DCMAKE_GENERATOR_INSTANCE="C:/Program Files/Microsoft Visual Studio/2022/Community"
-    cmake --build build32 --config Release
-
-Both Debug and Release configurations are supported.
-
-Note: CMAKE_GENERATOR_INSTANCE is only needed when the machine has a
-BuildTools VS instance that lacks ATL; it pins the full Community/Professional
-install.  On GitHub Actions windows-2022 runners it can be omitted.
+under build/<preset>/out/<config>/ (e.g. build/x64-release/out/Release/).
+Codec libraries are statically linked, so no separate DLLs are needed at runtime.
 
 
 Building the MSI installer
@@ -66,19 +67,15 @@ To also build the WiX MSI installer, enable the JPEGVIEW_BUILD_SETUP option.
 This requires WiX Toolset v3.11 or later (https://wixtoolset.org/releases/)
 with candle.exe and light.exe available on PATH (or the WIX env var set).
 
-    cmake -B build -S . -G "Visual Studio 17 2022" -A x64 ^
-        -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
-        -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
-        -DJPEGVIEW_BUILD_SETUP=ON
-    cmake --build build --config Release --target JPEGView.Setup
+    cmake --preset x64-release -DJPEGVIEW_BUILD_SETUP=ON
+    cmake --build --preset x64-release --target JPEGView.Setup
 
-The resulting .msi is written to build/msi/.
+The resulting .msi is written to build/x64-release/msi/.
 
 
 Please note:
 - 64-bit Windows 7 or later is needed to run the 64-bit version.
-- Image codec libraries are now resolved through vcpkg instead of the
-  previously committed prebuilt binaries under src/JPEGView/{lib,bin}*.
+- Image codec libraries are resolved through vcpkg (static linkage).
 
 
 NOTE: Visual Studio 2022 is the current active JPEGView development environment.
@@ -87,6 +84,6 @@ NOTE: Visual Studio 2022 is the current active JPEGView development environment.
 Legacy notes
 ************
 
-The old VS2017/VS2019 solution, .vcxproj files, and the committed prebuilt
-third-party libraries have been removed.  If you still need them, clone a tag
-before the CMake+vcpkg migration.
+The old VS2017/VS2019 solution, .vcxproj files, committed prebuilt third-party
+libraries, and the dependency build scripts have all been removed in favor of
+vcpkg.  If you still need them, clone a tag before the vcpkg migration.
