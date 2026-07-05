@@ -214,7 +214,7 @@ bool CImageProcPanelCtl::RenameCurrentFile(LPCTSTR sNewFileTitle) {
 
 	// Set new name
 	LPCTSTR sNewFinalFileTitle = _tcsrchr(sNewFileName, _T('\\'));
-	m_pImageProcPanel->GetTextFilename()->SetText((sNewFinalFileTitle == NULL) ? sNewFileName : sNewFinalFileTitle+1);
+	m_pImageProcPanel->GetTextFilename()->SetText((sNewFinalFileTitle == NULL) ? (LPCTSTR)sNewFileName : sNewFinalFileTitle+1);
 
 	// Tell that file was renamed to JPEG Provider and file list
 	CString sCurFileName(sCurrentFileName); // copy, ptr will be replaced

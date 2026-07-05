@@ -1,4 +1,5 @@
 ﻿#include "StdAfx.h"
+#include <string>
 #include "resource.h"
 #include "MainDlg.h"
 #include "JPEGImage.h"

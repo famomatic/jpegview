@@ -26,7 +26,7 @@ public:
 						  const CPoint& dibStart, const CSize& dibSize, float fDimFactor);
 
 	// Blits the DIB data section to target DC using blending with painted version of given panel
-	static void CPaintMemDCMgr::BitBltBlended(CDC & dc, CDC & paintDC, const CSize& dcSize, void* pDIBData, BITMAPINFO* pbmInfo, 
+	static void BitBltBlended(CDC & dc, CDC & paintDC, const CSize& dcSize, void* pDIBData, BITMAPINFO* pbmInfo, 
 						  const CPoint& dibStart, const CSize& dibSize, CPanel& panel, const CPoint& offsetPanel,
 						  float fBlendFactor);
 

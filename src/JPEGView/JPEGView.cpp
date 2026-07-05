@@ -135,7 +135,7 @@ static CRITICAL_SECTION s_lock;
 
 static BOOL GenerateDump(EXCEPTION_POINTERS* pExceptionPointers)
 {
-	WCHAR* szAppName = L"JPEGView";
+	const WCHAR* szAppName = L"JPEGView";
 	DWORD dwBufferSize = MAX_PATH;
 	HANDLE hDumpFile;
 	SYSTEMTIME stLocalTime;

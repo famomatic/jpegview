@@ -6984,7 +6984,7 @@ void CLASS parse_crx (int end)
 	base = ftell(ifp);
 	order = get2();
 	fseek (ifp, 6, SEEK_CUR);
-	tag & 1 ? parse_tiff_ifd (base) : parse_exif (base);
+	if (tag & 1) parse_tiff_ifd (base); else parse_exif (base);
 	order = 0x4d4d;
 	break;
       case 0x746b6864:				/* tkhd */
@@ -8793,8 +8793,8 @@ void CLASS identify()
   fread (head, 1, 32, ifp);
   fseek (ifp, 0, SEEK_END);
   flen = fsize = ftell(ifp);
-  if ((cp = (char *) memmem (head, 32, "MMMM", 4)) ||
-      (cp = (char *) memmem (head, 32, "IIII", 4))) {
+  if ((cp = (char *) memmem (head, 32, (char*)"MMMM", 4)) ||
+      (cp = (char *) memmem (head, 32, (char*)"IIII", 4))) {
     parse_phase_one (cp-head);
     if (cp-head && parse_tiff(0)) apply_tiff();
   } else if (order == 0x4949 || order == 0x4d4d) {

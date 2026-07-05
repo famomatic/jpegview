@@ -28,14 +28,21 @@ Set VCPKG_ROOT so CMake and the shell can find it:
 
     setx VCPKG_ROOT D:\vcpkg
 
-Then install the codec dependencies for both architectures (static triplets):
+The codec dependencies are declared in vcpkg.json and installed automatically
+into build/<preset>/vcpkg_installed when you first configure a preset (manifest
+mode).  No manual "vcpkg install" step is required.
 
-    vcpkg install --triplet x64-windows-static --x-manifest-root=<jpegview> --x-install-root=D:\vcpkg\installed
-    vcpkg install --triplet x86-windows-static-jpegview --x-manifest-root=<jpegview> --x-install-root=D:\vcpkg\installed-x86 --overlay-triplets=<jpegview>/vcpkg-triplets
+The x86-windows-static-jpegview custom triplet (in vcpkg-triplets/) works
+around an MSVC internal compiler error in libraw's x86 Debug build.  The x86
+presets reference it via VCPKG_OVERLAY_TRIPLETS, so it is picked up
+automatically.
 
-The x86-windows-static-jpegview custom triplet works around an MSVC internal
-compiler error in libraw's x86 Debug build.  If your vcpkg install root or VS
-install differs, adjust the paths in CMakePresets.json accordingly.
+JPEGView requires ATL (Active Template Library), which ships with the Visual
+Studio Community/Professional editions but NOT with the standalone BuildTools.
+If CMake selects a BuildTools instance you will get "atlbase.h: No such file or
+directory".  In that case point CMake at the full VS install explicitly:
+
+    cmake --preset x64-release -DCMAKE_GENERATOR_INSTANCE="C:/Program Files/Microsoft Visual Studio/2022/Community"
 
 
 Building with CMake presets

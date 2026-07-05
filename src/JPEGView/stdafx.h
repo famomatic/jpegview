@@ -9,12 +9,10 @@
 #pragma warning(disable:4800)
 
 // Change these values to use different versions
-#define WINVER		0x0501
-#define _WIN32_WINNT	0x0501
-#define _WIN32_IE	0x0600
+#define WINVER		0x0601
+#define _WIN32_WINNT	0x0601
+#define _WIN32_IE	0x0700
 #define _RICHEDIT_VER	0x0300
-
-#define _CRT_SECURE_NO_DEPRECATE
 
 #include <tchar.h>
 #include <atlbase.h>
@@ -39,8 +37,6 @@ extern CAppModule _Module;
 
 // STL stuff
 #include  <list>
-
-#define _SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS
 
 // own stuff
 #include "ImageProcessingTypes.h"

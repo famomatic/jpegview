@@ -198,10 +198,10 @@ CFileList::CFileList(const CString & sInitialFile, CDirectoryWatcher & directory
 	m_nLevel = nLevel;
 	m_next = m_prev = NULL;
 	int nPos = sInitialFile.ReverseFind(_T('\\'));
-	m_sDirectory = (nPos > 0) ? sInitialFile.Left(nPos) : _T(""); // the backslash is stripped away!
+	m_sDirectory = (nPos > 0) ? sInitialFile.Left(nPos) : CString(_T("")); // the backslash is stripped away!
 	nPos = sInitialFile.ReverseFind(_T('.'));
 	bool bIsDirectory = (::GetFileAttributes(sInitialFile) & FILE_ATTRIBUTE_DIRECTORY) != 0;
-	CString sExtensionInitialFile = (nPos > 0) ? sInitialFile.Right(sInitialFile.GetLength()-nPos-1) : _T("");
+	CString sExtensionInitialFile = (nPos > 0) ? sInitialFile.Right(sInitialFile.GetLength()-nPos-1) : CString(_T(""));
 	sExtensionInitialFile.MakeLower();
 	bool bImageFile = !bIsDirectory && IsImageFile(sExtensionInitialFile);
 	if (!bIsDirectory && !bImageFile && !sExtensionInitialFile.IsEmpty() && _tcsstr(csFileEndingsRAW, _T("*.") + sExtensionInitialFile) != NULL) {
@@ -573,7 +573,7 @@ void CFileList::ToggleBetweenMarkedAndCurrentFile() {
 
 	m_sInitialFile = sNewFile;
 	int nPos = m_sInitialFile.ReverseFind(_T('\\'));
-	m_sDirectory = (nPos > 0) ? m_sInitialFile.Left(nPos) : _T(""); // the backslash is stripped away!
+	m_sDirectory = (nPos > 0) ? m_sInitialFile.Left(nPos) : CString(_T("")); // the backslash is stripped away!
 
 	DeleteHistory();
 	Reload(m_sInitialFile);
@@ -750,7 +750,7 @@ CFileList* CFileList::FindFileRecursively (const CString& sDirectory, const CStr
 	} else {
 		// backtrack
 		int nPos = sDirectory.ReverseFind(_T('\\'));
-		CString sParentDir = (nPos > 0) ? sDirectory.Left(nPos) : _T("");
+		CString sParentDir = (nPos > 0) ? sDirectory.Left(nPos) : CString(_T(""));
 		CString sThisDir = sDirectory.Right(sDirectory.GetLength() - nPos - 1);
 		return FindFileRecursively(sParentDir, sThisDir, false, nLevel - 1, max(0, nRecursion - 1));
 	}

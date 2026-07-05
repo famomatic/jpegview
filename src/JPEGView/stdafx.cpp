@@ -3,18 +3,6 @@
 //	stdafx.obj will contain the pre-compiled type information
 
 #include "stdafx.h"
-
-#if (_ATL_VER < 0x0700)
-#include <atlimpl.cpp>
-#endif //(_ATL_VER < 0x0700)
-
-#if defined(_MSC_VER) && (_MSC_VER >= 1900)
-
-FILE _iob[] = { *stdin, *stdout, *stderr };
-
-extern "C" FILE * __cdecl __iob_func(void)
-{
-	return _iob;
-}
-
-#endif
+// Note: the former __iob_func() shim (a VS2015 CRT-transition workaround) was
+// removed.  VS2022's legacy_stdio_definitions.lib provides the symbol instead,
+// and is linked from CMakeLists.txt for both x86 and x64.

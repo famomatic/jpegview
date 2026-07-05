@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(JPEGView VERSION 1.3.46.0 LANGUAGES CXX
     DESCRIPTION "A fast image viewer with editing capabilities")
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -30,13 +30,14 @@ set(WTL_INCLUDE_DIR     "${JPEGVIEW_DEPS_DIR}/WTL-sf/Include")
 # ---------------------------------------------------------------------------
 # vcpkg dependency resolution
 # ---------------------------------------------------------------------------
-# Configure with the vcpkg toolchain:
-#   cmake -B build -S . -G "Visual Studio 17 2022" -A x64 \
-#     -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake \
-#     -DVCPKG_TARGET_TRIPLET=x64-windows-static
+# Uses vcpkg in manifest mode (vcpkg.json).  Configure with the vcpkg
+# toolchain; set VCPKG_ROOT so the toolchain can be found:
+#   setx VCPKG_ROOT D:\vcpkg
+#   cmake --preset x64-release
 #
 # The static-* triplet is required: JPEGView links the static CRT (/MT, /MTd)
 # and all dependencies must match, otherwise LNK2038 / runtime mismatches occur.
+# vcpkg installs the manifest deps into <build>/vcpkg_installed by default.
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE OR NOT EXISTS "${CMAKE_TOOLCHAIN_FILE}")
     message(FATAL_ERROR
         "JPEGView now builds against vcpkg dependencies.  Pass the vcpkg "
@@ -66,11 +67,15 @@ find_package(AOM CONFIG REQUIRED)
 # so those transitive deps must be linked explicitly.  vcpkg installs release
 # libs under lib/ and debug libs under debug/lib/; pick per-configuration so
 # the _ITERATOR_DEBUG_LEVEL / RuntimeLibrary match (MT vs MTd).
+# NOTE: if a future vcpkg baseline ships a libjxl CMake config
+# (find_package(libjxl CONFIG)), replace this whole manual block with it and
+# drop the per-config brotli/hwy/jxl_cms wiring below.
 find_package(hwy CONFIG REQUIRED)
 
-# Resolve the vcpkg install root explicitly.  Classic mode (VCPKG_INSTALLED_DIR
-# or <vcpkg>/installed) is preferred so the per-config MT/MTd libs are already
-# present at configure time; manifest mode also works via <build>/vcpkg_installed.
+# Resolve the vcpkg install root.  Manifest mode installs into
+# <build>/vcpkg_installed; classic mode (VCPKG_INSTALLED_DIR or
+# <vcpkg>/installed) is still accepted as a fallback so per-config MT/MTd libs
+# that were installed up-front can be reused.
 set(_vcpkg_inst_candidates
     "${VCPKG_INSTALLED_DIR}"
     "${_VCPKG_INSTALLED_DIR}"

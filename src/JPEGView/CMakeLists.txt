@@ -108,13 +108,15 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         _WINDOWS
         STRICT
         _CRT_SECURE_NO_DEPRECATE
-        _SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS
         UNICODE
         _UNICODE)
 
     target_compile_options(JPEGView PRIVATE
         /utf-8
         /Zc:wchar_t
+        /Zc:__cplusplus
+        /permissive-
+        /Zc:preprocessor
         /GR
         /EHsc)
 
@@ -139,11 +141,12 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         Dbghelp
         gdiplus)
 
-    if(CMAKE_VS_PLATFORM_NAME STREQUAL "x64")
-        target_link_libraries(JPEGView PRIVATE
-            legacy_stdio_definitions
-            legacy_stdio_wide_specifiers)
-    endif()
+    # legacy_stdio_definitions provides __iob_func (used by dcraw_mod.cpp's
+    # fprintf to stderr) on VS2022 for both x86 and x64; the old __iob_func
+    # shim in stdafx.cpp was removed.
+    target_link_libraries(JPEGView PRIVATE
+        legacy_stdio_definitions
+        legacy_stdio_wide_specifiers)
 
     target_link_options(JPEGView PRIVATE /SUBSYSTEM:WINDOWS)
 endif()

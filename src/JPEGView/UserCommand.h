@@ -18,7 +18,7 @@ public:
 	int GetKeyCode() const { return m_nKeyCode; }
 
 	// Gets the menu item text, null if command is not in the menu
-	LPCTSTR MenuItemText() const { return m_sMenuItemText.IsEmpty() ? (LPCTSTR)NULL : m_sMenuItemText; }
+	LPCTSTR MenuItemText() const { return m_sMenuItemText.IsEmpty() ? (LPCTSTR)NULL : (LPCTSTR)m_sMenuItemText; }
 
 	// Returns if the current image and all cached image needs to be reloaded after executing the command
 	bool NeedsReloadAll() const { return m_bReloadAll; }

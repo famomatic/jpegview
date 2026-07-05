@@ -921,11 +921,11 @@ CString GetFileInfoString(LPCTSTR sFormat, CJPEGImage* pImage, CFileList* pFilel
 	CString sFileInfo(sFormat);
 	sFileInfo.Replace(_T("\\t"), _T("        "));
 	if (_tcsstr(sFormat, _T("<f>")) != NULL) {
-		CString sFileName = isClipboardImage ? CNLS::GetString(_T("Clipboard Image")) : pFilelist->CurrentFileTitle() + GetMultiframeIndex(pImage);
+		CString sFileName = isClipboardImage ? CString(CNLS::GetString(_T("Clipboard Image"))) : pFilelist->CurrentFileTitle() + GetMultiframeIndex(pImage);
 		sFileInfo.Replace(_T("<f>"), sFileName);
 	}
 	if (_tcsstr(sFormat, _T("<p>")) != NULL) {
-		CString sFilePath = isClipboardImage ? CNLS::GetString(_T("Clipboard Image")) : pFilelist->Current() + GetMultiframeIndex(pImage);
+		CString sFilePath = isClipboardImage ? CString(CNLS::GetString(_T("Clipboard Image"))) : pFilelist->Current() + GetMultiframeIndex(pImage);
 		sFileInfo.Replace(_T("<p>"), sFilePath);
 	}
 	if (_tcsstr(sFormat, _T("<i>")) != NULL) {

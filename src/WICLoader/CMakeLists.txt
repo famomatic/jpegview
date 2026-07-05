@@ -1,5 +1,6 @@
-# WICLoader.dll - WIC image decoding helper DLL used (and delay-loaded) by JPEGView.
-# Its exports are __declspec(dllexport); loaded at runtime by the main app.
+# WICLoader.dll - WIC image decoding helper DLL statically linked into JPEGView.
+# Its exports are __declspec(dllexport); imported by the main app via
+# __declspec(dllimport) at compile time and linked normally (not delay-loaded).
 add_library(WICLoader SHARED
     WICLoader.cpp
     WICLoader.rc)
@@ -30,7 +31,14 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         UNICODE
         _UNICODE)
 
-    target_compile_options(WICLoader PRIVATE /utf-8 /GR /Zc:wchar_t)
+    target_compile_options(WICLoader PRIVATE
+        /utf-8
+        /Zc:wchar_t
+        /Zc:__cplusplus
+        /permissive-
+        /Zc:preprocessor
+        /GR
+        /EHsc)
 
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
         target_compile_definitions(WICLoader PRIVATE WIN64)

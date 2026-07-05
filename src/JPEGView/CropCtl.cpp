@@ -525,10 +525,14 @@ void CCropCtl::InvalidateSceenCropRect() {
 	CRect cropRect = GetScreenCropRect();
 	if (!cropRect.IsRectEmpty()) {
 		int nHandleOffset = m_nHandleSize / 2 + 1;
-		m_pMainDlg->InvalidateRect(&CRect(cropRect.left-nHandleOffset, cropRect.top-nHandleOffset, cropRect.left+nHandleOffset, cropRect.bottom+nHandleOffset), FALSE);
-		m_pMainDlg->InvalidateRect(&CRect(cropRect.right-nHandleOffset, cropRect.top-nHandleOffset, cropRect.right+nHandleOffset, cropRect.bottom+nHandleOffset), FALSE);
-		m_pMainDlg->InvalidateRect(&CRect(cropRect.left, cropRect.top-nHandleOffset, cropRect.right, cropRect.top+nHandleOffset), FALSE);
-		m_pMainDlg->InvalidateRect(&CRect(cropRect.left, cropRect.bottom-nHandleOffset, cropRect.right, cropRect.bottom+nHandleOffset), FALSE);
+		CRect r1(cropRect.left-nHandleOffset, cropRect.top-nHandleOffset, cropRect.left+nHandleOffset, cropRect.bottom+nHandleOffset);
+		CRect r2(cropRect.right-nHandleOffset, cropRect.top-nHandleOffset, cropRect.right+nHandleOffset, cropRect.bottom+nHandleOffset);
+		CRect r3(cropRect.left, cropRect.top-nHandleOffset, cropRect.right, cropRect.top+nHandleOffset);
+		CRect r4(cropRect.left, cropRect.bottom-nHandleOffset, cropRect.right, cropRect.bottom+nHandleOffset);
+		m_pMainDlg->InvalidateRect(&r1, FALSE);
+		m_pMainDlg->InvalidateRect(&r2, FALSE);
+		m_pMainDlg->InvalidateRect(&r3, FALSE);
+		m_pMainDlg->InvalidateRect(&r4, FALSE);
 	}
 }
 

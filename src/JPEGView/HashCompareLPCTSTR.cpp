@@ -14,5 +14,5 @@ size_t CHashCompareLPCTSTR::operator( )(const LPCTSTR& Key) const {
 
 // compare function
 bool CHashCompareLPCTSTR::operator( )(const LPCTSTR& _Key1, const LPCTSTR& _Key2) const {
-	return _tcscmp(_Key1, _Key2) < 0;
+	return _tcscmp(_Key1, _Key2) == 0;
 }

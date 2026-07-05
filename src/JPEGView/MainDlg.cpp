@@ -493,7 +493,7 @@ LRESULT CMainDlg::OnPaint(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, B
 		m_dRealizedZoom = (double)newSize.cx / m_pCurrentImage->OrigSize().cx;
 		CPoint unlimitedOffsets = m_offsets;
 		m_offsets = Helpers::LimitOffsets(m_offsets, m_clientRect.Size(), newSize);
-		m_DIBOffsets = m_bZoomMode ? (unlimitedOffsets - m_offsets) : CPoint(0, 0);
+		m_DIBOffsets = m_bZoomMode ? CPoint(unlimitedOffsets - m_offsets) : CPoint(0, 0);
 
 		// Clip to client rectangle and request the DIB
 		CSize clippedSize(min(m_clientRect.Width(), newSize.cx), min(m_clientRect.Height(), newSize.cy));
@@ -658,8 +658,8 @@ void CMainDlg::DisplayErrors(CJPEGImage* pCurrentImage, const CRect& clientRect,
 	   }
 	} else if (pCurrentImage == NULL) {
 		HelpersGUI::DrawImageLoadErrorText(dc, clientRect,
-			(m_nLastLoadError == HelpersGUI::FileLoad_SlideShowListInvalid) ? m_sStartupFile :
-			(m_nLastLoadError == HelpersGUI::FileLoad_NoFilesInDirectory) ? m_pFileList->CurrentDirectory() : CurrentFileName(false),
+			(m_nLastLoadError == HelpersGUI::FileLoad_SlideShowListInvalid) ? (LPCTSTR)m_sStartupFile :
+			(m_nLastLoadError == HelpersGUI::FileLoad_NoFilesInDirectory) ? (LPCTSTR)m_pFileList->CurrentDirectory() : (LPCTSTR)CurrentFileName(false),
 			m_nLastLoadError,
 			(m_bOutOfMemoryLastImage ? HelpersGUI::FileLoad_OutOfMemory : 0) | (m_bExceptionErrorLastImage ? HelpersGUI::FileLoad_ExceptionError : 0));
 	}
@@ -732,7 +732,7 @@ LRESULT CMainDlg::OnLoadFileAsynch(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM lPar
 		StopAnimation();
 		MouseOn();
 		if (m_sStartupFile.IsEmpty()) {
-			OpenFile(false, false);
+			OpenFile((LPCTSTR)NULL, false);
 		} else {
 			OpenFile(m_sStartupFile, false);
 		}

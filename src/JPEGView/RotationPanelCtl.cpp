@@ -50,7 +50,8 @@ void CRotationPanelCtl::UpdateAssistedRotationMode() {
 	m_pTransformPanel->GetTextHint()->SetText(m_bRotationModeAssisted ?
 		CNLS::GetString(_T("Use the mouse to draw a line that shall be horizontal or vertical.")) :
 		CNLS::GetString(_T("Rotate the image by dragging with the mouse.")));
-	m_pMainDlg->InvalidateRect(&(m_pTransformPanel->GetTextHint()->GetPosition()), FALSE);
+	CRect hintPos = m_pTransformPanel->GetTextHint()->GetPosition();
+	m_pMainDlg->InvalidateRect(&hintPos, FALSE);
 	((CRotationPanel*)m_pTransformPanel)->GetBtnAssistMode()->SetActive(m_bRotationModeAssisted);
 	bool bShowGrid;
 	if (m_bRotationModeAssisted) {

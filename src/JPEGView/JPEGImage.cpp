@@ -847,7 +847,8 @@ void CJPEGImage::RestoreInitialParameters(LPCTSTR sFileName, const CImageProcess
 	m_bHasZoomStoredInParamDB = m_bInParamDB && dbEntry->HasZoomOffsetStored();
 	bool bKeepParams = ::GetProcessingFlag(procFlags, PFLAG_KeepParams);
 	if (m_bInParamDB && !bKeepParams) {
-		dbEntry->WriteToProcessParams(m_imageProcParamsInitial, m_eProcFlagsInitial, CRotationParams(m_nInitialRotation));
+		CRotationParams initialRotation(m_nInitialRotation);
+		dbEntry->WriteToProcessParams(m_imageProcParamsInitial, m_eProcFlagsInitial, initialRotation);
 		dbEntry->GetColorCorrectionAmounts(m_fColorCorrectionFactors);
 
 		dbEntry->WriteToGeometricParams(m_dInitialZoom, m_initialOffsets, SizeAfterRotation(CRotationParams(m_rotationParams, m_nInitialRotation)),
