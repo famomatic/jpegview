@@ -23,14 +23,13 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Clean up WICLoader files
+    - name: Clean up WICLoader import artifacts
       shell: bash
       if: inputs.build-config == 'Release'
       run: |
-        cd src/JPEGView/bin
-        rm */*/WICLoader.exp
-        rm */*/WICLoader.lib
-        rm */*/WICLoader.pdb
+        # The CMake build stages WICLoader.dll next to JPEGView.exe; drop the
+        # import lib / exp / pdb that are only needed for linking, not running.
+        rm -f build/out/Release/WICLoader.exp build/out/Release/WICLoader.lib build/out/Release/WICLoader.pdb
     - name: Upload No-Install Outputs Only
       # if not master branch, only upload the extract-and-run artifact
       if: github.ref_name != inputs.branch-match
@@ -38,7 +37,7 @@ runs:
       with:
         name: JPEGView-GH_${{ github.repository_owner }}-${{ inputs.build-config }}_${{ inputs.platform-arch }}-${{ env.short_sha }}
         path: |
-          src/JPEGView/bin
+          build/out
 
     - name: Upload All Outputs
       # reduce the ambiguous versions of installers in the wild
@@ -49,5 +48,5 @@ runs:
         # short_sha comes from the build step
         name: JPEGView-GH_${{ github.repository_owner }}-${{ inputs.build-config }}_${{ inputs.platform-arch }}-${{ env.short_sha }}
         path: |
-          src/JPEGView/bin
-          src/JPEGView.Setup/bin
+          build/out
+          build/msi

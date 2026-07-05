@@ -2,6 +2,18 @@
 **/obj
 **/Debug
 **/Release
+# CMake build trees
+build/
+out/
+build32/
+buildsetup/
+cmake-build*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.vcxproj.user
+compile_commands.json
+.cache/
 
 # Compiled Object files
 *.slo

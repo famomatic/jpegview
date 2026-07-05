@@ -25,19 +25,16 @@ on:
 
 jobs:
   build:
-    # if windows-latest, might not find VS 2019
-    runs-on: windows-2019
+    # windows-2022 ships Visual Studio 2022 (v143) which JPEGView now requires.
+    runs-on: windows-2022
 
     steps:
     - uses: actions/checkout@v3
 
-    - name: setup-msbuild
-      # https://github.com/marketplace/actions/setup-msbuild
-      uses: microsoft/setup-msbuild@v1.1
-      with:
-        # Fixed on Visual Studio 2019 -- https://docs.microsoft.com/en-us/visualstudio/releases/2019/history
-        vs-version: '[16.0,17.0)'
-        msbuild-architecture: ${{ inputs.platform-arch }}
+    - name: Setup CMake
+      # CMake is preinstalled on windows-2022 runners; this is a sanity check.
+      shell: cmd
+      run: cmake --version
 
     - uses: ./.github/actions/setup-wix
 

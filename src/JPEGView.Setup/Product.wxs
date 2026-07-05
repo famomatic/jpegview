@@ -21,27 +21,27 @@
 	<!-- The URL for add/remove programs -->
 	<?define InfoURL="https://github.com/sylikc/jpegview" ?>
 
-	<!-- 32-bit / 64-bit variables -->
+	<!--
+	Platform is supplied by candle -arch (x86|x64).  All build outputs are
+	staged into a single directory (JPEGView.TargetDir) by the CMake post-build
+	step, so the per-dep bin/bin64 source folders are no longer needed: every
+	DLL lives next to JPEGView.exe in the staged dir.
+	-->
 	<?if $(var.Platform) = x64 ?>
 		<?define Win64 = "yes" ?>
-		<?define DllBinFolder = "bin64" ?>
-
 		<?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
-		<?define JPEGViewExeSourcePath = "$(var.JPEGView.ProjectDir)\x64\Release\JPEGView.exe" ?>
 	<?else ?>
 		<?define Win64 = "no" ?>
-		<?define DllBinFolder = "bin" ?>
-
 		<?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
-		<?define JPEGViewExeSourcePath = "$(var.JPEGView.ProjectDir)\x86\Release\JPEGView.exe" ?>
 	<?endif ?>
 
-	<!-- the bin/bin64 folders are consistently named/used in the source, so it's a predictable pattern -->
-	<?define JxlDllFolder = "$(var.JPEGView.ProjectDir)\libjxl\$(var.DllBinFolder)" ?>
-	<?define HeifDllFolder = "$(var.JPEGView.ProjectDir)\libheif\$(var.DllBinFolder)" ?>
-	<?define AvifDllFolder = "$(var.JPEGView.ProjectDir)\libavif\$(var.DllBinFolder)" ?>
-	<?define LcmsDllFolder = "$(var.JPEGView.ProjectDir)\lcms2\$(var.DllBinFolder)" ?>
-	<?define RawDllFolder = "$(var.JPEGView.ProjectDir)\libraw\$(var.DllBinFolder)" ?>
+	<!-- JPEGView.TargetDir is the staged dir holding JPEGView.exe + all DLLs/configs. -->
+	<?define JPEGViewExeSourcePath = "$(var.JPEGView.TargetDir)JPEGView.exe" ?>
+	<?define JxlDllFolder = "$(var.JPEGView.TargetDir)" ?>
+	<?define HeifDllFolder = "$(var.JPEGView.TargetDir)" ?>
+	<?define AvifDllFolder = "$(var.JPEGView.TargetDir)" ?>
+	<?define LcmsDllFolder = "$(var.JPEGView.TargetDir)" ?>
+	<?define RawDllFolder = "$(var.JPEGView.TargetDir)" ?>
 
 	<!--
 		====================================================================================
