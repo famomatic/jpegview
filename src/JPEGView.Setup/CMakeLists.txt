@@ -40,9 +40,11 @@ else()
     set(_dllbin "bin")
 endif()
 
-# The staged install dir: CMake copies JPEGView.exe + WICLoader.dll + all the
-# post-build files here.  Point WiX at this single directory.
-set(_stagedir "${CMAKE_BINARY_DIR}/staged/${_plat}/$<CONFIG>")
+# Directory holding JPEGView.exe + WICLoader.dll + the post-build copies
+# (Config/strings_*.txt, KeyMap-README_*.html, LICENSE.txt). Both targets share
+# CMAKE_RUNTIME_OUTPUT_DIRECTORY (<build>/out) and the JPEGView POST_BUILD
+# commands copy the config files there, so point WiX at that single directory.
+set(_stagedir "$<TARGET_FILE_DIR:JPEGView>")
 
 # Name the output MSI after platform/config.
 set(_msi_name "JPEGView-${_plat}-$<CONFIG>.msi")
