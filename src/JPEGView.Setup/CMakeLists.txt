@@ -79,6 +79,10 @@ add_custom_target(JPEGView.Setup ALL
         -nologo
         -ext WixUIExtension
         -out "${CMAKE_BINARY_DIR}/msi/${_msi_name}"
+        # Product.wxs references !(loc.*) localization variables defined in
+        # Product_en-us.wxl; light does not auto-discover .wxl files, so pass
+        # the en-us localization explicitly via -loc.
+        -loc Product_en-us.wxl
         "${_wix_obj}"
     WORKING_DIRECTORY "${_wix_source_dir}"
     VERBATIM)
