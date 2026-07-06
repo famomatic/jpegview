@@ -21,6 +21,12 @@ jobs:
     # windows-2022 ships Visual Studio 2022 (v143) which JPEGView now requires.
     runs-on: windows-2022
 
+    env:
+      # vcpkg is preinstalled on windows-2022 runners at C:\vcpkg, but the
+      # VCPKG_ROOT env var is no longer exported by recent runner images.
+      # Set it explicitly so the CMake toolchain path resolves correctly.
+      VCPKG_ROOT: C:\vcpkg
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
