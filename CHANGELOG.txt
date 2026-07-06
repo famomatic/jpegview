@@ -1,7 +1,7 @@
 JPEGView Changelog
 ******************
 
-[Unreleased]
+[1.4]
 New features:
 - Add support for SVG and SVGZ (vector format, rasterized via NanoSVG)
   SVG is rasterized at load time at its intrinsic size (fallback 1024x1024).
@@ -30,10 +30,48 @@ Changed behavior:
   jp2, j2k, j2c, exr, hdr, pic, jxr (in addition to existing wdp/hdp)
 - WINVER target confirmed as Windows 7 (0x0601); XP is no longer a build target
   for the main source tree (legacy XP build remains a separate configuration)
+- Build system migrated to CMake + Visual Studio 2022 (v143), C++20
+  The VS2017/VS2019 solution and .vcxproj files have been removed; the project
+  now builds via CMakePresets (x64/x86 x Debug/Release) with the v143 toolset.
+- Image codec third-party dependencies switched from committed prebuilt binaries
+  to vcpkg manifest mode (libjpeg-turbo, libpng[apng], zlib, libwebp, lcms,
+  libraw, libjxl, libheif[aom], libavif), resolved through find_package targets.
+- 11 previously-vendored codec submodules and their build scripts removed
+  (libjpeg-turbo, libwebp, libpng, zlib, libjxl, libheif, dav1d, libde265,
+  libavif, Little-CMS, LibRaw); WTL and qoi are kept as still in use.
+- Codecs now link statically; codec DLLs are no longer shipped and are dropped
+  from the WiX Product.wxs.
+- CI build workflows switched to workflow_dispatch (manual) instead of running
+  on every push; a new release.yml triggers draft Release builds on v* tags.
+- Line endings normalized to LF via .gitattributes (eol=lf for text files;
+  binary assets marked binary); core.autocrlf set to 'input'.
+- README rewritten for the famomatic fork: links repointed to famomatic/jpegview,
+  package-manager sections (WinGet, PortableApps, Scoop, Chocolatey, Npackd)
+  dropped, Windows XP removed from the supported OS list.
+Bugs fixed:
+- Fix unordered_map lookups using pointer equality instead of string equality
+  The C++20 migration passed the custom comparator only as the Hash argument,
+  so the KeyEqual defaulted to std::equal_to (raw pointer equality). This
+  silently broke localized string lookups (CNLS), INI value reads
+  (CSettingsProvider), and keymap symbol resolution (CKeyMap) whenever the
+  lookup key was not pointer-identical to the stored key.
 Other changes:
 - Added vcpkg dependencies: openjpeg, openexr, jxrlib
 - Added NanoSVG as a vendored header-only library under extras/third_party/nanosvg
 - New source files: SVGWrapper, DDSWrapper, JP2Wrapper, EXRWrapper, HDRWrapper, JXRWrapper
+- CMakePresets.json added with x64/x86 x Debug/Release presets wired to the
+  vcpkg toolchain and static triplets (custom x86-windows-static-jpegview
+  triplet works around an MSVC ICE in libraw's x86 Debug build).
+- Conformance flags enabled (/permissive-, /Zc:__cplusplus, /Zc:preprocessor,
+  /EHsc); stdext::hash_map migrated to std::unordered_map across KeyMap, NLS,
+  SettingsProvider and HashCompareLPCTSTR.
+- CI: vcpkg baseline commit fetched/checked out explicitly for manifest mode
+  (windows-2022 runners ship a shallow vcpkg clone), VCPKG_ROOT set explicitly,
+  deprecated actions/upload-artifact@v3 and checkout@v3 bumped to v4.
+- WiX MSI build is opt-in via -DJPEGVIEW_BUILD_SETUP=ON and consumes
+  CMake-supplied staged paths instead of the removed vcxproj ProjectReference
+  variables.
+- Maintainer release script (jpegview-build-release.bat) rewritten for CMake.
 [1.3.46] 2023-10-07
 New features:
 - Add support for more RAW image formats with LibRaw, ex: CR3 (ICC profiles are supported)
