@@ -25,6 +25,6 @@ private:
 	CNLS(void);
 	~CNLS(void);
 
-	static std::unordered_map<LPCTSTR, LPCTSTR, CHashCompareLPCTSTR> sm_texts;
+	static std::unordered_map<LPCTSTR, LPCTSTR, CHashCompareLPCTSTR, CHashCompareLPCTSTR> sm_texts;
 	static bool sm_bTableRead;
 };

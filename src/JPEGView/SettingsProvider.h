@@ -8,7 +8,7 @@
 
 // IniHashMap below uses std::unordered_map.
 #include <unordered_map>
-typedef std::unordered_map<LPCTSTR, LPCTSTR, CHashCompareLPCTSTR> IniHashMap;
+typedef std::unordered_map<LPCTSTR, LPCTSTR, CHashCompareLPCTSTR, CHashCompareLPCTSTR> IniHashMap;
 
 // INI settings
 // All settings are first searched in a file name JPEGView.ini located in User/AppData/Roaming/JPEGView

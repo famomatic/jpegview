@@ -115,8 +115,8 @@ static int _ParseKeys(LPTSTR sKeys) {
 	return nKeyCode;
 }
 
-static int _FindCommandId(std::unordered_map<LPCTSTR, int, CHashCompareLPCTSTR> & symbolMap, LPCTSTR sSymbolName) {
-	std::unordered_map<LPCTSTR, int, CHashCompareLPCTSTR>::const_iterator iter;
+static int _FindCommandId(std::unordered_map<LPCTSTR, int, CHashCompareLPCTSTR, CHashCompareLPCTSTR> & symbolMap, LPCTSTR sSymbolName) {
+	std::unordered_map<LPCTSTR, int, CHashCompareLPCTSTR, CHashCompareLPCTSTR>::const_iterator iter;
 	iter = symbolMap.find(sSymbolName);
 	if (iter == symbolMap.end()) {
 		return -1;
@@ -201,7 +201,7 @@ CKeyMap::CKeyMap() {
 	TCHAR* pSymbolTableEnd = &(symbolTable[SYMBOL_TABLE_LEN - 1]);
 	TCHAR* pSymbolTable = &(symbolTable[0]);
 
-	std::unordered_map<LPCTSTR, int, CHashCompareLPCTSTR> m_symbolMap;
+	std::unordered_map<LPCTSTR, int, CHashCompareLPCTSTR, CHashCompareLPCTSTR> m_symbolMap;
 
 	// read the symbols file first to get all valid symbols
 	while (_fgetts(lineBuff, BUFF_LEN, fsym_ptr) != NULL) {
