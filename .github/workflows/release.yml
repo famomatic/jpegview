@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform-arch: Win32
+            asset-arch: x86
+          - platform-arch: x64
+            asset-arch: x64
+
+    env:
+      VCPKG_ROOT: C:\vcpkg
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - uses: ./.github/actions/setup-wix
+
+    - uses: ./.github/actions/wtl-submodule
+
+    - uses: ./.github/actions/build-solution
+      with:
+        platform-arch: ${{ matrix.platform-arch }}
+        build-config: Release
+        build-setup: true
+        # Keep the official version labels for tagged releases; the
+        # (~GHdevtest owner/sha) suffix is only useful for CI test builds.
+        patch-version: false
+
+    - name: Drop link-only WICLoader artifacts
+      shell: bash
+      run: |
+        rm -f build/out/Release/WICLoader.exp build/out/Release/WICLoader.lib build/out/Release/WICLoader.pdb
+
+    - name: Zip portable build
+      shell: powershell
+      run: |
+        Compress-Archive -Path "build/out/Release/*" `
+          -DestinationPath "JPEGView-${{ github.ref_name }}-${{ matrix.asset-arch }}.zip" -Force
+
+    - name: Stage MSI
+      shell: powershell
+      run: |
+        $msi = Get-ChildItem -Path build/msi -Filter *.msi | Select-Object -First 1
+        if (-not $msi) { throw "MSI not found in build/msi" }
+        Copy-Item $msi.FullName "JPEGView-${{ github.ref_name }}-${{ matrix.asset-arch }}.msi" -Force
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-${{ matrix.asset-arch }}
+        path: |
+          JPEGView-${{ github.ref_name }}-${{ matrix.asset-arch }}.zip
+          JPEGView-${{ github.ref_name }}-${{ matrix.asset-arch }}.msi
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Create draft release
+      uses: softprops/action-gh-release@v2
+      with:
+        draft: true
+        generate_release_notes: true
+        files: |
+          artifacts/**/*.zip
+          artifacts/**/*.msi
+        name: ${{ github.ref_name }}
+        tag_name: ${{ github.ref_name }}
+        fail_on_unmatched_files: true
+        body: |
+          JPEGView ${{ github.ref_name }}
+
+          Draft release. Review assets and publish when ready.
+          Built from commit ${{ github.sha }}.
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

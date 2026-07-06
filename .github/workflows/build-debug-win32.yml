@@ -1,6 +1,7 @@
 name: Build Test Win32 (Debug)
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
 
 jobs:
   call-workflow-build:
