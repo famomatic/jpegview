@@ -79,7 +79,6 @@ add_custom_target(JPEGView.Setup ALL
         -nologo
         -ext WixUIExtension
         -out "${CMAKE_BINARY_DIR}/msi/${_msi_name}"
-        -pdb "${CMAKE_CURRENT_BINARY_DIR}/Product-$<CONFIG>.wixpdb"
         "${_wix_obj}"
     WORKING_DIRECTORY "${_wix_source_dir}"
     VERBATIM)
