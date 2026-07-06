@@ -68,6 +68,11 @@ runs:
         $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
         Write-Host "Fetching vcpkg baseline commit $baseline into $env:VCPKG_ROOT"
         git -C $env:VCPKG_ROOT fetch --depth=1 origin $baseline
+        # Check out the baseline commit so the working tree's versions/ db
+        # matches what vcpkg.json's builtin-baseline points at. Without this,
+        # vcpkg reads the runner's stale HEAD version database and fails to
+        # resolve baseline versions (e.g. libjpeg-turbo@3.2.0, libheif@1.23.1).
+        git -C $env:VCPKG_ROOT checkout $baseline
 
     - name: Configure (CMake + vcpkg manifest mode)
       shell: cmd
