@@ -59,6 +59,16 @@ runs:
           echo "triplet=x86-windows-static-jpegview" >> $env:GITHUB_OUTPUT
         }
 
+    - name: Fetch vcpkg baseline commit
+      # The preinstalled vcpkg on windows-2022 runners is a shallow clone, so
+      # the builtin-baseline commit referenced by vcpkg.json may be absent.
+      # Fetch it explicitly so manifest-mode baseline checkout succeeds.
+      shell: powershell
+      run: |
+        $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+        Write-Host "Fetching vcpkg baseline commit $baseline into $env:VCPKG_ROOT"
+        git -C $env:VCPKG_ROOT fetch --depth=1 origin $baseline
+
     - name: Configure (CMake + vcpkg manifest mode)
       shell: cmd
       env:
