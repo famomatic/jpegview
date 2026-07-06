@@ -61,6 +61,10 @@ add_custom_command(
         "-dWICLoader.TargetDir=${_stagedir}/"
         "-dDllBinFolder=${_dllbin}"
         -arch "${_plat}"
+        # $(var.Platform) is a WiX preprocessor variable, not set by -arch.
+        # Define it explicitly so the x86/x64 conditionals in Product.wxs
+        # (<?if $(var.Platform) = x64 ?>) resolve under the CMake-driven build.
+        "-dPlatform=${_plat}"
         -out "${_wix_obj}"
         "${_wix_source_dir}/Product.wxs"
     COMMAND ${CMAKE_COMMAND} -E touch "${CMAKE_CURRENT_BINARY_DIR}/Product-$<CONFIG>.wixobj.placeholder"
