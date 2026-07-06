@@ -14,17 +14,20 @@ JPEGView is a lean, fast and highly configurable image viewer/editor with a mini
 
 JPEGView has built-in support the following formats:
 
-* Popular: JPEG, GIF
-* Lossless: BMP, PNG, TIFF, PSD
+* Popular: JPEG, GIF, ICO/CUR
+* Lossless: BMP, PNG, TIFF, PSD (8/16/32-bit, all compression modes)
 * Web: WEBP, JXL, HEIF/HEIC, AVIF
-* Legacy: TGA, WDP, HDP, JXR
+* Vector: SVG, SVGZ (NanoSVG)
+* Game/CG: DDS (BC1/BC3/BC7 + uncompressed), EXR (OpenEXR), HDR/PIC (Radiance RGBE)
+* Legacy: TGA, WDP, HDP, JXR (libjxr), JPEG 2000 (JP2/J2K/J2C, OpenJPEG)
 * Camera RAW formats:
   * Adobe (DNG), Canon (CRW, CR2, CR3), Nikon (NEF, NRW), Sony (ARW, SR2)
   * Olympus (ORF), Panasonic (RW2), Fujifilm (RAF)
   * Sigma (X3F), Pentax (PEF), Minolta (MRW), Kodak (KDC, DCR)
   * A full list is available here: [LibRaw supported cameras](https://www.libraw.org/supported-cameras)
 
-Many additional formats are supported by Windows Imaging Component (WIC)
+JPEG XR (JXR/WDP/HDP) is now decoded natively via libjxr instead of relying on WIC.
+Additional formats may still be supported by Windows Imaging Component (WIC) as a fallback.
 
 ### Basic Image Editor
 

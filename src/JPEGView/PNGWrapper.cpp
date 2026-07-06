@@ -6,6 +6,7 @@
 #include "png.h"
 #include "MaxImageDef.h"
 #include <stdexcept>
+#include <zlib.h>
 
 // Uncomment to build without APNG support
 //#undef PNG_APNG_SUPPORTED
@@ -438,6 +439,57 @@ void* PngReader::GetEXIFBlock(void* buffer, size_t sizebytes) {
 		if (chunksize > PNG_UINT_31_MAX) return NULL;
 
 		// 12 comes from 4 bytes for chunk size, 4 for chunk name, and 4 for CRC32
+		offset += chunksize + 12;
+	}
+	return NULL;
+}
+
+// Extracts the embedded ICC profile from a PNG's iCCP chunk.
+// Returns malloc'd buffer (caller frees with free()) and sets *size.
+// Returns NULL if no iCCP chunk is present.
+void* PngReader::GetICCProfile(const void* buffer, size_t sizebytes, size_t* outSize) {
+	*outSize = 0;
+	size_t offset = 8; // skip PNG signature
+	while (offset + 7 < sizebytes) {
+		unsigned int chunksize = *(unsigned int*)((char*)buffer + offset);
+		chunksize = _byteswap_ulong(chunksize);
+
+		if (memcmp((char*)buffer + offset + 4, "iCCP", 4) == 0 && offset + chunksize + 11 < sizebytes) {
+			// iCCP chunk: profile name (null-terminated) + compression method (1 byte) + compressed profile
+			char* pChunk = (char*)buffer + offset + 8;
+			// skip profile name
+			char* pName = pChunk;
+			while (*pName && pName < (char*)buffer + offset + 8 + chunksize) pName++;
+			pName++; // skip null terminator
+			if (pName >= (char*)buffer + offset + 8 + chunksize) return NULL;
+			// pName now points to compression method byte
+			pName++; // skip compression method (always 0 = deflate)
+			size_t compProfileLen = chunksize - (pName - pChunk);
+			if (compProfileLen == 0) return NULL;
+
+			// Inflate the compressed profile
+			uLongf outLen = compProfileLen * 4; // initial estimate, ICC profiles are usually larger compressed
+			void* pProfile = malloc(outLen);
+			if (pProfile == NULL) return NULL;
+			// Try increasing buffer sizes until it fits
+			for (int attempt = 0; attempt < 4; attempt++) {
+				uLongf actualLen = outLen;
+				int ret = uncompress((Bytef*)pProfile, &actualLen, (const Bytef*)pName, compProfileLen);
+				if (ret == Z_OK) {
+					*outSize = actualLen;
+					return pProfile;
+				}
+				if (ret != Z_BUF_ERROR) { free(pProfile); return NULL; }
+				outLen *= 2;
+				void* pNew = realloc(pProfile, outLen);
+				if (pNew == NULL) { free(pProfile); return NULL; }
+				pProfile = pNew;
+			}
+			free(pProfile);
+			return NULL;
+		}
+
+		if (chunksize > PNG_UINT_31_MAX) return NULL;
 		offset += chunksize + 12;
 	}
 	return NULL;

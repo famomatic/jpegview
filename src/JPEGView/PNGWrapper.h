@@ -21,6 +21,10 @@ public:
 
 	// Returns true if PNG is unsupported by GDI+
 	static bool MustUseLibpng(const void* buffer, size_t sizebytes);
+	
+	// Returns the embedded ICC profile (caller must free with free()).
+	// Returns NULL and sets *size=0 if no ICC profile is present.
+	static void* GetICCProfile(const void* buffer, size_t sizebytes, size_t* size);
 #endif
 	// Get EXIF Block
 	static void* GetEXIFBlock(void* buffer, size_t sizebytes);

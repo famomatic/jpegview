@@ -8,12 +8,15 @@ To compile JPEGView you need:
   (JPEGView 32-bit (x86) and 64-bit (x64) versions are both supported)
 - vcpkg (https://github.com/microsoft/vcpkg) for the image codec dependencies
   (libjpeg-turbo, libpng[apng], zlib, libwebp, lcms2, libraw, libjxl, libheif,
-  libavif).  The static-* triplet is required because JPEGView links the
-  static CRT (/MT, /MTd).
+  libavif, openjpeg, openexr, jxrlib).  The static-* triplet is required
+  because JPEGView links the static CRT (/MT, /MTd).
 - Windows Template Library (WTL), Version 8.1+
   (http://sourceforge.net/projects/wtl/) installed to deps/WTL-sf
   (automatically populated by cloning the submodule:
    git submodule update --init deps/WTL-sf)
+- NanoSVG (header-only, vendored under extras/third_party/nanosvg)
+  (automatically populated by cloning the submodule:
+   git submodule update --init extras/third_party/nanosvg)
 
 
 One-time vcpkg setup

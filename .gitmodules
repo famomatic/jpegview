@@ -4,3 +4,6 @@
 [submodule "extras/third_party/qoi"]
 	path = extras/third_party/qoi
 	url = https://github.com/phoboslab/qoi
+[submodule "extras/third_party/nanosvg"]
+	path = extras/third_party/nanosvg
+	url = https://github.com/memononen/nanosvg.git

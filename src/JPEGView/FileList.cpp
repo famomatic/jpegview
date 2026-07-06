@@ -125,14 +125,15 @@ void CFileDesc::SetModificationDate(const FILETIME& lastModDate) {
 
 // image file types supported internally (there are additional endings for RAW and WIC - these come from INI file)
 // NOTE: when adding more supported filetypes, update installer to add another extension for "SupportedTypes"
-static const int cnNumEndingsInternal = 17;
+static const int cnNumEndingsInternal = 31;
 static const TCHAR* csFileEndingsInternal[cnNumEndingsInternal] = {_T("jpg"), _T("jpeg"), _T("jfif"), _T("bmp"), _T("png"),
-	_T("tif"), _T("tiff"), _T("gif"), _T("webp"), _T("jxl"), _T("avif"), _T("heif"), _T("heic"), _T("tga"), _T("qoi"), _T("psd"), _T("psb") };
+	_T("tif"), _T("tiff"), _T("gif"), _T("webp"), _T("jxl"), _T("avif"), _T("heif"), _T("heic"), _T("tga"), _T("qoi"), _T("psd"), _T("psb"),
+	_T("svg"), _T("svgz"), _T("ico"), _T("cur"), _T("dds"), _T("jp2"), _T("j2k"), _T("j2c"), _T("exr"), _T("hdr"), _T("pic"), _T("jxr"), _T("wdp"), _T("hdp") };
 // supported camera RAW formats
 static const TCHAR* csFileEndingsRAW = _T("*.pef;*.dng;*.crw;*.nef;*.cr2;*.mrw;*.rw2;*.orf;*.x3f;*.arw;*.kdc;*.nrw;*.dcr;*.sr2;*.raf");
 
 
-static const int MAX_ENDINGS = 48;
+static const int MAX_ENDINGS = 64;
 static int nNumEndings;
 static LPCTSTR* sFileEndings;
 

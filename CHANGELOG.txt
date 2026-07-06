@@ -1,6 +1,39 @@
 JPEGView Changelog
 ******************
 
+[Unreleased]
+New features:
+- Add support for SVG and SVGZ (vector format, rasterized via NanoSVG)
+  SVG is rasterized at load time at its intrinsic size (fallback 1024x1024).
+  Alpha channel is preserved; transparency is blended over the background color.
+- Add support for ICO and CUR (Windows icon/cursor) via GDI+
+- Add support for DDS (DirectDraw Surface) with a built-in decoder
+  Supports uncompressed RGB/RGBA (32-bit) and BC1/DXT1, BC3/DXT5 block compression.
+  BC7 is detected but rendered as a placeholder pending full decoder.
+- Add support for JPEG 2000 (JP2, J2K, J2C, JPX) via OpenJPEG
+- Add support for Radiance HDR/PIC (RGBE format) with Reinhard tone mapping
+- Add support for JPEG XR (JXR, WDP, HDP) natively via libjxr
+  Replaces the previous WIC fallback that required a separately-installed codec.
+- Add support for OpenEXR (EXR) via the OpenEXR 3.x C API
+  Reads RGBA and grayscale (Y) channels in half/float; Reinhard tone mapping
+  is applied for display. Memory-backed stream (no temp files).
+- PSD: full 16-bit and 32-bit depth support (previously 8-bit only)
+  Supports all bit depths (1, 8, 16, 32) and all compression modes including
+  ZipWithoutPrediction and ZipWithPrediction (with horizontal differencing filter).
+  16/32-bit channels are downsampled to 8-bit for display.
+- PNG: animated PNG (aPNG) and ICC color profiles now work simultaneously
+  Previously, enabling UseEmbeddedColorProfiles disabled aPNG by falling back to GDI+.
+  Now libpng handles ICC profiles directly via the iCCP chunk, so both features coexist.
+- Save: TGA (uncompressed 24-bit) and GIF (via GDI+) are now supported as save formats
+Changed behavior:
+- Built-in file extension list expanded to include svg, svgz, ico, cur, dds,
+  jp2, j2k, j2c, exr, hdr, pic, jxr (in addition to existing wdp/hdp)
+- WINVER target confirmed as Windows 7 (0x0601); XP is no longer a build target
+  for the main source tree (legacy XP build remains a separate configuration)
+Other changes:
+- Added vcpkg dependencies: openjpeg, openexr, jxrlib
+- Added NanoSVG as a vendored header-only library under extras/third_party/nanosvg
+- New source files: SVGWrapper, DDSWrapper, JP2Wrapper, EXRWrapper, HDRWrapper, JXRWrapper
 [1.3.46] 2023-10-07
 New features:
 - Add support for more RAW image formats with LibRaw, ex: CR3 (ICC profiles are supported)
@@ -59,9 +92,9 @@ Localization updates:
 - New language: "tr" Turkish, thanks Kaya Zeren
 - New language: "bg" Bulgarian, thanks Ivan Georgiev
 - New translation: "sr" Serbian, thanks Ljuba Cirovic
-- New translation: "hu" Hungarian, thanks József Ujvári
+- New translation: "hu" Hungarian, thanks Jï¿½zsef Ujvï¿½ri
 - New translation: "fi" Finnish, thanks Kari Eveli
-- New translation: "sk" Slovak, thanks Marián Hikaník
+- New translation: "sk" Slovak, thanks Mariï¿½n Hikanï¿½k
 - New translation: "ta" Tamil, thanks Nirmal G.
 - Updated Japanese translation, thanks maboroshin (GH https://github.com/maboroshin)
 - Updated Korean translation, thanks VenusGirl (GH https://github.com/VenusGirl)
@@ -588,7 +621,7 @@ Bugs fixed:
 - Lossless rotate and crop now works in folders containing Unicode characters in the path.
   Note that the file title must not contain Unicode characters due to the fact that jpegtrans.exe does not support this.
 New features:
-- Portuguese (Portugal) translation, thanks to Sérgio Marques
+- Portuguese (Portugal) translation, thanks to Sï¿½rgio Marques
 - Support for viewing embedded JPEG images in camera RAW files using code from the dcraw project (v8.86).
 - Support for loading images using Windows Image Codecs (WIC). By default WIC is used to load JPEG XR files (also called
   High definition photo). When using Windows Vista or Windows 7, the Windows Camera Codec pack can be installed to get
@@ -681,7 +714,7 @@ New features:
 Bugs fixed:
 - Fixed crash on startup when ShowFullScreen=true in INI file
 New features:
-- Swedish translation (thanks to Åke)
+- Swedish translation (thanks to ï¿½ke)
 
 [1.0.22] 2011-01-14
 Bugs fixed:
@@ -858,3 +891,6 @@ Other changes:
 
 [1.0.12] 2007-05-08
 First release to public
+
+
+

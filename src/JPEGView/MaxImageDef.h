@@ -44,6 +44,48 @@ const unsigned int MAX_BMP_FILE_SIZE = 1024 * 1024 * 500;
 const unsigned int MAX_BMP_FILE_SIZE = 1024 * 1024 * 100;
 #endif
 
+// SVG (vector, rasterized on load)
+#ifdef _WIN64
+const unsigned int MAX_SVG_FILE_SIZE = 1024 * 1024 * 100;
+#else
+const unsigned int MAX_SVG_FILE_SIZE = 1024 * 1024 * 50;
+#endif
+
+// DDS (game textures)
+#ifdef _WIN64
+const unsigned int MAX_DDS_FILE_SIZE = 1024 * 1024 * 200;
+#else
+const unsigned int MAX_DDS_FILE_SIZE = 1024 * 1024 * 50;
+#endif
+
+// JPEG 2000
+#ifdef _WIN64
+const unsigned int MAX_JP2_FILE_SIZE = 1024 * 1024 * 200;
+#else
+const unsigned int MAX_JP2_FILE_SIZE = 1024 * 1024 * 50;
+#endif
+
+// OpenEXR (HDR)
+#ifdef _WIN64
+const unsigned int MAX_EXR_FILE_SIZE = 1024 * 1024 * 200;
+#else
+const unsigned int MAX_EXR_FILE_SIZE = 1024 * 1024 * 50;
+#endif
+
+// Radiance HDR
+#ifdef _WIN64
+const unsigned int MAX_HDR_FILE_SIZE = 1024 * 1024 * 100;
+#else
+const unsigned int MAX_HDR_FILE_SIZE = 1024 * 1024 * 50;
+#endif
+
+// JPEG XR
+#ifdef _WIN64
+const unsigned int MAX_JXR_FILE_SIZE = 1024 * 1024 * 200;
+#else
+const unsigned int MAX_JXR_FILE_SIZE = 1024 * 1024 * 50;
+#endif
+
 // this may be an artificial limitation and might make configurable, or ignore custom setting only for win32
 #ifdef _WIN64
 const unsigned int MAX_IMAGE_PIXELS = 65535 * 65535;

@@ -775,6 +775,22 @@ EImageFormat GetImageFormat(LPCTSTR sFileName) {
 			return IF_QOI;
 		} else if (_tcsicmp(sEnding, _T("PSD")) == 0) {
 			return IF_PSD;
+		} else if (_tcsicmp(sEnding, _T("SVG")) == 0 || _tcsicmp(sEnding, _T("SVGZ")) == 0) {
+			return IF_SVG;
+		} else if (_tcsicmp(sEnding, _T("ICO")) == 0 || _tcsicmp(sEnding, _T("CUR")) == 0) {
+			return IF_ICO;
+		} else if (_tcsicmp(sEnding, _T("DDS")) == 0) {
+			return IF_DDS;
+		} else if (_tcsicmp(sEnding, _T("JP2")) == 0 || _tcsicmp(sEnding, _T("J2K")) == 0 ||
+				   _tcsicmp(sEnding, _T("J2C")) == 0 || _tcsicmp(sEnding, _T("JPX")) == 0) {
+			return IF_JP2;
+		} else if (_tcsicmp(sEnding, _T("EXR")) == 0) {
+			return IF_EXR;
+		} else if (_tcsicmp(sEnding, _T("HDR")) == 0 || _tcsicmp(sEnding, _T("PIC")) == 0) {
+			return IF_HDR;
+		} else if (_tcsicmp(sEnding, _T("JXR")) == 0 || _tcsicmp(sEnding, _T("WDP")) == 0 ||
+				   _tcsicmp(sEnding, _T("HDP")) == 0 || _tcsicmp(sEnding, _T("WDP")) == 0) {
+			return IF_JXR;
 		} else if (IsInFileEndingList(CSettingsProvider::This().FilesProcessedByWIC(), sEnding)) {
 			return IF_WIC;
 		} else if (IsInFileEndingList(CSettingsProvider::This().FileEndingsRAW(), sEnding)) {

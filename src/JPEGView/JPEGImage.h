@@ -289,7 +289,7 @@ public:
 
 	// Gets if the image format is one of the formats supported by GDI+
 	bool IsGDIPlusFormat() const {
-		return m_eImageFormat == IF_JPEG || m_eImageFormat == IF_WindowsBMP || m_eImageFormat == IF_PNG || m_eImageFormat == IF_TIFF || m_eImageFormat == IF_GIF;
+		return m_eImageFormat == IF_JPEG || m_eImageFormat == IF_WindowsBMP || m_eImageFormat == IF_PNG || m_eImageFormat == IF_TIFF || m_eImageFormat == IF_GIF || m_eImageFormat == IF_ICO;
 	}
 
 	// Gets if this image is part of an animation (animated GIF)

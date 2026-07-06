@@ -22,6 +22,13 @@
 #include "QOIWrapper.h"
 #include "PSDWrapper.h"
 #include "MaxImageDef.h"
+#include "ICCProfileTransform.h"
+#include "SVGWrapper.h"
+#include "DDSWrapper.h"
+#include "JP2Wrapper.h"
+#include "EXRWrapper.h"
+#include "HDRWrapper.h"
+#include "JXRWrapper.h"
 
 
 using namespace Gdiplus;
@@ -378,6 +385,61 @@ void CImageLoadThread::ProcessRequest(CRequestBase& request) {
 			DeleteCachedAvifDecoder();
 			ProcessReadQOIRequest(&rq);
 			break;
+		case IF_SVG:
+			DeleteCachedGDIBitmap();
+			DeleteCachedWebpDecoder();
+			DeleteCachedPngDecoder();
+			DeleteCachedJxlDecoder();
+			DeleteCachedAvifDecoder();
+			ProcessReadSVGRequest(&rq);
+			break;
+		case IF_ICO:
+			DeleteCachedWebpDecoder();
+			DeleteCachedPngDecoder();
+			DeleteCachedJxlDecoder();
+			DeleteCachedAvifDecoder();
+			ProcessReadGDIPlusRequest(&rq);
+			break;
+		case IF_DDS:
+			DeleteCachedGDIBitmap();
+			DeleteCachedWebpDecoder();
+			DeleteCachedPngDecoder();
+			DeleteCachedJxlDecoder();
+			DeleteCachedAvifDecoder();
+			ProcessReadDDSRequest(&rq);
+			break;
+		case IF_JP2:
+			DeleteCachedGDIBitmap();
+			DeleteCachedWebpDecoder();
+			DeleteCachedPngDecoder();
+			DeleteCachedJxlDecoder();
+			DeleteCachedAvifDecoder();
+			ProcessReadJP2Request(&rq);
+			break;
+		case IF_EXR:
+			DeleteCachedGDIBitmap();
+			DeleteCachedWebpDecoder();
+			DeleteCachedPngDecoder();
+			DeleteCachedJxlDecoder();
+			DeleteCachedAvifDecoder();
+			ProcessReadEXRRequest(&rq);
+			break;
+		case IF_HDR:
+			DeleteCachedGDIBitmap();
+			DeleteCachedWebpDecoder();
+			DeleteCachedPngDecoder();
+			DeleteCachedJxlDecoder();
+			DeleteCachedAvifDecoder();
+			ProcessReadHDRRequest(&rq);
+			break;
+		case IF_JXR:
+			DeleteCachedGDIBitmap();
+			DeleteCachedWebpDecoder();
+			DeleteCachedPngDecoder();
+			DeleteCachedJxlDecoder();
+			DeleteCachedAvifDecoder();
+			ProcessReadJXRRequest(&rq);
+			break;
 		case IF_WIC:
 			DeleteCachedGDIBitmap();
 			DeleteCachedWebpDecoder();
@@ -699,7 +761,10 @@ void CImageLoadThread::ProcessReadPNGRequest(CRequest* request) {
 
 #ifndef WINXP
 			// If UseEmbeddedColorProfiles is true and the image isn't animated, we should use GDI+ for better color management
-			bool bUseGDIPlus = CSettingsProvider::This().ForceGDIPlus() || CSettingsProvider::This().UseEmbeddedColorProfiles();
+			// libpng now handles ICC profiles directly (via GetICCProfile below),
+			// so we only fall back to GDI+ when ForceGDIPlus is explicitly set.
+			// This allows animated PNG (aPNG) and ICC profiles to coexist.
+			bool bUseGDIPlus = CSettingsProvider::This().ForceGDIPlus();
 			if (bUseCachedDecoder || !bUseGDIPlus || PngReader::MustUseLibpng(pBuffer, nFileSize))
 				pPixelData = (uint8*)PngReader::ReadImage(nWidth, nHeight, nBPP, bHasAnimation, nFrameCount, nFrameTimeMs, pEXIFData, request->OutOfMemory, pBuffer, nFileSize);
 #endif
@@ -707,6 +772,22 @@ void CImageLoadThread::ProcessReadPNGRequest(CRequest* request) {
 			if (pPixelData != NULL) {
 				if (bHasAnimation)
 					m_sLastPngFileName = sFileName;
+				// Apply ICC color profile if present (works for both animated and static PNG,
+				// resolving the previous aPNG vs. ICC mutual-exclusion limitation).
+				if (CSettingsProvider::This().UseEmbeddedColorProfiles() && !bUseCachedDecoder) {
+					size_t nICCSize = 0;
+					void* pICCProfile = PngReader::GetICCProfile(pBuffer, nFileSize, &nICCSize);
+					if (pICCProfile != NULL && nICCSize > 0) {
+						ICCProfileTransform* transform = (ICCProfileTransform*)ICCProfileTransform::CreateTransform(
+							pICCProfile, nICCSize, ICCProfileTransform::FORMAT_BGRA);
+						if (transform != NULL) {
+							int nRowSize = Helpers::DoPadding(nWidth * 4, 4);
+							ICCProfileTransform::DoTransform(transform, pPixelData, pPixelData, nWidth, nHeight, nRowSize);
+							ICCProfileTransform::DeleteTransform(transform);
+						}
+						free(pICCProfile);
+					}
+				}
 				// Multiply alpha value into each AABBGGRR pixel
 				uint32* pImage32 = (uint32*)pPixelData;
 				for (int i = 0; i < nWidth * nHeight; i++)
@@ -1089,6 +1170,165 @@ void CImageLoadThread::ProcessReadWICRequest(CRequest* request) {
 	} catch (...) {
 		// fatal error in WIC
 	}
+}
+
+void CImageLoadThread::ProcessReadSVGRequest(CRequest* request) {
+	try {
+		int nWidth, nHeight, nBPP;
+		bool bOutOfMemory = false;
+		void* pPixelData = SvgReader::ReadImage(nWidth, nHeight, nBPP, bOutOfMemory, request->FileName);
+		request->OutOfMemory = bOutOfMemory;
+		if (pPixelData != NULL) {
+			// Blend alpha over background color
+			uint32* pImage32 = (uint32*)pPixelData;
+			for (int i = 0; i < nWidth * nHeight; i++)
+				*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+			request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, NULL, 4, 0, IF_SVG, false, 0, 1, 0);
+		}
+	} catch (...) {
+		delete request->Image;
+		request->Image = NULL;
+		request->ExceptionError = true;
+	}
+}
+
+void CImageLoadThread::ProcessReadDDSRequest(CRequest* request) {
+	HANDLE hFile = ::CreateFile(request->FileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	if (hFile == INVALID_HANDLE_VALUE) return;
+	char* pBuffer = NULL;
+	try {
+		unsigned int nNumBytesRead;
+		long long nFileSize = Helpers::GetFileSize(hFile);
+		if (nFileSize > MAX_DDS_FILE_SIZE) { request->OutOfMemory = true; ::CloseHandle(hFile); return; }
+		pBuffer = new(std::nothrow) char[nFileSize];
+		if (pBuffer == NULL) { request->OutOfMemory = true; ::CloseHandle(hFile); return; }
+		if (::ReadFile(hFile, pBuffer, nFileSize, (LPDWORD)&nNumBytesRead, NULL) && nNumBytesRead == nFileSize) {
+			int nWidth, nHeight, nBPP;
+			void* pPixelData = DdsReader::ReadImage(nWidth, nHeight, nBPP, request->OutOfMemory, pBuffer, nFileSize);
+			if (pPixelData != NULL) {
+				uint32* pImage32 = (uint32*)pPixelData;
+				for (int i = 0; i < nWidth * nHeight; i++)
+					*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, NULL, 4, 0, IF_DDS, false, 0, 1, 0);
+			}
+		}
+	} catch (...) {
+		delete request->Image;
+		request->Image = NULL;
+		request->ExceptionError = true;
+	}
+	::CloseHandle(hFile);
+	delete[] pBuffer;
+}
+
+void CImageLoadThread::ProcessReadJP2Request(CRequest* request) {
+	HANDLE hFile = ::CreateFile(request->FileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	if (hFile == INVALID_HANDLE_VALUE) return;
+	char* pBuffer = NULL;
+	try {
+		unsigned int nNumBytesRead;
+		long long nFileSize = Helpers::GetFileSize(hFile);
+		if (nFileSize > MAX_JP2_FILE_SIZE) { request->OutOfMemory = true; ::CloseHandle(hFile); return; }
+		pBuffer = new(std::nothrow) char[nFileSize];
+		if (pBuffer == NULL) { request->OutOfMemory = true; ::CloseHandle(hFile); return; }
+		if (::ReadFile(hFile, pBuffer, nFileSize, (LPDWORD)&nNumBytesRead, NULL) && nNumBytesRead == nFileSize) {
+			int nWidth, nHeight, nBPP;
+			void* pPixelData = Jp2Reader::ReadImage(nWidth, nHeight, nBPP, request->OutOfMemory, pBuffer, nFileSize);
+			if (pPixelData != NULL) {
+				uint32* pImage32 = (uint32*)pPixelData;
+				for (int i = 0; i < nWidth * nHeight; i++)
+					*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, NULL, 4, 0, IF_JP2, false, 0, 1, 0);
+			}
+		}
+	} catch (...) {
+		delete request->Image;
+		request->Image = NULL;
+		request->ExceptionError = true;
+	}
+	::CloseHandle(hFile);
+	delete[] pBuffer;
+}
+
+void CImageLoadThread::ProcessReadEXRRequest(CRequest* request) {
+	HANDLE hFile = ::CreateFile(request->FileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	if (hFile == INVALID_HANDLE_VALUE) return;
+	char* pBuffer = NULL;
+	try {
+		unsigned int nNumBytesRead;
+		long long nFileSize = Helpers::GetFileSize(hFile);
+		if (nFileSize > MAX_EXR_FILE_SIZE) { request->OutOfMemory = true; ::CloseHandle(hFile); return; }
+		pBuffer = new(std::nothrow) char[nFileSize];
+		if (pBuffer == NULL) { request->OutOfMemory = true; ::CloseHandle(hFile); return; }
+		if (::ReadFile(hFile, pBuffer, nFileSize, (LPDWORD)&nNumBytesRead, NULL) && nNumBytesRead == nFileSize) {
+			int nWidth, nHeight, nBPP;
+			void* pPixelData = ExrReader::ReadImage(nWidth, nHeight, nBPP, request->OutOfMemory, pBuffer, nFileSize);
+			if (pPixelData != NULL) {
+				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, NULL, 4, 0, IF_EXR, false, 0, 1, 0);
+			}
+		}
+	} catch (...) {
+		delete request->Image;
+		request->Image = NULL;
+		request->ExceptionError = true;
+	}
+	::CloseHandle(hFile);
+	delete[] pBuffer;
+}
+
+void CImageLoadThread::ProcessReadHDRRequest(CRequest* request) {
+	HANDLE hFile = ::CreateFile(request->FileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	if (hFile == INVALID_HANDLE_VALUE) return;
+	char* pBuffer = NULL;
+	try {
+		unsigned int nNumBytesRead;
+		long long nFileSize = Helpers::GetFileSize(hFile);
+		if (nFileSize > MAX_HDR_FILE_SIZE) { request->OutOfMemory = true; ::CloseHandle(hFile); return; }
+		pBuffer = new(std::nothrow) char[nFileSize];
+		if (pBuffer == NULL) { request->OutOfMemory = true; ::CloseHandle(hFile); return; }
+		if (::ReadFile(hFile, pBuffer, nFileSize, (LPDWORD)&nNumBytesRead, NULL) && nNumBytesRead == nFileSize) {
+			int nWidth, nHeight, nBPP;
+			void* pPixelData = HdrReader::ReadImage(nWidth, nHeight, nBPP, request->OutOfMemory, pBuffer, nFileSize);
+			if (pPixelData != NULL) {
+				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, NULL, 4, 0, IF_HDR, false, 0, 1, 0);
+			}
+		}
+	} catch (...) {
+		delete request->Image;
+		request->Image = NULL;
+		request->ExceptionError = true;
+	}
+	::CloseHandle(hFile);
+	delete[] pBuffer;
+}
+
+void CImageLoadThread::ProcessReadJXRRequest(CRequest* request) {
+	HANDLE hFile = ::CreateFile(request->FileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	if (hFile == INVALID_HANDLE_VALUE) return;
+	char* pBuffer = NULL;
+	try {
+		unsigned int nNumBytesRead;
+		long long nFileSize = Helpers::GetFileSize(hFile);
+		if (nFileSize > MAX_JXR_FILE_SIZE) { request->OutOfMemory = true; ::CloseHandle(hFile); return; }
+		pBuffer = new(std::nothrow) char[nFileSize];
+		if (pBuffer == NULL) { request->OutOfMemory = true; ::CloseHandle(hFile); return; }
+		if (::ReadFile(hFile, pBuffer, nFileSize, (LPDWORD)&nNumBytesRead, NULL) && nNumBytesRead == nFileSize) {
+			int nWidth, nHeight, nBPP;
+			void* pPixelData = JxrReader::ReadImage(nWidth, nHeight, nBPP, request->OutOfMemory, pBuffer, nFileSize);
+			if (pPixelData != NULL) {
+				uint32* pImage32 = (uint32*)pPixelData;
+				for (int i = 0; i < nWidth * nHeight; i++)
+					*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, NULL, 4, 0, IF_JXR, false, 0, 1, 0);
+			}
+		}
+	} catch (...) {
+		delete request->Image;
+		request->Image = NULL;
+		request->ExceptionError = true;
+	}
+	::CloseHandle(hFile);
+	delete[] pBuffer;
 }
 
 bool CImageLoadThread::ProcessImageAfterLoad(CRequest * request) {

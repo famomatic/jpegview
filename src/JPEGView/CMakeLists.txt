@@ -85,6 +85,12 @@ add_executable(JPEGView WIN32
     XMMImage.cpp
     ZoomNavigator.cpp
     ZoomNavigatorCtl.cpp
+    SVGWrapper.cpp
+    DDSWrapper.cpp
+    JP2Wrapper.cpp
+    EXRWrapper.cpp
+    HDRWrapper.cpp
+    JXRWrapper.cpp
     CrtDbgStub.cpp
     res/JPEGView.ico)
 
@@ -95,7 +101,9 @@ target_precompile_headers(JPEGView PRIVATE stdafx.h)
 target_include_directories(JPEGView PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${WTL_INCLUDE_DIR}"
-    "${CMAKE_SOURCE_DIR}/extras/third_party/qoi")
+    "${CMAKE_SOURCE_DIR}/extras/third_party/qoi"
+    "${CMAKE_SOURCE_DIR}/extras/third_party/nanosvg/src"
+    "${CMAKE_SOURCE_DIR}/extras/third_party/nanosvg/src")
 
 set_target_properties(JPEGView PROPERTIES
     OUTPUT_NAME "JPEGView"
@@ -140,6 +148,16 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         ${JPEGVIEW_DEP_TARGETS}
         Dbghelp
         gdiplus)
+
+    # JXR (jxrlib) uses a FindJXR module rather than a config target.
+    target_include_directories(JPEGView PRIVATE ${JXR_INCLUDE_DIRS})
+    target_link_libraries(JPEGView PRIVATE ${JXR_LIBRARIES})
+
+    # OpenEXR 3.x headers live under include/OpenEXR and use angle-bracket
+    # includes (e.g. <IlmThreadConfig.h>) that expect that dir on the path.
+    target_include_directories(JPEGView PRIVATE
+        "${_vcpkg_installed}/${VCPKG_TARGET_TRIPLET}/include/OpenEXR"
+        "${_vcpkg_installed}/${VCPKG_TARGET_TRIPLET}/include/Imath")
 
     # legacy_stdio_definitions provides __iob_func (used by dcraw_mod.cpp's
     # fprintf to stderr) on VS2022 for both x86 and x64; the old __iob_func

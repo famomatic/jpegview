@@ -284,6 +284,44 @@ static bool SaveQOI(LPCTSTR sFileName, void* pData, int nWidth, int nHeight) {
 	return true;
 }
 
+// pData must point to 24 bit BGR DIB
+static bool SaveTGA(LPCTSTR sFileName, void* pData, int nWidth, int nHeight) {
+	FILE* fptr = _tfopen(sFileName, _T("wb"));
+	if (fptr == NULL) {
+		return false;
+	}
+	bool bSuccess = false;
+	try {
+		// Write uncompressed 24-bit BGR TGA (Targa) file.
+		// Header: 18 bytes, image type 2 (uncompressed truecolor), 24bpp.
+		unsigned char header[18] = { 0 };
+		header[2] = 2;        // image type: uncompressed truecolor
+		header[12] = nWidth & 0xFF;
+		header[13] = (nWidth >> 8) & 0xFF;
+		header[14] = nHeight & 0xFF;
+		header[15] = (nHeight >> 8) & 0xFF;
+		header[16] = 24;      // bits per pixel
+		header[17] = 0x20;    // origin: top-left
+		if (fwrite(header, 1, 18, fptr) == 18) {
+			int nRowPadded = Helpers::DoPadding(nWidth * 3, 4);
+			// TGA stores BGR bottom-up by default; with origin bit 0x20 set, it's top-down.
+			// We write rows top-down to match the DIB orientation.
+			for (int y = 0; y < nHeight; y++) {
+				unsigned char* pRow = (unsigned char*)pData + y * nRowPadded;
+				if (fwrite(pRow, 1, nWidth * 3, fptr) != (size_t)(nWidth * 3)) break;
+			}
+			bSuccess = true;
+		}
+	} catch (...) {
+	}
+	fclose(fptr);
+	if (!bSuccess) {
+		_tunlink(sFileName);
+		return false;
+	}
+	return true;
+}
+
 // Copied from MS sample
 static int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
    UINT  num = 0;          // number of image encoders
@@ -327,6 +365,12 @@ static bool SaveGDIPlus(LPCTSTR sFileName, EImageFormat eFileFormat, void* pData
 			break;
 		case IF_TIFF:
 			sMIMEType = L"image/tiff";
+			break;
+		case IF_GIF:
+			sMIMEType = L"image/gif";
+			break;
+		case IF_ICO:
+			sMIMEType = L"image/x-icon";
 			break;
 	}
 
@@ -398,6 +442,8 @@ bool CSaveImage::SaveImage(LPCTSTR sFileName, CJPEGImage * pImage, const CImageP
 			bSuccess = SaveWebP(sFileName, pDIB24bpp, imageSize.cx, imageSize.cy, bUseLosslessWEBP);
 		} else if (eFileFormat == IF_QOI) {
 			bSuccess = SaveQOI(sFileName, pDIB24bpp, imageSize.cx, imageSize.cy);
+		} else if (eFileFormat == IF_TGA) {
+			bSuccess = SaveTGA(sFileName, pDIB24bpp, imageSize.cx, imageSize.cy);
 		} else {
 			bSuccess = SaveGDIPlus(sFileName, eFileFormat, pDIB24bpp, imageSize.cx, imageSize.cy);
 		}

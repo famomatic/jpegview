@@ -46,6 +46,13 @@ enum EImageFormat {
 	IF_CameraRAW,
 	IF_JPEG_Embedded, // JPEG embedded in another file, e.g. camera raw
 	IF_TGA,
+	IF_SVG,        // Scalable Vector Graphics (NanoSVG)
+	IF_ICO,        // Windows icon / cursor (GDI+)
+	IF_DDS,        // DirectDraw Surface (game textures)
+	IF_JP2,        // JPEG 2000 (OpenJPEG)
+	IF_EXR,        // OpenEXR (HDR)
+	IF_HDR,        // Radiance RGBE HDR
+	IF_JXR,        // JPEG XR (libjxr)
 	IF_Unknown
 };
 
