@@ -37,6 +37,9 @@
 #include "RawMetadata.h"
 #include "ProcessingThreadPool.h"
 #include "PaintMemDCMgr.h"
+#include "ProcessingPresets.h"
+#include "JPEGLosslessTransform.h"
+#include "ThumbnailCache.h"
 #include "PanelMgr.h"
 #include "ZoomNavigatorCtl.h"
 #include "ImageProcPanelCtl.h"
@@ -66,7 +69,8 @@ static const double CONTRAST_INC = 0.03; // increment for contrast value
 static const double SHARPEN_INC = 0.05; // increment for sharpen value
 static const double LDC_INC = 0.1; // increment for LDC (lighten shadows and darken highlights)
 static const int NUM_THREADS = 1; // number of readahead threads to use
-static const int READ_AHEAD_BUFFERS = 2; // number of readahead buffers to use (NUM_THREADS+1 is a good choice)
+static const int READ_AHEAD_BUFFERS_DEFAULT = 2; // default readahead buffers, overridden by INI ReadAheadBuffers
+// Resolved to CSettingsProvider::This().ReadAheadBuffers() at provider construction.
 static const int ZOOM_TIMEOUT = 200; // refinement done after this many milliseconds
 static const int ZOOM_TEXT_TIMEOUT = 1000; // zoom label disappears after this many milliseconds
 
@@ -241,6 +245,8 @@ CMainDlg::CMainDlg(bool bForceFullScreen) {
 	m_nCapturedX = m_nCapturedY = 0;
 	m_nMouseX = m_nMouseY = 0;
 	m_bAutoFitWndToImage = sp.DefaultWndToImage();
+	m_bPixelProbeEnabled = false;
+	for (int i = 0; i < 10; i++) { m_bookmarks[i].valid = false; m_bookmarks[i].zoom = -1.0; m_bookmarks[i].offset = CPoint(0, 0); }
 	m_bFullScreenMode = bForceFullScreen || (sp.ShowFullScreen() && !sp.AutoFullScreen());
 	m_bLockPaint = true;
 	m_nCurrentTimeout = 0;
@@ -383,7 +389,7 @@ LRESULT CMainDlg::OnInitDialog(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam
 	CProcessingThreadPool::This().CreateThreadPoolThreads();
 
 	// create JPEG provider and request first image - do no processing yet if not in fullscreen mode (as we do not know the size yet)
-	m_pJPEGProvider = new CJPEGProvider(m_hWnd, NUM_THREADS, READ_AHEAD_BUFFERS);	
+	m_pJPEGProvider = new CJPEGProvider(m_hWnd, NUM_THREADS, CSettingsProvider::This().ReadAheadBuffers());	
 	m_pCurrentImage = m_pJPEGProvider->RequestImage(m_pFileList, CJPEGProvider::FORWARD,
 		m_pFileList->Current(), 0, CreateProcessParams(!m_bFullScreenMode), m_bOutOfMemoryLastImage, m_bExceptionErrorLastImage);
 	if (m_pCurrentImage != NULL && m_pCurrentImage->IsAnimation()) {
@@ -626,6 +632,9 @@ void CMainDlg::PaintToDC(CDC& dc) {
 
 		DisplayFileName(imageProcessingArea, dc, m_dRealizedZoom);
 		DisplayErrors(pCurrentImage, m_clientRect, dc);
+		if (m_bPixelProbeEnabled) {
+			DrawPixelProbe(dc, pCurrentImage);
+		}
 	}
 }
 
@@ -923,11 +932,15 @@ LRESULT CMainDlg::OnMouseMove(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM lParam, B
 	} else if (!m_pPanelMgr->OnMouseMove(m_nMouseX, m_nMouseY)) {
 		m_pZoomNavigatorCtl->OnMouseMove(nOldMouseX, nOldMouseY);
 	}
-	if (!m_bPanMouseCursorSet && !bMouseCursorSet) {
-		if (!m_pPanelMgr->MouseCursorCaptured()) {
-			::SetCursor(::LoadCursor(NULL, IDC_ARROW));
-		}
+if (!m_bPanMouseCursorSet && !bMouseCursorSet) {
+	if (!m_pPanelMgr->MouseCursorCaptured()) {
+		::SetCursor(::LoadCursor(NULL, IDC_ARROW));
 	}
+}
+// Refresh the pixel probe overlay as the cursor moves.
+if (m_bPixelProbeEnabled && (m_nMouseX != nOldMouseX || m_nMouseY != nOldMouseY)) {
+	this->Invalidate(FALSE);
+}
 
 	return 0;
 }
@@ -1261,6 +1274,22 @@ LRESULT CMainDlg::OnContextMenu(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM lParam,
 		::DeleteMenu(hMenuTrackPopup, 0, MF_BYPOSITION);
 		::DeleteMenu(hMenuTrackPopup, 0, MF_BYPOSITION);
 	}
+
+	// Append a "Tools" submenu with the new image-processing helpers.
+	HMENU hMenuTools = ::CreatePopupMenu();
+	::AppendMenu(hMenuTools, MF_STRING, IDM_PRESET_SAVE, CNLS::GetString(_T("Save processing preset...")));
+	::AppendMenu(hMenuTools, MF_STRING, IDM_PRESET_LOAD, CNLS::GetString(_T("Load processing preset...")));
+	::AppendMenu(hMenuTools, MF_STRING, IDM_PRESET_DELETE, CNLS::GetString(_T("Delete processing preset...")));
+	::AppendMenu(hMenuTools, MF_SEPARATOR, 0, NULL);
+	::AppendMenu(hMenuTools, MF_STRING, IDM_SET_BOOKMARK, CNLS::GetString(_T("Set view bookmark...")));
+	::AppendMenu(hMenuTools, MF_STRING, IDM_GOTO_BOOKMARK, CNLS::GetString(_T("Go to bookmark...")));
+	::AppendMenu(hMenuTools, MF_STRING, IDM_CLEAR_BOOKMARKS, CNLS::GetString(_T("Clear bookmarks")));
+	::AppendMenu(hMenuTools, MF_SEPARATOR, 0, NULL);
+	::AppendMenu(hMenuTools, MF_STRING, IDM_TOGGLE_PIXEL_PROBE, CNLS::GetString(_T("Toggle pixel probe")));
+	::AppendMenu(hMenuTools, MF_STRING, IDM_OPTIMIZE_LOSSLESS, CNLS::GetString(_T("Optimize JPEG losslessly")));
+	if (m_bPixelProbeEnabled) ::CheckMenuItem(hMenuTools, IDM_TOGGLE_PIXEL_PROBE, MF_CHECKED);
+	::AppendMenu(hMenuTrackPopup, MF_SEPARATOR, 0, NULL);
+	::AppendMenu(hMenuTrackPopup, MF_STRING | MF_POPUP, (UINT_PTR)hMenuTools, CNLS::GetString(_T("Tools")));
 
 	int nMenuCmd = TrackPopupMenu(CPoint(nX, nY), hMenuTrackPopup);
 	ExecuteCommand(nMenuCmd);
@@ -1714,6 +1743,30 @@ void CMainDlg::ExecuteCommand(int nCommand) {
 			break;
 		case IDM_SAVE_PARAMETERS:
 			SaveParameters();
+			break;
+		case IDM_PRESET_SAVE:
+			SavePreset();
+			break;
+		case IDM_PRESET_LOAD:
+			LoadPreset();
+			break;
+		case IDM_PRESET_DELETE:
+			DeletePreset();
+			break;
+		case IDM_TOGGLE_PIXEL_PROBE:
+			TogglePixelProbe();
+			break;
+		case IDM_SET_BOOKMARK:
+			SetBookmark();
+			break;
+		case IDM_GOTO_BOOKMARK:
+			GotoBookmark();
+			break;
+		case IDM_CLEAR_BOOKMARKS:
+			ClearBookmarks();
+			break;
+		case IDM_OPTIMIZE_LOSSLESS:
+			OptimizeLosslessJPEG();
 			break;
 		case IDM_FIT_TO_SCREEN:
 		case IDM_FIT_TO_SCREEN_NO_ENLARGE:
@@ -3100,11 +3153,243 @@ CRect CMainDlg::ScreenToDIB(const CSize& sizeDIB, const CRect& rect) {
 	int nOffsetY = (sizeDIB.cy - m_clientRect.Height())/2;
 
 	CRect rectDIB = CRect(rect.left + nOffsetX, rect.top + nOffsetY, rect.right + nOffsetX, rect.bottom + nOffsetY);
-	
+
 	CRect rectClipped;
 	rectClipped.IntersectRect(rectDIB, CRect(0, 0, sizeDIB.cx, sizeDIB.cy));
 	return rectClipped;
 }
+
+/////////////////////////////////////////////////////////////////////////////
+// Named processing presets
+/////////////////////////////////////////////////////////////////////////////
+
+// Minimal modeless-style modal text-input dialog built without a .rc resource,
+// used to enter a preset name. Returns the entered text or empty string on cancel.
+static CString sPresetInputText;
+static INT_PTR CALLBACK PresetInputProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM) {
+	switch (msg) {
+	case WM_INITDIALOG: {
+		RECT rc = { 0, 0, 280, 90 };
+		::AdjustWindowRectEx(&rc, DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE, 0);
+		::SetWindowPos(hDlg, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER);
+		::SetWindowText(hDlg, CNLS::GetString(_T("Enter preset name")));
+		::CreateWindowEx(0, _T("STATIC"), CNLS::GetString(_T("Name:")), WS_CHILD | WS_VISIBLE, 8, 10, 40, 16, hDlg, NULL, NULL, NULL);
+		HWND hEdit = ::CreateWindowEx(WS_EX_CLIENTEDGE, _T("EDIT"), sPresetInputText, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 52, 8, 216, 22, hDlg, (HMENU)101, NULL, NULL);
+		::CreateWindowEx(0, _T("BUTTON"), CNLS::GetString(_T("OK")), WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 110, 48, 75, 24, hDlg, (HMENU)IDOK, NULL, NULL);
+		::CreateWindowEx(0, _T("BUTTON"), CNLS::GetString(_T("Cancel")), WS_CHILD | WS_VISIBLE, 193, 48, 75, 24, hDlg, (HMENU)IDCANCEL, NULL, NULL);
+		::SetFocus(hEdit);
+		return FALSE; // we set focus ourselves
+	}
+	case WM_COMMAND:
+		if (LOWORD(wParam) == IDOK) {
+			TCHAR sz[256] = _T("");
+			::GetDlgItemText(hDlg, 101, sz, 256);
+			sPresetInputText = sz;
+			::EndDialog(hDlg, IDOK);
+		} else if (LOWORD(wParam) == IDCANCEL) {
+			::EndDialog(hDlg, IDCANCEL);
+		}
+		return TRUE;
+	}
+	return FALSE;
+}
+
+static CString PromptForPresetName(LPCTSTR sDefault) {
+	sPresetInputText = (sDefault != NULL) ? sDefault : _T("");
+	INT_PTR nRet = ::DialogBox(NULL, NULL, NULL, PresetInputProc);
+	if (nRet == IDOK) return sPresetInputText;
+	return _T("");
+}
+
+void CMainDlg::SavePreset() {
+	if (m_bMovieMode || m_pCurrentImage == NULL) return;
+
+	CString sName = PromptForPresetName(_T(""));
+	sName.Trim();
+	if (sName.IsEmpty()) return;
+
+	EProcessingFlags eFlags = CreateDefaultProcessingFlags(m_bKeepParams);
+	CRotationParams rot(m_pCurrentImage->GetInitialRotation(), 0.0, RFLAG_None);
+	CProcessingPresets::This().SetPreset(sName, *m_pImageProcParams, eFlags, rot);
+}
+
+void CMainDlg::LoadPreset() {
+	if (m_bMovieMode || m_pCurrentImage == NULL) return;
+
+	CString sName = PromptForPresetName(_T(""));
+	sName.Trim();
+	if (sName.IsEmpty()) return;
+
+	CImageProcessingParams params;
+	EProcessingFlags eFlags = PFLAG_None;
+	CRotationParams rot(0);
+	if (CProcessingPresets::This().GetPreset(sName, params, eFlags, rot)) {
+		*m_pImageProcParams = params;
+		m_bAutoContrast = GetProcessingFlag(eFlags, PFLAG_AutoContrast);
+		m_bLDC = GetProcessingFlag(eFlags, PFLAG_LDC);
+		m_bHQResampling = GetProcessingFlag(eFlags, PFLAG_HighQualityResampling);
+		this->Invalidate(FALSE);
+	}
+}
+
+void CMainDlg::DeletePreset() {
+	CString sName = PromptForPresetName(_T(""));
+	sName.Trim();
+	if (sName.IsEmpty()) return;
+	CProcessingPresets::This().DeletePreset(sName);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// Pixel/color probe overlay
+/////////////////////////////////////////////////////////////////////////////
+
+void CMainDlg::TogglePixelProbe() {
+	m_bPixelProbeEnabled = !m_bPixelProbeEnabled;
+	this->Invalidate(FALSE);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// View bookmarks (zoom + offset)
+/////////////////////////////////////////////////////////////////////////////
+
+// Slot index is derived from the current digit key; called with nSlot in [0..9].
+static int GetBookmarkSlotFromUser(LPCTSTR sPrompt) {
+	// Reuse the text-input dialog to ask for a single digit 1..9.
+	CString sName = PromptForPresetName(_T("1"));
+	sName.Trim();
+	if (sName.GetLength() == 1 && sName[0] >= _T('1') && sName[0] <= _T('9')) {
+		return sName[0] - _T('1'); // slots 0..8
+	}
+	return -1;
+}
+
+void CMainDlg::SetBookmark() {
+	int nSlot = GetBookmarkSlotFromUser(CNLS::GetString(_T("Bookmark slot (1-9):")));
+	if (nSlot < 0) return;
+	m_bookmarks[nSlot].valid = true;
+	m_bookmarks[nSlot].zoom = m_dZoom;
+	m_bookmarks[nSlot].offset = m_offsets;
+}
+
+void CMainDlg::GotoBookmark() {
+	int nSlot = GetBookmarkSlotFromUser(CNLS::GetString(_T("Bookmark slot (1-9):")));
+	if (nSlot < 0 || !m_bookmarks[nSlot].valid) return;
+	if (m_bookmarks[nSlot].zoom > 0) {
+		m_dZoom = m_bookmarks[nSlot].zoom;
+		m_bUserZoom = true;
+	}
+	m_offsets = m_bookmarks[nSlot].offset;
+	m_bUserPan = true;
+	this->Invalidate(FALSE);
+}
+
+void CMainDlg::ClearBookmarks() {
+	for (int i = 0; i < 10; i++) {
+		m_bookmarks[i].valid = false;
+	}
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// Lossless JPEG optimization
+/////////////////////////////////////////////////////////////////////////////
+
+void CMainDlg::OptimizeLosslessJPEG() {
+	if (m_pCurrentImage == NULL || m_pFileList == NULL) return;
+	LPCTSTR sFile = m_pFileList->Current();
+	if (sFile == NULL || *sFile == 0) return;
+
+	// Only meaningful for JPEG files.
+	CString sFileStr(sFile);
+	CString sExt = (sFileStr.GetLength() >= 4) ? CString(sFileStr.Mid(sFileStr.GetLength() - 4)) : CString(_T(""));
+	if (sExt.CompareNoCase(_T(".jpg")) != 0 && sExt.CompareNoCase(_T(".jpeg")) != 0) {
+		this->MessageBox(CNLS::GetString(_T("Lossless optimization is only available for JPEG files.")),
+			CNLS::GetString(_T("Optimize JPEG")), MB_OK | MB_ICONINFORMATION);
+		return;
+	}
+
+	CString sMsg = CNLS::GetString(_T("Optimize this JPEG losslessly? File size may shrink with no quality loss."));
+	if (IDYES != this->MessageBox(sMsg, CNLS::GetString(_T("Optimize JPEG")), MB_YESNO | MB_ICONQUESTION)) {
+		return;
+	}
+
+	// A lossless rotate by 0 is effectively a re-encode with optimization;
+	// however the TJPEG wrapper only exposes 90/180/270/mirror. We perform a
+	// rotate 180 twice (identity) which triggers a clean re-encode. This is a
+	// pragmatic stand-in until a dedicated Optimize-only path is added.
+	CString sTemp = CString(sFile) + _T(".jvopt.tmp");
+	CJPEGLosslessTransform::EResult r =
+		CJPEGLosslessTransform::PerformTransformation(sFile, sTemp, CJPEGLosslessTransform::Rotate180, true);
+	if (r != CJPEGLosslessTransform::Success) {
+		::DeleteFile(sTemp);
+		this->MessageBox(CNLS::GetString(_T("Optimization failed.")),
+			CNLS::GetString(_T("Optimize JPEG")), MB_OK | MB_ICONERROR);
+		return;
+	}
+	r = CJPEGLosslessTransform::PerformTransformation(sTemp, sFile, CJPEGLosslessTransform::Rotate180, true);
+	::DeleteFile(sTemp);
+	if (r != CJPEGLosslessTransform::Success) {
+		this->MessageBox(CNLS::GetString(_T("Optimization failed.")),
+			CNLS::GetString(_T("Optimize JPEG")), MB_OK | MB_ICONERROR);
+		return;
+	}
+	// Invalidate any cached thumbnail for this file since the pixels changed.
+	CThumbnailCache::This().Invalidate(sFile);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// Pixel/color probe overlay drawing
+/////////////////////////////////////////////////////////////////////////////
+
+void CMainDlg::DrawPixelProbe(CDC& dc, CJPEGImage* pImage) {
+	if (pImage == NULL) return;
+	void* pDIB = pImage->DIBPixelsLastProcessed(true);
+	if (pDIB == NULL) return;
+	int nDIBW = pImage->DIBWidth();
+	int nDIBH = pImage->DIBHeight();
+	if (nDIBW <= 0 || nDIBH <= 0) return;
+
+	// Mouse position in client coords -> DIB coords.
+	int nOffsetX = (nDIBW - m_clientRect.Width()) / 2;
+	int nOffsetY = (nDIBH - m_clientRect.Height()) / 2;
+	int nDIBX = m_nMouseX + nOffsetX;
+	int nDIBY = m_nMouseY + nOffsetY;
+	if (nDIBX < 0 || nDIBY < 0 || nDIBX >= nDIBW || nDIBY >= nDIBH) return;
+
+	// 32bpp BGRA DIB, bottom-up: row 0 is the bottom of the image.
+	uint8* p = (uint8*)pDIB + (size_t)(nDIBH - 1 - nDIBY) * nDIBW * 4 + (size_t)nDIBX * 4;
+	int b = p[0], g = p[1], r = p[2];
+
+	// Convert RGB to HSV.
+	double dmax = max(r, max(g, b));
+	double dmin = min(r, min(g, b));
+	double d = dmax - dmin;
+	double h = 0.0;
+	if (d > 0) {
+		if (dmax == r) h = 60.0 * fmod((g - b) / d, 6.0);
+		else if (dmax == g) h = 60.0 * ((b - r) / d + 2.0);
+		else h = 60.0 * ((r - g) / d + 4.0);
+		if (h < 0) h += 360.0;
+	}
+	double s = (dmax == 0) ? 0.0 : (d / dmax) * 100.0;
+	double v = (dmax / 255.0) * 100.0;
+
+	CString sText;
+	sText.Format(_T("R:%d G:%d B:%d  H:%.0f S:%.0f%% V:%.0f%%"), r, g, b, h, s, v);
+
+	// Draw a small box with the readout in the bottom-left corner.
+	CRect rect(8, m_clientRect.Height() - 28, 8 + 360, m_clientRect.Height() - 6);
+	HFONT hFont = (HFONT)::GetStockObject(DEFAULT_GUI_FONT);
+	HFONT hOldFont = (HFONT)::SelectObject(dc, hFont);
+	dc.SetBkMode(OPAQUE);
+	dc.SetBkColor(RGB(0, 0, 0));
+	dc.SetTextColor(RGB(255, 255, 255));
+	dc.ExtTextOut(rect.left + 4, rect.top + 4, 0, &rect, sText, NULL);
+	::SelectObject(dc, hOldFont);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// Named processing presets
+/////////////////////////////////////////////////////////////////////////////
 
 bool CMainDlg::ScreenToImage(float & fX, float & fY) {
 	if (m_pCurrentImage == NULL) {

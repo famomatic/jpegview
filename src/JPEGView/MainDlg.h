@@ -286,6 +286,11 @@ private:
 	int m_nCapturedX, m_nCapturedY;
 	int m_nMouseX, m_nMouseY;
 	bool m_bDefaultSelectionMode;
+	// On-screen pixel/color probe overlay (RGB/HSV readout at cursor).
+	bool m_bPixelProbeEnabled;
+	// View bookmarks: stored (zoom, offset) pairs addressable by slot index.
+	struct ViewBookmark { bool valid; double zoom; CPoint offset; };
+	ViewBookmark m_bookmarks[10];
 	bool m_bShowFileName;
 	bool m_bFullScreenMode;
 	bool m_bAutoFitWndToImage;
@@ -361,6 +366,15 @@ private:
 	void InitParametersForNewImage();
 	void ExchangeProcessingParams();
 	void SaveParameters();
+	void SavePreset();
+	void LoadPreset();
+	void DeletePreset();
+	void TogglePixelProbe();
+	void SetBookmark();
+	void GotoBookmark();
+	void ClearBookmarks();
+	void OptimizeLosslessJPEG();
+	void DrawPixelProbe(CDC& dc, CJPEGImage* pImage);
 	void AfterNewImageLoaded(bool bSynchronize, bool bAfterStartup, bool noAdjustWindow);
 	CRect ScreenToDIB(const CSize& sizeDIB, const CRect& rect);
 	void ToggleMonitor();

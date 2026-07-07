@@ -57,6 +57,7 @@ add_executable(JPEGView WIN32
     PrintDlg.cpp
     PrintImage.cpp
     ProcessingThreadPool.cpp
+    ProcessingPresets.cpp
     PSDWrapper.cpp
     QOIWrapper.cpp
     RAWWrapper.cpp

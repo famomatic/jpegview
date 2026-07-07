@@ -47,6 +47,9 @@ public:
 	LPCTSTR Language() { return m_sLanguage; }
 	Helpers::CPUType AlgorithmImplementation() { return m_eCPUAlgorithm; }
 	int NumberOfCoresToUse() { return m_nNumCores; }
+	// Number of read-ahead buffers for prefetching upcoming images. Higher
+	// values keep more images pre-decoded in memory for instant navigation.
+	int ReadAheadBuffers() { return m_nReadAheadBuffers; }
 	// Persistent on-disk thumbnail cache (stored under %TEMP%\JPEGView\thumbcache\).
 	bool ThumbnailCacheEnabled() { return m_bThumbnailCacheEnabled; }
 	int  ThumbnailCacheMaxMB() { return m_nThumbnailCacheMaxMB; }
@@ -222,6 +225,7 @@ private:
 	CString m_sLanguage;
 	Helpers::CPUType m_eCPUAlgorithm;
 	int m_nNumCores;
+	int m_nReadAheadBuffers;
 	bool m_bThumbnailCacheEnabled;
 	int m_nThumbnailCacheMaxMB;
 	EFilterType m_eDownsamplingFilter;

@@ -145,6 +145,9 @@ CSettingsProvider::CSettingsProvider(void) {
 		m_nNumCores = Helpers::NumCoresPerPhysicalProc();
 		if (m_nNumCores < 1) m_nNumCores = 1;
 	}
+	// Number of read-ahead images decoded in advance for instant navigation.
+	// Default 2 matches the original hardcoded value; raise for more prefetch.
+	m_nReadAheadBuffers = GetInt(_T("ReadAheadBuffers"), 2, 1, 8);
 
 	CString sDownSampling = GetString(_T("DownSamplingFilter"), _T("BestQuality"));
 	// Persistent on-disk thumbnail cache under %TEMP%\JPEGView\thumbcache\.

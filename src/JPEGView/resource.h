@@ -337,6 +337,22 @@
 // in the crop menu
 #define SUBMENU_POS_CROPMODE 3
 
+// --- Processing presets (named, INI-backed) ----------------------------
+#define IDM_PRESET_SAVE          17000  // :KeyMap: save current processing params as a named preset
+#define IDM_PRESET_LOAD          17001  // :KeyMap: apply a named preset to the current image
+#define IDM_PRESET_DELETE        17002  // :KeyMap: delete a named preset
+
+// --- Pixel/color probe overlay -----------------------------------------
+#define IDM_TOGGLE_PIXEL_PROBE   17100  // :KeyMap: toggle the on-screen RGB/HSV pixel probe
+
+// --- View bookmarks (position + zoom) ----------------------------------
+#define IDM_SET_BOOKMARK         17200  // :KeyMap: store current view (zoom+offset) in a bookmark slot
+#define IDM_GOTO_BOOKMARK        17201  // :KeyMap: jump to a stored bookmark slot
+#define IDM_CLEAR_BOOKMARKS      17202  // :KeyMap: clear all stored bookmarks
+
+// --- Lossless JPEG optimize --------------------------------------------
+#define IDM_OPTIMIZE_LOSSLESS    17300  // :KeyMap: losslessly optimize current JPEG (jpegtran)
+
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
