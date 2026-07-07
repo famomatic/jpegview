@@ -12,7 +12,8 @@
       "generator": "Visual Studio 17 2022",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_GENERATOR_INSTANCE": "C:/Program Files/Microsoft Visual Studio/2022/Community"
       }
     },
     {
@@ -37,7 +38,8 @@
       "architecture": "Win32",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x86-windows-static-jpegview",
-        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets"
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-triplets"
       }
     },
     {
@@ -46,7 +48,8 @@
       "architecture": "Win32",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x86-windows-static-jpegview",
-        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets"
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-triplets"
       }
     }
   ],
