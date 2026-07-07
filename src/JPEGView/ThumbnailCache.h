@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Helpers.h"
+#include <mutex>
 
 // Forward declaration to avoid heavy include in header
 class CJPEGImage;
@@ -65,4 +66,8 @@ private:
 	mutable CString m_sCacheDir;
 	bool m_bEnabled;
 	__int64 m_nMaxBytes;
+	// Guards all cache file I/O and m_sCacheDir lazy init: CreateThumbnailImage()
+	// can be reached from both the UI thread and the read-ahead loader thread,
+	// so Put/TryGet/Invalidate/EnforceSizeLimit must be serialized.
+	mutable std::mutex m_csLock;
 };

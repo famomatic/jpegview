@@ -59,6 +59,7 @@ static CString SectionFor(LPCTSTR sName) {
 
 bool CProcessingPresets::GetPreset(LPCTSTR sName, CImageProcessingParams& params, EProcessingFlags& eFlags, CRotationParams& rotation) {
 	if (sName == NULL || *sName == 0) return false;
+	std::lock_guard<std::mutex> lock(m_csLock);
 	CString sSection = SectionFor(sName);
 	LPCTSTR sPath = GetIniPath();
 
@@ -99,6 +100,7 @@ static void WriteDouble(LPCTSTR sSection, LPCTSTR sKey, double dValue, LPCTSTR s
 
 bool CProcessingPresets::SetPreset(LPCTSTR sName, const CImageProcessingParams& params, EProcessingFlags eFlags, const CRotationParams& rotation) {
 	if (sName == NULL || *sName == 0) return false;
+	std::lock_guard<std::mutex> lock(m_csLock);
 	CString sSection = SectionFor(sName);
 	LPCTSTR sPath = GetIniPath();
 
@@ -145,6 +147,7 @@ bool CProcessingPresets::SetPreset(LPCTSTR sName, const CImageProcessingParams& 
 
 bool CProcessingPresets::DeletePreset(LPCTSTR sName) {
 	if (sName == NULL || *sName == 0) return false;
+	std::lock_guard<std::mutex> lock(m_csLock);
 	CString sSection = SectionFor(sName);
 	LPCTSTR sPath = GetIniPath();
 	BOOL bOk = ::WritePrivateProfileString(sSection, NULL, NULL, sPath);

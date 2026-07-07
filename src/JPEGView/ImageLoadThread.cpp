@@ -1303,8 +1303,13 @@ bool CImageLoadThread::ProcessImageAfterLoad(CRequest * request) {
 	if (request->Image != NULL && !request->FileName.IsEmpty()) {
 		request->Image->SetSourceFile(request->FileName);
 	}
-// set process parameters depending on filename
-request->Image->SetFileDependentProcessParams(request->FileName, &(request->ProcessParams));
+	// A failed/short-circuited load can leave Image NULL; guard the rest of
+	// the post-load processing against a null dereference.
+	if (request->Image == NULL) {
+		return false;
+	}
+	// set process parameters depending on filename
+	request->Image->SetFileDependentProcessParams(request->FileName, &(request->ProcessParams));
 
 	// First do rotation, this maybe modifies the width and height
 	if (!request->Image->VerifyRotation(CRotationParams(request->ProcessParams.RotationParams, request->ProcessParams.RotationParams.Rotation + request->ProcessParams.UserRotation))) {

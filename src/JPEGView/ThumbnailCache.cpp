@@ -8,6 +8,7 @@
 #include <MaxImageDef.h>
 #include <vector>
 #include <algorithm>
+#include <mutex>
 
 // FNV-1a 64-bit hash over a byte buffer, then truncated to 64 bits and
 // rendered as 16 hex chars. Stable across builds and good enough as a
@@ -63,6 +64,12 @@ CString CThumbnailCache::MakeKey(LPCTSTR sFilePath, __int64 nFileSize, const FIL
 }
 
 LPCTSTR CThumbnailCache::CacheDir() const {
+	// Lazily resolve + create the cache directory exactly once. This is
+	// intentionally independent of m_csLock so that methods already holding
+	// the lock can call CacheDir() without deadlocking on a non-reentrant
+	// CCriticalSection.
+	static std::once_flag s_once;
+	std::call_once(s_once, [this]() {
 	if (m_sCacheDir.IsEmpty()) {
 		TCHAR szTemp[MAX_PATH];
 		DWORD nLen = ::GetTempPath(MAX_PATH, szTemp);
@@ -85,6 +92,7 @@ LPCTSTR CThumbnailCache::CacheDir() const {
 			}
 		}
 	}
+	});
 	return m_sCacheDir;
 }
 
@@ -244,6 +252,9 @@ bool CThumbnailCache::TryGet(LPCTSTR sFilePath, __int64 nFileSize, const FILETIM
 	nOrigWidth = 0;
 	nOrigHeight = 0;
 	if (!m_bEnabled || sFilePath == NULL || *sFilePath == 0) return false;
+	// Serialize against concurrent Put/Invalidate/EnforceSizeLimit from the
+	// read-ahead loader thread.
+	std::lock_guard<std::mutex> lock(m_csLock);
 
 	CString sKey = MakeKey(sFilePath, nFileSize, lastModTime);
 	CString sCacheFile;
@@ -300,18 +311,21 @@ bool CThumbnailCache::TryGet(LPCTSTR sFilePath, __int64 nFileSize, const FILETIM
 	// delete[] on m_pOrigPixels, but we used malloc). Re-alloc with new[] to
 	// match the class ownership model and free the malloc'd buffer.
 	size_t nBytes = (size_t)nThumbW * nThumbH * 4;
-	uint8* pOwned = new uint8[nBytes];
+	uint8* pOwned = new(std::nothrow) uint8[nBytes];
+	if (pOwned == NULL) {
+		free(pPixels);
+		return false;
+	}
 	memcpy(pOwned, pPixels, nBytes);
 	free(pPixels);
 
 	ppThumbnail = new CJPEGImage(nThumbW, nThumbH, pOwned, NULL, 4, 0,
 		IF_CLIPBOARD, false, 0, 1, 0, NULL, true, NULL);
-	if (ppThumbnail == NULL) {
-		delete[] pOwned;
-		return false;
-	}
 
-	(void)nOrigChannels;
+	// The decoded thumbnail is always 32bpp BGRA (png_set_add_alpha), so the
+	// stored nOrigChannels is informational only. nOrigWidth/nOrigHeight are
+	// returned for the caller but the cache key (path+size+mtime) already
+	// guarantees they match the live image.
 	return true;
 }
 
@@ -319,6 +333,9 @@ void CThumbnailCache::Put(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& 
 	CJPEGImage* pThumbnail, int nOrigWidth, int nOrigHeight) {
 	if (!m_bEnabled || pThumbnail == NULL) return;
 	if (nOrigWidth <= 0 || nOrigHeight <= 0) return;
+	// Hold the lock across encode + write + eviction so a concurrent TryGet
+	// for the same key never sees a half-written temp file.
+	std::lock_guard<std::mutex> lock(m_csLock);
 
 	int nThumbW = pThumbnail->OrigWidth();
 	int nThumbH = pThumbnail->OrigHeight();
@@ -403,6 +420,7 @@ void CThumbnailCache::Put(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& 
 
 void CThumbnailCache::Invalidate(LPCTSTR sFilePath) {
 	if (!m_bEnabled || sFilePath == NULL) return;
+	std::lock_guard<std::mutex> lock(m_csLock);
 
 	// We don't have the exact size/mtime here, so try all variants is not
 	// feasible; instead derive the key from the current file stat. Callers
@@ -429,6 +447,9 @@ void CThumbnailCache::Invalidate(LPCTSTR sFilePath) {
 
 void CThumbnailCache::EnforceSizeLimit() {
 	if (m_nMaxBytes <= 0) return;
+	// Caller (Put) already holds m_csLock; this method is private and only
+	// called from there, so it does not re-acquire the lock (CCriticalSection
+	// is non-reentrant and would deadlock).
 
 	CString sDir(CacheDir());
 	CString sPattern = sDir + _T("*.png");

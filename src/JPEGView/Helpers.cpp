@@ -7,6 +7,7 @@
 #include "FileList.h"
 #include "SettingsProvider.h"
 #include <math.h>
+#include <mutex>
 
 namespace Helpers {
 
@@ -178,57 +179,62 @@ void GetZoomParameters(float & fZoom, CPoint & offsets, CSize imageSize, CSize w
 
 CPUType ProbeCPU(void) {
 	static CPUType cpuType = CPU_Unknown;
-	if (cpuType != CPU_Unknown) {
-		return cpuType;
-	}
+	// The static local guards against repeated work, but the read-check-write
+	// pattern above was racy: two threads could both see CPU_Unknown and run
+	// the SEH probing concurrently, racing on the static. Serialize the one-time
+	// probe with std::call_once so the result is published exactly once.
+	static std::once_flag s_once;
+	std::call_once(s_once, [&]() {
+		// Structured exception handling is mandatory, try/catch(...) does not catch such severe stuff.
+		// Uses compiler intrinsics so the same code path works on x86 and x64 (inline _asm is not
+		// supported by the MSVC x64 compiler).
+		cpuType = CPU_Generic;
+		__try {
+			int abcd[4];
+			__cpuid(abcd, 1);
+			uint32 FeatureMask = abcd[3]; // edx
 
-	// Structured exception handling is mandatory, try/catch(...) does not catch such severe stuff.
-	// Uses compiler intrinsics so the same code path works on x86 and x64 (inline _asm is not
-	// supported by the MSVC x64 compiler).
-	cpuType = CPU_Generic;
-	__try {
-		int abcd[4];
-		__cpuid(abcd, 1);
-		uint32 FeatureMask = abcd[3]; // edx
-
-		if ((FeatureMask & (1 << 26)) != 0) {
-			// SSE2 available - check for AVX(2) support on top of it
-			if ((abcd[2] & 0x18000000) == 0x18000000 && // AVX and OSXSAVE bits
-				(abcd[2] & 0x04000000) != 0) {          // XSAVE bit, support for xgetbv
-				// check if operating system supports AVX(2)
-				unsigned long long xcr0 = _xgetbv(0);
-				if ((xcr0 & 6) == 6) {
-					// check if AVX2 instructions are supported
-					int abcd7[4];
-					__cpuidex(abcd7, 7, 0);
-					const int AVX2BITMASK = 1 << 5;
-					cpuType = (abcd7[1] & AVX2BITMASK) ? CPU_AVX2 : CPU_SSE;
+			if ((FeatureMask & (1 << 26)) != 0) {
+				// SSE2 available - check for AVX(2) support on top of it.
+				// Require the AVX, OSXSAVE and XSAVE feature bits together before
+				// touching _xgetbv: calling _xgetbv without XSAVE support faults.
+				if ((abcd[2] & 0x18000000) == 0x18000000 && // AVX and OSXSAVE bits
+					(abcd[2] & 0x04000000) != 0) {          // XSAVE bit, support for xgetbv
+					// check if operating system supports AVX(2)
+					unsigned long long xcr0 = _xgetbv(0);
+					if ((xcr0 & 6) == 6) {
+						// check if AVX2 instructions are supported
+						int abcd7[4];
+						__cpuidex(abcd7, 7, 0);
+						const int AVX2BITMASK = 1 << 5;
+						cpuType = (abcd7[1] & AVX2BITMASK) ? CPU_AVX2 : CPU_SSE;
+					} else {
+						cpuType = CPU_SSE; // OS does not support AVX, only use SSE
+					}
 				} else {
-					cpuType = CPU_SSE; // OS does not support AVX, only use SSE
+					cpuType = CPU_SSE;
 				}
+			} else if ((FeatureMask & (1 << 25)) != 0) {
+				cpuType = CPU_MMX; // yes, we need SSE as the pmax/pmin stuff was coming with the PIII and SSE
 			} else {
-				cpuType = CPU_SSE;
-			}
-		} else if ((FeatureMask & (1 << 25)) != 0) {
-			cpuType = CPU_MMX; // yes, we need SSE as the pmax/pmin stuff was coming with the PIII and SSE
-		} else {
-			// last chance - check if AMD and if yes, test for AMD MMX extensions that also implement pmax/pmin
-			__cpuid(abcd, 0);
-			bool isAmd = (abcd[1] == 0x68747541); // ebx == 'Auth' (AMD processor?)
-			if (isAmd) {
-				__cpuid(abcd, 0x80000001);
-				if ((abcd[3] & (1 << 22)) != 0) {
-					cpuType = CPU_MMX; // extended AMD MMX instructions
+				// last chance - check if AMD and if yes, test for AMD MMX extensions that also implement pmax/pmin
+				__cpuid(abcd, 0);
+				bool isAmd = (abcd[1] == 0x68747541); // ebx == 'Auth' (AMD processor?)
+				if (isAmd) {
+					__cpuid(abcd, 0x80000001);
+					if ((abcd[3] & (1 << 22)) != 0) {
+						cpuType = CPU_MMX; // extended AMD MMX instructions
+					}
+				}
+				if (cpuType == CPU_Unknown) {
+					cpuType = CPU_Generic;
 				}
 			}
-			if (cpuType == CPU_Unknown) {
-				cpuType = CPU_Generic;
-			}
+		} __except ( EXCEPTION_EXECUTE_HANDLER ) {
+			// even CPUID is not supported, use generic code
+			cpuType = CPU_Generic;
 		}
-	} __except ( EXCEPTION_EXECUTE_HANDLER ) {
-		// even CPUID is not supported, use generic code
-		return cpuType;
-	}
+	});
 	return cpuType;
 }
 

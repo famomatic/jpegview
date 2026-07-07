@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ProcessParams.h"
+#include <mutex>
 #include <list>
 
 // Named image-processing presets, persisted to an INI file next to the
@@ -16,7 +17,10 @@ public:
 	static CProcessingPresets& This();
 
 	// Returns the names of all stored presets, in storage order.
-	const std::list<CString>& GetPresetNames() const { return m_names; }
+	const std::list<CString> GetPresetNames() const {
+		std::lock_guard<std::mutex> lock(m_csLock);
+		return m_names;
+	}
 
 	// Loads the processing parameters + flags + rotation for the named preset.
 	// Returns false if the preset does not exist.
@@ -43,4 +47,7 @@ private:
 
 	mutable CString m_sIniPath;
 	std::list<CString> m_names;
+	// Guards m_names and the INI file writes; presets can be touched from the
+	// UI thread while a background load touches the image processing params.
+	mutable std::mutex m_csLock;
 };

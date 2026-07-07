@@ -69,8 +69,6 @@ static const double CONTRAST_INC = 0.03; // increment for contrast value
 static const double SHARPEN_INC = 0.05; // increment for sharpen value
 static const double LDC_INC = 0.1; // increment for LDC (lighten shadows and darken highlights)
 static const int NUM_THREADS = 1; // number of readahead threads to use
-static const int READ_AHEAD_BUFFERS_DEFAULT = 2; // default readahead buffers, overridden by INI ReadAheadBuffers
-// Resolved to CSettingsProvider::This().ReadAheadBuffers() at provider construction.
 static const int ZOOM_TIMEOUT = 200; // refinement done after this many milliseconds
 static const int ZOOM_TEXT_TIMEOUT = 1000; // zoom label disappears after this many milliseconds
 
@@ -246,7 +244,7 @@ CMainDlg::CMainDlg(bool bForceFullScreen) {
 	m_nMouseX = m_nMouseY = 0;
 	m_bAutoFitWndToImage = sp.DefaultWndToImage();
 	m_bPixelProbeEnabled = false;
-	for (int i = 0; i < 10; i++) { m_bookmarks[i].valid = false; m_bookmarks[i].zoom = -1.0; m_bookmarks[i].offset = CPoint(0, 0); }
+	for (int i = 0; i < NUM_BOOKMARKSLOTS; i++) { m_bookmarks[i].valid = false; m_bookmarks[i].zoom = -1.0; m_bookmarks[i].offset = CPoint(0, 0); }
 	m_bFullScreenMode = bForceFullScreen || (sp.ShowFullScreen() && !sp.AutoFullScreen());
 	m_bLockPaint = true;
 	m_nCurrentTimeout = 0;
@@ -966,15 +964,18 @@ LRESULT CMainDlg::OnMouseMove(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM lParam, B
 	} else if (!m_pPanelMgr->OnMouseMove(m_nMouseX, m_nMouseY)) {
 		m_pZoomNavigatorCtl->OnMouseMove(nOldMouseX, nOldMouseY);
 	}
-if (!m_bPanMouseCursorSet && !bMouseCursorSet) {
-	if (!m_pPanelMgr->MouseCursorCaptured()) {
-		::SetCursor(::LoadCursor(NULL, IDC_ARROW));
+	if (!m_bPanMouseCursorSet && !bMouseCursorSet) {
+		if (!m_pPanelMgr->MouseCursorCaptured()) {
+			::SetCursor(::LoadCursor(NULL, IDC_ARROW));
+		}
 	}
-}
-// Refresh the pixel probe overlay as the cursor moves.
-if (m_bPixelProbeEnabled && (m_nMouseX != nOldMouseX || m_nMouseY != nOldMouseY)) {
-	this->Invalidate(FALSE);
-}
+	// Refresh the pixel probe overlay as the cursor moves. Only invalidate the
+	// small probe band at the bottom-left rather than the whole client area,
+	// so dragging the mouse does not trigger a full repaint each move.
+	if (m_bPixelProbeEnabled && (m_nMouseX != nOldMouseX || m_nMouseY != nOldMouseY)) {
+		CRect rectProbe(8, m_clientRect.Height() - 28, 8 + 360, m_clientRect.Height() - 6);
+		this->InvalidateRect(&rectProbe, FALSE);
+	}
 
 	return 0;
 }
@@ -3227,28 +3228,41 @@ CRect CMainDlg::ScreenToDIB(const CSize& sizeDIB, const CRect& rect) {
 // Named processing presets
 /////////////////////////////////////////////////////////////////////////////
 
-// Minimal modeless-style modal text-input dialog built without a .rc resource,
-// used to enter a preset name. Returns the entered text or empty string on cancel.
-static CString sPresetInputText;
-static INT_PTR CALLBACK PresetInputProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM) {
+// Minimal modal text-input dialog built without a .rc resource, used to enter a
+// preset/bookmark name. Returns the entered text or empty string on cancel.
+// The dialog is created from an in-memory DLGTEMPLATE (DialogBoxIndirectParam)
+// because there is no .rc resource for it; the controls are created in
+// WM_INITDIALOG. The current text and the prompt title are carried through the
+// LPARAM so the dialog is reentrant and thread-safe (no global state).
+struct PresetInputCtx {
+	LPCTSTR sDefault;
+	LPCTSTR sTitle;
+	CString* pResult;
+};
+
+static INT_PTR CALLBACK PresetInputProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+	PresetInputCtx* ctx = reinterpret_cast<PresetInputCtx*>(lParam);
 	switch (msg) {
 	case WM_INITDIALOG: {
+		// Remember the context for WM_COMMAND (lParam is not passed there).
+		::SetWindowLongPtr(hDlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ctx));
 		RECT rc = { 0, 0, 280, 90 };
 		::AdjustWindowRectEx(&rc, DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE, 0);
 		::SetWindowPos(hDlg, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER);
-		::SetWindowText(hDlg, CNLS::GetString(_T("Enter preset name")));
+		::SetWindowText(hDlg, CNLS::GetString(ctx->sTitle));
 		::CreateWindowEx(0, _T("STATIC"), CNLS::GetString(_T("Name:")), WS_CHILD | WS_VISIBLE, 8, 10, 40, 16, hDlg, NULL, NULL, NULL);
-		HWND hEdit = ::CreateWindowEx(WS_EX_CLIENTEDGE, _T("EDIT"), sPresetInputText, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 52, 8, 216, 22, hDlg, (HMENU)101, NULL, NULL);
+		HWND hEdit = ::CreateWindowEx(WS_EX_CLIENTEDGE, _T("EDIT"), ctx->sDefault ? ctx->sDefault : _T(""), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 52, 8, 216, 22, hDlg, (HMENU)101, NULL, NULL);
 		::CreateWindowEx(0, _T("BUTTON"), CNLS::GetString(_T("OK")), WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 110, 48, 75, 24, hDlg, (HMENU)IDOK, NULL, NULL);
 		::CreateWindowEx(0, _T("BUTTON"), CNLS::GetString(_T("Cancel")), WS_CHILD | WS_VISIBLE, 193, 48, 75, 24, hDlg, (HMENU)IDCANCEL, NULL, NULL);
 		::SetFocus(hEdit);
 		return FALSE; // we set focus ourselves
 	}
 	case WM_COMMAND:
+		ctx = reinterpret_cast<PresetInputCtx*>(::GetWindowLongPtr(hDlg, GWLP_USERDATA));
 		if (LOWORD(wParam) == IDOK) {
 			TCHAR sz[256] = _T("");
 			::GetDlgItemText(hDlg, 101, sz, 256);
-			sPresetInputText = sz;
+			if (ctx && ctx->pResult) *(ctx->pResult) = sz;
 			::EndDialog(hDlg, IDOK);
 		} else if (LOWORD(wParam) == IDCANCEL) {
 			::EndDialog(hDlg, IDCANCEL);
@@ -3258,17 +3272,52 @@ static INT_PTR CALLBACK PresetInputProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 	return FALSE;
 }
 
-static CString PromptForPresetName(LPCTSTR sDefault) {
-	sPresetInputText = (sDefault != NULL) ? sDefault : _T("");
-	INT_PTR nRet = ::DialogBox(NULL, NULL, NULL, PresetInputProc);
-	if (nRet == IDOK) return sPresetInputText;
-	return _T("");
+// Builds a minimal in-memory dialog template (empty client area; controls are
+// created in WM_INITDIALOG) and runs it modally against the given parent.
+static CString PromptForName(HWND hParent, LPCTSTR sDefault, LPCTSTR sTitleKey) {
+	CString sResult;
+	PresetInputCtx ctx;
+	ctx.sDefault = sDefault ? sDefault : _T("");
+	ctx.sTitle = sTitleKey;
+	ctx.pResult = &sResult;
+
+	// Minimal DLGTEMPLATE: empty client area, controls created in WM_INITDIALOG.
+	// The menu/class/title are encoded as 0x0000 (empty) wide-string entries.
+	#pragma pack(push, 2)
+	struct {
+		DLGTEMPLATE tmpl;
+		WORD menu;   // 0 = no menu
+		WORD cls;    // 0 = default dialog class
+		WORD title;  // 0 = empty (set in WM_INITDIALOG)
+	} dlg = { 0 };
+	#pragma pack(pop)
+	dlg.tmpl.style = DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+	dlg.tmpl.cx = 100;
+	dlg.tmpl.cy = 50;
+
+	::DialogBoxIndirectParam(NULL, reinterpret_cast<LPDLGTEMPLATE>(&dlg), hParent, PresetInputProc, reinterpret_cast<LPARAM>(&ctx));
+	return sResult;
+}
+
+// Convenience wrapper: prompt with the parent window and the preset title.
+static CString PromptForPresetName(HWND hParent, LPCTSTR sDefault) {
+	return PromptForName(hParent, sDefault, _T("Enter preset name"));
+}
+
+// Prompt for a bookmark slot digit, returning a slot index in [0..8] or -1.
+static int GetBookmarkSlotFromUser(HWND hParent, LPCTSTR sTitleKey) {
+	CString sName = PromptForName(hParent, _T("1"), sTitleKey);
+	sName.Trim();
+	if (sName.GetLength() == 1 && sName[0] >= _T('1') && sName[0] <= _T('9')) {
+		return sName[0] - _T('1'); // slots 0..8
+	}
+	return -1;
 }
 
 void CMainDlg::SavePreset() {
 	if (m_bMovieMode || m_pCurrentImage == NULL) return;
 
-	CString sName = PromptForPresetName(_T(""));
+	CString sName = PromptForPresetName(m_hWnd, _T(""));
 	sName.Trim();
 	if (sName.IsEmpty()) return;
 
@@ -3280,7 +3329,7 @@ void CMainDlg::SavePreset() {
 void CMainDlg::LoadPreset() {
 	if (m_bMovieMode || m_pCurrentImage == NULL) return;
 
-	CString sName = PromptForPresetName(_T(""));
+	CString sName = PromptForPresetName(m_hWnd, _T(""));
 	sName.Trim();
 	if (sName.IsEmpty()) return;
 
@@ -3297,7 +3346,7 @@ void CMainDlg::LoadPreset() {
 }
 
 void CMainDlg::DeletePreset() {
-	CString sName = PromptForPresetName(_T(""));
+	CString sName = PromptForPresetName(m_hWnd, _T(""));
 	sName.Trim();
 	if (sName.IsEmpty()) return;
 	CProcessingPresets::This().DeletePreset(sName);
@@ -3315,20 +3364,8 @@ void CMainDlg::TogglePixelProbe() {
 /////////////////////////////////////////////////////////////////////////////
 // View bookmarks (zoom + offset)
 /////////////////////////////////////////////////////////////////////////////
-
-// Slot index is derived from the current digit key; called with nSlot in [0..9].
-static int GetBookmarkSlotFromUser(LPCTSTR sPrompt) {
-	// Reuse the text-input dialog to ask for a single digit 1..9.
-	CString sName = PromptForPresetName(_T("1"));
-	sName.Trim();
-	if (sName.GetLength() == 1 && sName[0] >= _T('1') && sName[0] <= _T('9')) {
-		return sName[0] - _T('1'); // slots 0..8
-	}
-	return -1;
-}
-
 void CMainDlg::SetBookmark() {
-	int nSlot = GetBookmarkSlotFromUser(CNLS::GetString(_T("Bookmark slot (1-9):")));
+	int nSlot = GetBookmarkSlotFromUser(m_hWnd, _T("Bookmark slot (1-9):"));
 	if (nSlot < 0) return;
 	m_bookmarks[nSlot].valid = true;
 	m_bookmarks[nSlot].zoom = m_dZoom;
@@ -3336,7 +3373,7 @@ void CMainDlg::SetBookmark() {
 }
 
 void CMainDlg::GotoBookmark() {
-	int nSlot = GetBookmarkSlotFromUser(CNLS::GetString(_T("Bookmark slot (1-9):")));
+	int nSlot = GetBookmarkSlotFromUser(m_hWnd, _T("Bookmark slot (1-9):"));
 	if (nSlot < 0 || !m_bookmarks[nSlot].valid) return;
 	if (m_bookmarks[nSlot].zoom > 0) {
 		m_dZoom = m_bookmarks[nSlot].zoom;
@@ -3348,7 +3385,7 @@ void CMainDlg::GotoBookmark() {
 }
 
 void CMainDlg::ClearBookmarks() {
-	for (int i = 0; i < 10; i++) {
+	for (int i = 0; i < NUM_BOOKMARKSLOTS; i++) {
 		m_bookmarks[i].valid = false;
 	}
 }
@@ -3376,22 +3413,60 @@ void CMainDlg::OptimizeLosslessJPEG() {
 		return;
 	}
 
-	// A lossless rotate by 0 is effectively a re-encode with optimization;
-	// however the TJPEG wrapper only exposes 90/180/270/mirror. We perform a
-	// rotate 180 twice (identity) which triggers a clean re-encode. This is a
-	// pragmatic stand-in until a dedicated Optimize-only path is added.
-	CString sTemp = CString(sFile) + _T(".jvopt.tmp");
+	// The TJPEG wrapper only exposes 90/180/270/mirror transforms; a lossless
+	// optimize is simulated by rotate-180 twice (identity re-encode), which
+	// triggers Huffman optimization on the re-encoded stream.
+	//
+	// To avoid corrupting the original on a mid-way failure, both passes write
+	// to temp files and the original is only replaced after both succeed. A
+	// backup of the original is kept until the final move completes so it can be
+	// restored if the last rename fails.
+	CString sTemp1 = CString(sFile) + _T(".jvopt1.tmp");
+	CString sTemp2 = CString(sFile) + _T(".jvopt2.tmp");
+	CString sBackup = CString(sFile) + _T(".jvbak.tmp");
+
+	// Make sure no stale temp files from a previous aborted run interfere.
+	::DeleteFile(sTemp1);
+	::DeleteFile(sTemp2);
+	::DeleteFile(sBackup);
+
 	CJPEGLosslessTransform::EResult r =
-		CJPEGLosslessTransform::PerformTransformation(sFile, sTemp, CJPEGLosslessTransform::Rotate180, true);
+		CJPEGLosslessTransform::PerformTransformation(sFile, sTemp1, CJPEGLosslessTransform::Rotate180, true);
 	if (r != CJPEGLosslessTransform::Success) {
-		::DeleteFile(sTemp);
+		::DeleteFile(sTemp1);
 		this->MessageBox(CNLS::GetString(_T("Optimization failed.")),
 			CNLS::GetString(_T("Optimize JPEG")), MB_OK | MB_ICONERROR);
 		return;
 	}
-	r = CJPEGLosslessTransform::PerformTransformation(sTemp, sFile, CJPEGLosslessTransform::Rotate180, true);
-	::DeleteFile(sTemp);
+	r = CJPEGLosslessTransform::PerformTransformation(sTemp1, sTemp2, CJPEGLosslessTransform::Rotate180, true);
+	::DeleteFile(sTemp1);
 	if (r != CJPEGLosslessTransform::Success) {
+		::DeleteFile(sTemp2);
+		this->MessageBox(CNLS::GetString(_T("Optimization failed.")),
+			CNLS::GetString(_T("Optimize JPEG")), MB_OK | MB_ICONERROR);
+		return;
+	}
+
+	// Atomically replace the original: back it up, move the optimized file in,
+	// then drop the backup. If the final move fails, restore the backup.
+	::SetFileAttributes(sFile, FILE_ATTRIBUTE_NORMAL);
+	BOOL bBackupOk = ::MoveFileEx(sFile, sBackup, MOVEFILE_REPLACE_EXISTING);
+	BOOL bFinalOk = FALSE;
+	if (bBackupOk) {
+		bFinalOk = ::MoveFileEx(sTemp2, sFile, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+		if (!bFinalOk) {
+			// Restore the original from the backup.
+			::MoveFileEx(sBackup, sFile, MOVEFILE_REPLACE_EXISTING);
+		}
+	} else {
+		// Could not back up (e.g. file locked): fall back to a direct replace,
+		// accepting that a failure here leaves no backup.
+		bFinalOk = ::MoveFileEx(sTemp2, sFile, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+	}
+	::DeleteFile(sBackup);
+	::DeleteFile(sTemp2);
+
+	if (!bFinalOk) {
 		this->MessageBox(CNLS::GetString(_T("Optimization failed.")),
 			CNLS::GetString(_T("Optimize JPEG")), MB_OK | MB_ICONERROR);
 		return;
@@ -3412,11 +3487,13 @@ void CMainDlg::DrawPixelProbe(CDC& dc, CJPEGImage* pImage) {
 	int nDIBH = pImage->DIBHeight();
 	if (nDIBW <= 0 || nDIBH <= 0) return;
 
-	// Mouse position in client coords -> DIB coords.
-	int nOffsetX = (nDIBW - m_clientRect.Width()) / 2;
-	int nOffsetY = (nDIBH - m_clientRect.Height()) / 2;
-	int nDIBX = m_nMouseX + nOffsetX;
-	int nDIBY = m_nMouseY + nOffsetY;
+	// Map mouse (client coords) into DIB pixel coords. The DIB is drawn centered
+	// in the client rect plus m_DIBOffsets (the same transform PaintToDC uses via
+	// DrawDIB32bppWithBlackBorders), so the DIB origin in client coords is:
+	int nDibOriginX = (m_clientRect.Width() - nDIBW) / 2 + m_DIBOffsets.x;
+	int nDibOriginY = (m_clientRect.Height() - nDIBH) / 2 + m_DIBOffsets.y;
+	int nDIBX = m_nMouseX - nDibOriginX;
+	int nDIBY = m_nMouseY - nDibOriginY;
 	if (nDIBX < 0 || nDIBY < 0 || nDIBX >= nDIBW || nDIBY >= nDIBH) return;
 
 	// 32bpp BGRA DIB, bottom-up: row 0 is the bottom of the image.

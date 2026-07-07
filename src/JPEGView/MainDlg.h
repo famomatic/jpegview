@@ -290,7 +290,9 @@ private:
 	bool m_bPixelProbeEnabled;
 	// View bookmarks: stored (zoom, offset) pairs addressable by slot index.
 	struct ViewBookmark { bool valid; double zoom; CPoint offset; };
-	ViewBookmark m_bookmarks[10];
+	// Slots 1..9 (index 0..8); '0' is not a valid slot.
+	static const int NUM_BOOKMARKSLOTS = 9;
+	ViewBookmark m_bookmarks[NUM_BOOKMARKSLOTS];
 	bool m_bShowFileName;
 	bool m_bFullScreenMode;
 	bool m_bAutoFitWndToImage;
