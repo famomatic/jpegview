@@ -46,6 +46,9 @@ public:
 
 	// Convert from GDI+ 32 bpp RGBA format to 32 bpp BGRA DIB format
 	static void* ConvertGdiplus32bppRGB(int nWidth, int nHeight, int nStride, const void* pGdiplusPixels);
+	// Convert from GDI+ 32 bpp ARGB format to 32 bpp BGRA DIB format, preserving the alpha channel.
+	// Unlike ConvertGdiplus32bppRGB the alpha byte is kept as-is instead of being forced to 0xFF.
+	static void* ConvertGdiplus32bppARGB(int nWidth, int nHeight, int nStride, const void* pGdiplusPixels);
 
 	// Copy rectangular pixel block from source to target 32 bpp bitmap. The target bitmap is allocated
 	// if the 'pTarget' parameter is NULL. Note that size of source and target rect must match.
@@ -146,6 +149,16 @@ public:
 	// Returns a 32 bpp BGRA DIB of size 'clippedTargetSize'
 	static void* PointSample(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize, 
 		CSize sourceSize, const void* pPixels, int nChannels);
+
+	// Restores the alpha channel of an already resampled 32 bpp BGRA DIB by point-sampling the alpha from the
+	// original 4-channel source. The RGB values are left untouched. Areas outside the source image get alpha 0
+	// (fully transparent) so the background shows through after compositing.
+	// pResampledDIB: 32 bpp BGRA DIB of size clippedTargetSize whose alpha channel will be overwritten in-place.
+	// sourceSize: Size of the original image (pSourcePixels).
+	// pSourcePixels: Original 4-channel (32 bpp) ARGB pixels.
+	// Returns true on success, false if parameters are invalid.
+	static bool RestoreAlphaChannel(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
+		CSize sourceSize, const void* pSourcePixels, void* pResampledDIB);
 
 	// Rotate 32 or 24 bpp BGR(A) image and resample using point sampling (i.e. no interpolation). Rotation is around image center.
 	// Notice that the A channel is kept unchanged for 32 bpp images.

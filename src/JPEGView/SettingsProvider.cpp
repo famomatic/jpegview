@@ -231,8 +231,18 @@ CSettingsProvider::CSettingsProvider(void) {
 		m_bExplicitWindowRect = true;
 	}
 
-	m_colorBackground = GetColor(_T("BackgroundColor"), 0);
-	m_colorGUI = GetColor(_T("GUIColor"), RGB(243, 242, 231));
+ 	m_colorBackground = GetColor(_T("BackgroundColor"), 0);
+ 
+ 	// Background mode for transparent image compositing: "Black", "White" or "Checkerboard".
+ 	// Defaults to Black to preserve the historical look.
+ 	CString sBackgroundMode = GetString(_T("BackgroundMode"), _T("Black"));
+ 	if (sBackgroundMode.CompareNoCase(_T("White")) == 0)
+ 		m_eBackgroundMode = Helpers::BGM_White;
+ 	else if (sBackgroundMode.CompareNoCase(_T("Checkerboard")) == 0)
+ 		m_eBackgroundMode = Helpers::BGM_Checkerboard;
+ 	else
+ 		m_eBackgroundMode = Helpers::BGM_Black;
+ 	m_colorGUI = GetColor(_T("GUIColor"), RGB(243, 242, 231));
 	m_colorHighlight = GetColor(_T("HighlightColor"), RGB(255, 205, 0));
 	m_colorSelected = GetColor(_T("SelectionColor"), RGB(255, 205, 0));
 	m_colorSlider = GetColor(_T("SliderColor"), RGB(255, 0, 80));

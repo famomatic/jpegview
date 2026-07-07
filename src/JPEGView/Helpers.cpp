@@ -987,4 +987,40 @@ int GetWindowsVersion() {
 	return osvi.dwMajorVersion * 100 + osvi.dwMinorVersion;
 }
 
+// Composites a 32 bpp ARGB DIB onto the selected background mode. Transparent pixels are blended with
+// the background (solid black/white or a 16x16 checkerboard pattern), opaque pixels are left untouched.
+// The checkerboard is positioned by screen-space coordinates (nScreenX, nScreenY) of the DIB origin so
+// the pattern stays stable when the image is panned. Returns true if any compositing was performed.
+bool CompositeDIBOnBackground(void* pDIBPixels, int nWidth, int nHeight, EBackgroundMode eMode, int nScreenX, int nScreenY) {
+	if (pDIBPixels == NULL || nWidth <= 0 || nHeight <= 0) {
+		return false;
+	}
+
+	uint32* pPixels = (uint32*)pDIBPixels;
+	const int nCount = nWidth * nHeight;
+
+	// Fast scan: skip the (common) fully-opaque case where compositing is a no-op.
+	bool bHasTransparency = false;
+	for (int i = 0; i < nCount; i++) {
+		if ((pPixels[i] & 0xFF000000) != 0xFF000000) {
+			bHasTransparency = true;
+			break;
+		}
+	}
+	if (!bHasTransparency) {
+		return false;
+	}
+
+	// Composite per pixel. The checkerboard cell index is derived from absolute screen coordinates so
+	// panning does not make the pattern swim relative to the window.
+	for (int y = 0; y < nHeight; y++) {
+		int nAbsY = nScreenY + y;
+		uint32* pRow = pPixels + y * nWidth;
+		for (int x = 0; x < nWidth; x++) {
+			int nAbsX = nScreenX + x;
+			pRow[x] = CompositePixelOnBackground(pRow[x], eMode, nAbsX, nAbsY);
+		}
+	}
+	return true;
+}
 }

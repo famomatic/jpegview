@@ -35,6 +35,10 @@ static bool IsAlphaChannelValid(int width, int height, uint32* pImageData)
 
 CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundColor, bool& bOutOfMemory) {
 
+	// backgroundColor is retained in the signature for ABI compatibility but no longer used:
+	// transparency is preserved and composited at render time.
+	(void)backgroundColor;
+
 	bOutOfMemory = false;
 
 	WORD width = 0, height = 0;			// The dimensions of the image
@@ -348,10 +352,7 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 		uint32* pImage32 = (uint32*)pImageData;
 		if (IsAlphaChannelValid(width, height, (uint32*)pImageData))
 		{
-			for (int i = 0; i < width*height; i++)
-			{
-				*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, backgroundColor | ALPHA_OPAQUE);
-			}
+			// Alpha channel is valid - preserve it. Background is composited at render time.
 		}
 		else
 		{

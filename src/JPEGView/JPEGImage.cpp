@@ -72,14 +72,29 @@ CJPEGImage::CJPEGImage(int nWidth, int nHeight, void* pPixels, void* pEXIFData, 
 	if (nChannels == 3 || nChannels == 4) {
 		m_pOrigPixels = pPixels;
 		m_nOriginalChannels = nChannels;
+		// Detect a non-trivial alpha channel: only 4-channel images may carry transparency.
+		m_bHasAlpha = false;
+		if (nChannels == 4 && pPixels != NULL) {
+			const uint32* pPix = (const uint32*)pPixels;
+			int nCount = nWidth * nHeight;
+			for (int i = 0; i < nCount; i++) {
+				if ((pPix[i] & 0xFF000000) != 0xFF000000) {
+					m_bHasAlpha = true;
+					break;
+				}
+			}
+		}
 	} else if (nChannels == 1) {
 		m_pOrigPixels = CBasicProcessing::Convert1To4Channels(nWidth, nHeight, pPixels);
 		delete[] pPixels;
 		m_nOriginalChannels = 4;
+		// Single-channel grayscale has no alpha.
+		m_bHasAlpha = false;
 	} else {
 		assert(false);
 		m_pOrigPixels = NULL;
 		m_nOriginalChannels = 0;
+		m_bHasAlpha = false;
 	}
 
 	if (pEXIFData != NULL) {
@@ -608,32 +623,49 @@ void* CJPEGImage::Resample(CSize fullTargetSize, CSize clippingSize, CPoint targ
 
 	if (GetProcessingFlag(eProcFlags, PFLAG_HighQualityResampling) && 
 		!(eResizeType == NoResize && (filter == Filter_Downsampling_Best_Quality || filter == Filter_Downsampling_No_Aliasing))) {
+		void* pResult = NULL;
 		if (SupportsSIMD(cpu)) {
 			if (eResizeType == UpSample) {
-				return CBasicProcessing::SampleUp_HQ_SIMD(fullTargetSize, targetOffset, clippingSize, 
+				pResult = CBasicProcessing::SampleUp_HQ_SIMD(fullTargetSize, targetOffset, clippingSize,
 					CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels, ToSIMDArchitecture(cpu));
 			} else {
-				return CBasicProcessing::SampleDown_HQ_SIMD(fullTargetSize, targetOffset, clippingSize,
+				pResult = CBasicProcessing::SampleDown_HQ_SIMD(fullTargetSize, targetOffset, clippingSize,
 					CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels, dSharpen, filter, ToSIMDArchitecture(cpu));
 			}
 		} else {
 			if (eResizeType == UpSample) {
-				return CBasicProcessing::SampleUp_HQ(fullTargetSize, targetOffset, clippingSize, 
+				pResult = CBasicProcessing::SampleUp_HQ(fullTargetSize, targetOffset, clippingSize,
 					CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels);
 			} else {
-				return CBasicProcessing::SampleDown_HQ(fullTargetSize, targetOffset, clippingSize, 
+				pResult = CBasicProcessing::SampleDown_HQ(fullTargetSize, targetOffset, clippingSize,
 					CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels, dSharpen, filter);
 			}
 		}
+		// High-quality resampling discards alpha (only RGB is filtered). For images with a real alpha
+		// channel, restore the alpha by point-sampling the original so transparency survives resizing.
+		if (pResult != NULL && m_bHasAlpha && m_nOriginalChannels == 4) {
+			CBasicProcessing::RestoreAlphaChannel(fullTargetSize, targetOffset, clippingSize,
+				CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, pResult);
+		}
+		return pResult;
 	} else {
 		bool bHasRotation = fabs(dRotation) > 1e-3;
+		void* pResult;
 		if (bHasRotation) {
-			return CBasicProcessing::PointSampleWithRotation(fullTargetSize, targetOffset, clippingSize, 
+			pResult = CBasicProcessing::PointSampleWithRotation(fullTargetSize, targetOffset, clippingSize,
 				CSize(m_nOrigWidth, m_nOrigHeight), dRotation, m_pOrigPixels, m_nOriginalChannels, CSettingsProvider::This().ColorBackground());
+			// Rotation fills outside-source areas with the back color and forces alpha to 0xFF. For images
+			// with transparency, clear those areas to fully transparent so the background shows through.
+			if (pResult != NULL && m_bHasAlpha && m_nOriginalChannels == 4) {
+				CBasicProcessing::RestoreAlphaChannel(fullTargetSize, targetOffset, clippingSize,
+					CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, pResult);
+			}
 		} else {
-			return CBasicProcessing::PointSample(fullTargetSize, targetOffset, clippingSize, 
+			// PointSample preserves alpha for 4-channel input, so no restoration is needed.
+			pResult = CBasicProcessing::PointSample(fullTargetSize, targetOffset, clippingSize,
 				CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels);
 		}
+		return pResult;
 	}
 }
 
@@ -1263,6 +1295,17 @@ void* CJPEGImage::ApplyCorrectionLUTandLDC(const CImageProcessingParams & imageP
 	}
 	if (m_bShowGrid && pCachedTargetDIB != NULL) {
 		DrawGridLines(pCachedTargetDIB, dibSize);
+	}
+
+	// LUT/LDC/dimming paths force the alpha channel to 0xFF. For images that carry transparency, copy the
+	// alpha back from the (already alpha-restored) resampled source so it survives into rendering.
+	if (m_bHasAlpha && pCachedTargetDIB != NULL && pCachedTargetDIB != pSourceDIB && pSourceDIB != NULL) {
+		uint32* pTgt = (uint32*)pCachedTargetDIB;
+		const uint32* pSrc = (const uint32*)pSourceDIB;
+		int nCount = dibSize.cx * dibSize.cy;
+		for (int i = 0; i < nCount; i++) {
+			pTgt[i] = (pTgt[i] & 0x00FFFFFF) | (pSrc[i] & 0xFF000000);
+		}
 	}
 
 	return pCachedTargetDIB;

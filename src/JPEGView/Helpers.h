@@ -127,7 +127,59 @@ namespace Helpers {
 				(  (uint8)(((b * a + bg_b * one_minus_a) / 255.0) + 0.5)      );
 		}
 }
+	// Background rendering mode for the viewer. Decides how transparent image pixels are
+	// composited onto the background at paint time. Allows live switching black/white/checker.
+	enum EBackgroundMode {
+		BGM_Black,       // solid black background
+		BGM_White,       // solid white background
+		BGM_Checkerboard // checkerboard pattern background
+	};
 
+	// Pixel is ARGB. Composites the pixel onto the background selected by the given background
+	// mode and screen-space position. The checkerboard pattern is tiled based on the absolute
+	// pixel coordinates (nX, nY) so it stays stable on screen. Returns an opaque ARGB pixel
+	// (alpha set to 0xFF) suitable for SetDIBitsToDevice.
+	static inline uint32 CompositePixelOnBackground(uint32 pixel, EBackgroundMode eMode, int nX, int nY)
+	{
+		uint32 alpha = pixel & 0xFF000000;
+		// Fast path: fully opaque pixels are returned unchanged (alpha forced opaque).
+		if (alpha == 0xFF000000)
+			return pixel;
+
+		uint8 a = alpha >> 24;
+		uint8 one_minus_a = 255 - a;
+
+		uint8 bg_r, bg_g, bg_b;
+		if (eMode == BGM_White) {
+			bg_r = bg_g = bg_b = 255;
+		} else if (eMode == BGM_Checkerboard) {
+			// 16x16 px cells, classic light/dark gray checkerboard (Photoshop-like)
+			uint8 v = (((nX >> 4) + (nY >> 4)) & 1) ? 204 : 255;
+			bg_r = bg_g = bg_b = v;
+		} else { // BGM_Black
+			bg_r = bg_g = bg_b = 0;
+		}
+
+		if (a == 0) {
+			return (bg_r << 16) + (bg_g << 8) + (bg_b) + 0xFF000000;
+		}
+
+		uint8 r = (pixel >> 16) & 0xFF;
+		uint8 g = (pixel >>  8) & 0xFF;
+		uint8 b = (pixel      ) & 0xFF;
+
+		return 0xFF000000 +
+			((uint8)(((r * a + bg_r * one_minus_a) / 255.0) + 0.5) << 16) +
+			((uint8)(((g * a + bg_g * one_minus_a) / 255.0) + 0.5) <<  8) +
+			((uint8)(((b * a + bg_b * one_minus_a) / 255.0) + 0.5)      );
+	}
+
+	// Composites a 32 bpp ARGB DIB onto the selected background mode in-place by replacing transparent
+	// pixels with the composited result (alpha forced to 0xFF afterwards). The checkerboard pattern is
+	// tiled based on screen-space coordinates starting at (nScreenX, nScreenY) so it stays stable on screen.
+	// If the DIB has no transparency (all alphas 0xFF) the function is a no-op and returns false.
+	// Returns true if compositing was performed.
+	bool CompositeDIBOnBackground(void* pDIBPixels, int nWidth, int nHeight, EBackgroundMode eMode, int nScreenX, int nScreenY);
 	// Gets the image size to be used when fitting the image to screen, either using 'fit to screen'
 	// or 'fill with crop' method. If 'fill with crop' is used, the bLimitAR can be set to avoid
 	// filling when to less pixels remain visible

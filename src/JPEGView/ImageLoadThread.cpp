@@ -179,28 +179,21 @@ static CJPEGImage* ConvertGDIPlusBitmapToJPEGImage(Gdiplus::Bitmap* pBitmap, int
 	Gdiplus::Graphics* pBmGraphics = NULL;
 	Gdiplus::Bitmap* pBitmapToUse;
 	if (bHasAlphaChannel) {
-		pBmTarget = new Gdiplus::Bitmap(pBitmap->GetWidth(), pBitmap->GetHeight(), PixelFormat32bppRGB);
-		pBmGraphics = new Gdiplus::Graphics(pBmTarget);
-		COLORREF bkColor = CSettingsProvider::This().ColorTransparency();
-		Gdiplus::SolidBrush bkBrush(Gdiplus::Color(GetRValue(bkColor), GetGValue(bkColor), GetBValue(bkColor)));
-		pBmGraphics->FillRectangle(&bkBrush, 0, 0, pBmTarget->GetWidth(), pBmTarget->GetHeight());
-		pBmGraphics->DrawImage(pBitmap, 0, 0, pBmTarget->GetWidth(), pBmTarget->GetHeight());
-		pBitmapToUse = pBmTarget;
-		if (pBmGraphics->GetLastStatus() == Gdiplus::OutOfMemory) {
-			isOutOfMemory = true;
-			delete pBmGraphics; delete pBmTarget;
-			return NULL;
-		}
+		// Preserve the alpha channel instead of flattening it onto a background color.
+		// The background is composited at render time, allowing live background switching.
+		pBitmapToUse = pBitmap;
 	} else {
 		pBitmapToUse = pBitmap;
 	}
-
 	Gdiplus::Rect bmRect(0, 0, pBitmap->GetWidth(), pBitmap->GetHeight());
 	Gdiplus::BitmapData bmData;
-	lastStatus = pBitmapToUse->LockBits(&bmRect, Gdiplus::ImageLockModeRead, PixelFormat32bppRGB, &bmData);
+	lastStatus = pBitmapToUse->LockBits(&bmRect, Gdiplus::ImageLockModeRead,
+		bHasAlphaChannel ? PixelFormat32bppARGB : PixelFormat32bppRGB, &bmData);
 	if (lastStatus == Gdiplus::Ok) {
-		assert(bmData.PixelFormat == PixelFormat32bppRGB);
-		void* pDIB = CBasicProcessing::ConvertGdiplus32bppRGB(bmRect.Width, bmRect.Height, bmData.Stride, bmData.Scan0);
+		// pixel format is now ARGB or RGB depending on alpha channel
+		void* pDIB = bHasAlphaChannel
+			? CBasicProcessing::ConvertGdiplus32bppARGB(bmRect.Width, bmRect.Height, bmData.Stride, bmData.Scan0)
+			: CBasicProcessing::ConvertGdiplus32bppRGB(bmRect.Width, bmRect.Height, bmData.Stride, bmData.Scan0);
 		if (pDIB != NULL) {
 			pJPEGImage = new CJPEGImage(bmRect.Width, bmRect.Height, pDIB, pEXIFData, 4, nJPEGHash, eImageFormat,
 				eImageFormat == IF_GIF && nFrameCount > 1, nFrameIndex, nFrameCount, nFrameTimeMs);
@@ -684,10 +677,7 @@ void CImageLoadThread::ProcessReadWEBPRequest(CRequest * request) {
 			void* pEXIFData;
 			uint8* pPixelData = (uint8*)WebpReaderWriter::ReadImage(nWidth, nHeight, nBPP, bHasAnimation, nFrameCount, nFrameTimeMs, pEXIFData, request->OutOfMemory, pBuffer, nFileSize);
 			if (pPixelData && nBPP == 4) {
-				// Multiply alpha value into each AABBGGRR pixel
-				uint32* pImage32 = (uint32*)pPixelData;
-				for (int i = 0; i < nWidth * nHeight; i++)
-					*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+				// Alpha channel preserved (no flattening); background composited at render time.
 
 				if (bHasAnimation) {
 					m_sLastWebpFileName = sFileName;
@@ -788,10 +778,7 @@ void CImageLoadThread::ProcessReadPNGRequest(CRequest* request) {
 						free(pICCProfile);
 					}
 				}
-				// Multiply alpha value into each AABBGGRR pixel
-				uint32* pImage32 = (uint32*)pPixelData;
-				for (int i = 0; i < nWidth * nHeight; i++)
-					*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+				// Alpha channel preserved (no flattening); background composited at render time.
 
 				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, pEXIFData, 4, 0, IF_PNG, bHasAnimation, request->FrameIndex, nFrameCount, nFrameTimeMs);
 			} else {
@@ -873,10 +860,7 @@ void CImageLoadThread::ProcessReadJXLRequest(CRequest* request) {
 			if (pPixelData != NULL) {
 				if (bHasAnimation)
 					m_sLastJxlFileName = sFileName;
-				// Multiply alpha value into each AABBGGRR pixel
-				uint32* pImage32 = (uint32*)pPixelData;
-				for (int i = 0; i < nWidth * nHeight; i++)
-					*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+				// Alpha channel preserved (no flattening); background composited at render time.
 
 				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, pEXIFData, 4, 0, IF_JXL, bHasAnimation, request->FrameIndex, nFrameCount, nFrameTimeMs);
 				free(pEXIFData);
@@ -947,10 +931,7 @@ void CImageLoadThread::ProcessReadAVIFRequest(CRequest* request) {
 			if (pPixelData != NULL) {
 				if (bHasAnimation)
 					m_sLastAvifFileName = sFileName;
-				// Multiply alpha value into each AABBGGRR pixel
-				uint32* pImage32 = (uint32*)pPixelData;
-				for (int i = 0; i < nWidth * nHeight; i++)
-					*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+				// Alpha channel preserved (no flattening); background composited at render time.
 
 				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, pEXIFData, 4, 0, IF_AVIF, bHasAnimation, request->FrameIndex, nFrameCount, nFrameTimeMs);
 				free(pEXIFData);
@@ -1007,10 +988,7 @@ void CImageLoadThread::ProcessReadHEIFRequest(CRequest* request) {
 			void* pEXIFData;
 			uint8* pPixelData = (uint8*)HeifReader::ReadImage(nWidth, nHeight, nBPP, nFrameCount, pEXIFData, request->OutOfMemory, request->FrameIndex, pBuffer, nFileSize);
 			if (pPixelData != NULL) {
-				// Multiply alpha value into each AABBGGRR pixel
-				uint32* pImage32 = (uint32*)pPixelData;
-				for (int i = 0; i < nWidth * nHeight; i++)
-					*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+				// Alpha channel preserved (no flattening); background composited at render time.
 
 				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, pEXIFData, nBPP, 0, IF_HEIF, false, request->FrameIndex, nFrameCount, nFrameTimeMs);
 				free(pEXIFData);
@@ -1067,10 +1045,7 @@ void CImageLoadThread::ProcessReadQOIRequest(CRequest* request) {
 			void* pPixelData = QoiReaderWriter::ReadImage(nWidth, nHeight, nBPP, request->OutOfMemory, pBuffer, nFileSize);
 			if (pPixelData != NULL) {
 				if (nBPP == 4) {
-					// Multiply alpha value into each AABBGGRR pixel
-					uint32* pImage32 = (uint32*)pPixelData;
-					for (int i = 0; i < nWidth * nHeight; i++)
-						*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+				// Alpha channel preserved (no flattening); background composited at render time.
 				}
 				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, NULL, nBPP, 0, IF_QOI, false, 0, 1, 0);
 			}
@@ -1179,10 +1154,7 @@ void CImageLoadThread::ProcessReadSVGRequest(CRequest* request) {
 		void* pPixelData = SvgReader::ReadImage(nWidth, nHeight, nBPP, bOutOfMemory, request->FileName);
 		request->OutOfMemory = bOutOfMemory;
 		if (pPixelData != NULL) {
-			// Blend alpha over background color
-			uint32* pImage32 = (uint32*)pPixelData;
-			for (int i = 0; i < nWidth * nHeight; i++)
-				*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+				// Alpha channel preserved (no flattening); background composited at render time.
 			request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, NULL, 4, 0, IF_SVG, false, 0, 1, 0);
 		}
 	} catch (...) {
@@ -1206,9 +1178,7 @@ void CImageLoadThread::ProcessReadDDSRequest(CRequest* request) {
 			int nWidth, nHeight, nBPP;
 			void* pPixelData = DdsReader::ReadImage(nWidth, nHeight, nBPP, request->OutOfMemory, pBuffer, nFileSize);
 			if (pPixelData != NULL) {
-				uint32* pImage32 = (uint32*)pPixelData;
-				for (int i = 0; i < nWidth * nHeight; i++)
-					*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+				// Alpha channel preserved (no flattening); background composited at render time.
 				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, NULL, 4, 0, IF_DDS, false, 0, 1, 0);
 			}
 		}
@@ -1235,9 +1205,7 @@ void CImageLoadThread::ProcessReadJP2Request(CRequest* request) {
 			int nWidth, nHeight, nBPP;
 			void* pPixelData = Jp2Reader::ReadImage(nWidth, nHeight, nBPP, request->OutOfMemory, pBuffer, nFileSize);
 			if (pPixelData != NULL) {
-				uint32* pImage32 = (uint32*)pPixelData;
-				for (int i = 0; i < nWidth * nHeight; i++)
-					*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+				// Alpha channel preserved (no flattening); background composited at render time.
 				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, NULL, 4, 0, IF_JP2, false, 0, 1, 0);
 			}
 		}
@@ -1316,9 +1284,7 @@ void CImageLoadThread::ProcessReadJXRRequest(CRequest* request) {
 			int nWidth, nHeight, nBPP;
 			void* pPixelData = JxrReader::ReadImage(nWidth, nHeight, nBPP, request->OutOfMemory, pBuffer, nFileSize);
 			if (pPixelData != NULL) {
-				uint32* pImage32 = (uint32*)pPixelData;
-				for (int i = 0; i < nWidth * nHeight; i++)
-					*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, CSettingsProvider::This().ColorTransparency());
+				// Alpha channel preserved (no flattening); background composited at render time.
 				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, NULL, 4, 0, IF_JXR, false, 0, 1, 0);
 			}
 		}

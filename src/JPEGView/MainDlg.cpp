@@ -534,9 +534,27 @@ LRESULT CMainDlg::OnPaint(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, B
 		// Paint the DIB
 		if (pDIBData != NULL) {
 			BITMAPINFO bmInfo{ 0 };
-			CPoint ptDIBStart = HelpersGUI::DrawDIB32bppWithBlackBorders(dc, bmInfo, pDIBData, backBrush, m_clientRect, clippedSize, m_DIBOffsets);
+			// For images carrying transparency, composite the alpha onto the current background mode
+			// (black/white/checkerboard) into a temporary buffer so the live background shows through.
+			void* pDIBToPaint = pDIBData;
+			uint32* pComposited = NULL;
+			if (m_pCurrentImage != NULL && m_pCurrentImage->HasAlphaChannel()) {
+				int nPixels = clippedSize.cx * clippedSize.cy;
+				pComposited = new(std::nothrow) uint32[nPixels];
+				if (pComposited != NULL) {
+					memcpy(pComposited, pDIBData, nPixels * sizeof(uint32));
+					// Screen-space origin of the DIB (mirrors DrawDIB32bppWithBlackBorders centering).
+					int xDest = (m_clientRect.Width() - clippedSize.cx) / 2 + m_DIBOffsets.x;
+					int yDest = (m_clientRect.Height() - clippedSize.cy) / 2 + m_DIBOffsets.y;
+					Helpers::CompositeDIBOnBackground(pComposited, clippedSize.cx, clippedSize.cy,
+						CSettingsProvider::This().BackgroundMode(), xDest, yDest);
+					pDIBToPaint = pComposited;
+				}
+			}
+			CPoint ptDIBStart = HelpersGUI::DrawDIB32bppWithBlackBorders(dc, bmInfo, pDIBToPaint, backBrush, m_clientRect, clippedSize, m_DIBOffsets);
 			// The DIB is also blitted into the memory DCs of the panels
-			memDCMgr.BlitImageToMemDC(pDIBData, &bmInfo, ptDIBStart, m_pNavPanelCtl->CurrentBlendingFactor());
+			memDCMgr.BlitImageToMemDC(pDIBToPaint, &bmInfo, ptDIBStart, m_pNavPanelCtl->CurrentBlendingFactor());
+			delete[] pComposited;
 		}
 		if (m_bZoomMode) m_offsets = unlimitedOffsets;
 	}
@@ -619,7 +637,23 @@ void CMainDlg::PaintToDC(CDC& dc) {
 				CreateDefaultProcessingFlags());
 		if (pDIBData != NULL) {
 			BITMAPINFO bmInfo{ 0 };
-			CPoint ptDIBStart = HelpersGUI::DrawDIB32bppWithBlackBorders(dc, bmInfo, pDIBData, backBrush, m_clientRect, clippedSize, CPoint(0, 0));
+			// Composite transparency onto the background for alpha-carrying images (see OnPaint).
+			void* pDIBToPaint = pDIBData;
+			uint32* pComposited = NULL;
+			if (pCurrentImage->HasAlphaChannel()) {
+				int nPixels = clippedSize.cx * clippedSize.cy;
+				pComposited = new(std::nothrow) uint32[nPixels];
+				if (pComposited != NULL) {
+					memcpy(pComposited, pDIBData, nPixels * sizeof(uint32));
+					int xDest = (m_clientRect.Width() - clippedSize.cx) / 2;
+					int yDest = (m_clientRect.Height() - clippedSize.cy) / 2;
+					Helpers::CompositeDIBOnBackground(pComposited, clippedSize.cx, clippedSize.cy,
+						CSettingsProvider::This().BackgroundMode(), xDest, yDest);
+					pDIBToPaint = pComposited;
+				}
+			}
+			CPoint ptDIBStart = HelpersGUI::DrawDIB32bppWithBlackBorders(dc, bmInfo, pDIBToPaint, backBrush, m_clientRect, clippedSize, CPoint(0, 0));
+			delete[] pComposited;
 		}
 
 		CRect imageProcessingArea = m_pImageProcPanelCtl->PanelRect();
@@ -1291,6 +1325,16 @@ LRESULT CMainDlg::OnContextMenu(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM lParam,
 	::AppendMenu(hMenuTrackPopup, MF_SEPARATOR, 0, NULL);
 	::AppendMenu(hMenuTrackPopup, MF_STRING | MF_POPUP, (UINT_PTR)hMenuTools, CNLS::GetString(_T("Tools")));
 
+	// Append a "Background" submenu to switch the transparency background live.
+	HMENU hMenuBackground = ::CreatePopupMenu();
+	::AppendMenu(hMenuBackground, MF_STRING, IDM_BACKGROUND_BLACK, CNLS::GetString(_T("Black")));
+	::AppendMenu(hMenuBackground, MF_STRING, IDM_BACKGROUND_WHITE, CNLS::GetString(_T("White")));
+	::AppendMenu(hMenuBackground, MF_STRING, IDM_BACKGROUND_CHECKERBOARD, CNLS::GetString(_T("Checkerboard")));
+	UINT nBgCmd = (CSettingsProvider::This().BackgroundMode() == Helpers::BGM_White) ? IDM_BACKGROUND_WHITE
+		: (CSettingsProvider::This().BackgroundMode() == Helpers::BGM_Checkerboard) ? IDM_BACKGROUND_CHECKERBOARD : IDM_BACKGROUND_BLACK;
+	::CheckMenuRadioItem(hMenuBackground, IDM_BACKGROUND_BLACK, IDM_BACKGROUND_CHECKERBOARD, nBgCmd, MF_BYCOMMAND);
+	::AppendMenu(hMenuTrackPopup, MF_STRING | MF_POPUP, (UINT_PTR)hMenuBackground, CNLS::GetString(_T("Background")));
+
 	int nMenuCmd = TrackPopupMenu(CPoint(nX, nY), hMenuTrackPopup);
 	ExecuteCommand(nMenuCmd);
 
@@ -1767,6 +1811,26 @@ void CMainDlg::ExecuteCommand(int nCommand) {
 			break;
 		case IDM_OPTIMIZE_LOSSLESS:
 			OptimizeLosslessJPEG();
+			break;
+		case IDM_TOGGLE_BACKGROUND: {
+			Helpers::EBackgroundMode eCur = sp.BackgroundMode();
+			Helpers::EBackgroundMode eNext = (eCur == Helpers::BGM_Black) ? Helpers::BGM_White
+				: (eCur == Helpers::BGM_White) ? Helpers::BGM_Checkerboard : Helpers::BGM_Black;
+			sp.SetBackgroundMode(eNext);
+			this->Invalidate(FALSE);
+			break;
+		}
+		case IDM_BACKGROUND_BLACK:
+			sp.SetBackgroundMode(Helpers::BGM_Black);
+			this->Invalidate(FALSE);
+			break;
+		case IDM_BACKGROUND_WHITE:
+			sp.SetBackgroundMode(Helpers::BGM_White);
+			this->Invalidate(FALSE);
+			break;
+		case IDM_BACKGROUND_CHECKERBOARD:
+			sp.SetBackgroundMode(Helpers::BGM_Checkerboard);
+			this->Invalidate(FALSE);
 			break;
 		case IDM_FIT_TO_SCREEN:
 		case IDM_FIT_TO_SCREEN_NO_ENLARGE:

@@ -108,6 +108,9 @@ public:
 	bool ExplicitWindowRect() { return m_bExplicitWindowRect; }
 	CSize DefaultFixedCropSize() { return m_DefaultFixedCropSize; }
 	COLORREF ColorBackground() { return m_colorBackground; }
+	Helpers::EBackgroundMode BackgroundMode() { return m_eBackgroundMode; }
+	// Overrides the background mode at runtime (live switching). Not persisted to the INI file.
+	void SetBackgroundMode(Helpers::EBackgroundMode eMode) { m_eBackgroundMode = eMode; }
 	COLORREF ColorGUI() { return m_colorGUI; }
 	COLORREF ColorHighlight() { return m_colorHighlight; }
 	COLORREF ColorSelected() { return m_colorSelected; }
@@ -281,6 +284,7 @@ private:
 	bool m_bExplicitWindowRect;
 	CSize m_DefaultFixedCropSize;
 	COLORREF m_colorBackground;
+	Helpers::EBackgroundMode m_eBackgroundMode;
 	COLORREF m_colorGUI;
 	COLORREF m_colorHighlight;
 	COLORREF m_colorSelected;

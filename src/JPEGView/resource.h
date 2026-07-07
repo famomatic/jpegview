@@ -350,10 +350,16 @@
 #define IDM_GOTO_BOOKMARK        17201  // :KeyMap: jump to a stored bookmark slot
 #define IDM_CLEAR_BOOKMARKS      17202  // :KeyMap: clear all stored bookmarks
 
-// --- Lossless JPEG optimize --------------------------------------------
-#define IDM_OPTIMIZE_LOSSLESS    17300  // :KeyMap: losslessly optimize current JPEG (jpegtran)
+ // --- Lossless JPEG optimize --------------------------------------------
+ #define IDM_OPTIMIZE_LOSSLESS    17300  // :KeyMap: losslessly optimize current JPEG (jpegtran)
 
-// Next default values for new objects
+ // --- Background switching (black / white / checkerboard) --------------
+ #define IDM_TOGGLE_BACKGROUND     17350  // :KeyMap: cycle image background black -> white -> checkerboard
+ #define IDM_BACKGROUND_BLACK      17351
+ #define IDM_BACKGROUND_WHITE      17352
+ #define IDM_BACKGROUND_CHECKERBOARD 17353
+
+ // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS

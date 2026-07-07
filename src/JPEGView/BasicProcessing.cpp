@@ -810,24 +810,41 @@ void* CBasicProcessing::Convert3To4Channels(int nWidth, int nHeight, const void*
 	return pNewDIB;
 }
 
-void* CBasicProcessing::ConvertGdiplus32bppRGB(int nWidth, int nHeight, int nStride, const void* pGdiplusPixels) {
-	if (pGdiplusPixels == NULL || nWidth*4 > abs(nStride)) {
-		return NULL;
+	void* CBasicProcessing::ConvertGdiplus32bppRGB(int nWidth, int nHeight, int nStride, const void* pGdiplusPixels) {
+		if (pGdiplusPixels == NULL || nWidth*4 > abs(nStride)) {
+			return NULL;
+		}
+		uint32* pNewDIB = new(std::nothrow) uint32[nWidth * nHeight];
+		if (pNewDIB == NULL) return NULL;
+		uint32* pTgt = pNewDIB;
+		const uint8* pSrc = (const uint8*)pGdiplusPixels;
+		for (int j = 0; j < nHeight; j++) {
+			for (int i = 0; i < nWidth; i++)
+				pTgt[i] = ((uint32*)pSrc)[i] | ALPHA_OPAQUE;
+			pTgt += nWidth;
+			pSrc += nStride;
+		}
+		return pNewDIB;
 	}
-	uint32* pNewDIB = new(std::nothrow) uint32[nWidth * nHeight];
-	if (pNewDIB == NULL) return NULL;
-	uint32* pTgt = pNewDIB;
-	const uint8* pSrc = (const uint8*)pGdiplusPixels;
-	for (int j = 0; j < nHeight; j++) {
-		for (int i = 0; i < nWidth; i++)
-			pTgt[i] = ((uint32*)pSrc)[i] | ALPHA_OPAQUE;
-		pTgt += nWidth;
-		pSrc += nStride;
-	}
-	return pNewDIB;
-}
 
-void* CBasicProcessing::CopyRect32bpp(void* pTarget, const void* pSource,  CSize targetSize, CRect targetRect,
+	void* CBasicProcessing::ConvertGdiplus32bppARGB(int nWidth, int nHeight, int nStride, const void* pGdiplusPixels) {
+		if (pGdiplusPixels == NULL || nWidth*4 > abs(nStride)) {
+			return NULL;
+		}
+		uint32* pNewDIB = new(std::nothrow) uint32[nWidth * nHeight];
+		if (pNewDIB == NULL) return NULL;
+		uint32* pTgt = pNewDIB;
+		const uint8* pSrc = (const uint8*)pGdiplusPixels;
+		for (int j = 0; j < nHeight; j++) {
+			// GDI+ stores 32bppARGB in BGRA byte order on little-endian; keep alpha as-is.
+			memcpy(pTgt, pSrc, nWidth * sizeof(uint32));
+			pTgt += nWidth;
+			pSrc += nStride;
+		}
+		return pNewDIB;
+	}
+
+	void* CBasicProcessing::CopyRect32bpp(void* pTarget, const void* pSource,  CSize targetSize, CRect targetRect,
 									  CSize sourceSize, CRect sourceRect) {
 	if (pSource == NULL || sourceRect.Size() != targetRect.Size() || 
 		sourceRect.left < 0 || sourceRect.right > sourceSize.cx ||
@@ -923,6 +940,50 @@ void* CBasicProcessing::PointSample(CSize fullTargetSize, CPoint fullTargetOffse
 		nCurY += nIncrementY;
 	}
 	return pDIB;
+}
+
+bool CBasicProcessing::RestoreAlphaChannel(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
+	CSize sourceSize, const void* pSourcePixels, void* pResampledDIB) {
+	if (fullTargetSize.cx < 1 || fullTargetSize.cy < 1 ||
+		clippedTargetSize.cx < 1 || clippedTargetSize.cy < 1 ||
+		fullTargetOffset.x < 0 || fullTargetOffset.y < 0 ||
+		clippedTargetSize.cx + fullTargetOffset.x > fullTargetSize.cx ||
+		clippedTargetSize.cy + fullTargetOffset.y > fullTargetSize.cy ||
+		pSourcePixels == NULL || pResampledDIB == NULL) {
+		return false;
+	}
+
+	uint32 nIncrementX, nIncrementY;
+	if (fullTargetSize.cx <= sourceSize.cx) {
+		// Downsampling
+		nIncrementX = (uint32)(sourceSize.cx << 16)/fullTargetSize.cx + 1;
+		nIncrementY = (uint32)(sourceSize.cy << 16)/fullTargetSize.cy + 1;
+	} else {
+		// Upsampling
+		nIncrementX = (fullTargetSize.cx == 1) ? 0 : (uint32)((65536*(uint32)(sourceSize.cx - 1) + 65535)/(fullTargetSize.cx - 1));
+		nIncrementY = (fullTargetSize.cy == 1) ? 0 : (uint32)((65536*(uint32)(sourceSize.cy - 1) + 65535)/(fullTargetSize.cy - 1));
+	}
+
+	// Source is always 4-channel (32 bpp) ARGB here.
+	int nPaddedSourceWidth = Helpers::DoPadding(sourceSize.cx * 4, 4);
+	const uint8* pSrc = NULL;
+	uint8* pDst = (uint8*)pResampledDIB;
+	uint32 nCurY = fullTargetOffset.y*nIncrementY;
+	uint32 nStartX = fullTargetOffset.x*nIncrementX;
+	for (int j = 0; j < clippedTargetSize.cy; j++) {
+		pSrc = (const uint8*)pSourcePixels + nPaddedSourceWidth * (nCurY >> 16);
+		uint32 nCurX = nStartX;
+		for (int i = 0; i < clippedTargetSize.cx; i++) {
+			uint32 sx = nCurX >> 16;
+			// Keep the RGB bytes, overwrite only the alpha byte (offset 3) from the source.
+			uint8 a = pSrc[sx*4 + 3];
+			pDst[i*4 + 3] = a;
+			nCurX += nIncrementX;
+		}
+		pDst += clippedTargetSize.cx*4;
+		nCurY += nIncrementY;
+	}
+	return true;
 }
 
 static void RotateInplace(double& dX, double& dY, double dAngle) {
