@@ -3,18 +3,22 @@
 #include "Helpers.h"
 
 CXMMImage::CXMMImage(int nWidth, int nHeight, int padding) {
-	Init(nWidth, nHeight, false, padding);
+	Init(nWidth, nHeight, 3, false, padding);
 }
 
 CXMMImage::CXMMImage(int nWidth, int nHeight, bool bPadHeight, int padding) {
-	Init(nWidth, nHeight, bPadHeight, padding);
+	Init(nWidth, nHeight, 3, bPadHeight, padding);
+}
+
+CXMMImage::CXMMImage(int nWidth, int nHeight, int nChannels, bool bPadHeight, int padding) {
+	Init(nWidth, nHeight, nChannels, bPadHeight, padding);
 }
 
 CXMMImage::CXMMImage(int nWidth, int nHeight, int nFirstX, int nLastX, int nFirstY, int nLastY, 
 	const void* pDIB, int nChannels, int padding) {
 	int nSectionWidth = nLastX - nFirstX + 1;
 	int nSectionHeight = nLastY - nFirstY + 1;
-	Init(nSectionWidth, nSectionHeight, false, padding);
+	Init(nSectionWidth, nSectionHeight, nChannels, false, padding);
 
 	if (m_pMemory != NULL) {
 		int nSrcLineWidthPadded = Helpers::DoPadding(nWidth * nChannels, 4);
@@ -28,12 +32,15 @@ CXMMImage::CXMMImage(int nWidth, int nHeight, int nFirstX, int nLastX, int nFirs
 					uint32 nBlue = sourcePixel & 0xFF;
 					uint32 nGreen = (sourcePixel >> 8) & 0xFF;
 					uint32 nRed = (sourcePixel >> 16) & 0xFF;
+					uint32 nAlpha = (sourcePixel >> 24) & 0xFF;
 					// The commented out code actually is worse than the simple shift for precision of the fixed point arithmetic
 					pDst[d] = ((uint16)nBlue << 6); // ((((uint16)nBlue) << 8) + nBlue) >> 2;
 					d += m_nPaddedWidth;
 					pDst[d] = ((uint16)nGreen << 6); //((((uint16) nGreen) << 8) + nGreen) >> 2;
 					d += m_nPaddedWidth;
 					pDst[d] = ((uint16)nRed << 6); //((((uint16) nRed) << 8) + nRed) >> 2;
+					d += m_nPaddedWidth;
+					pDst[d] = ((uint16)nAlpha << 6); // 4th plane: alpha, filtered with the same kernel as RGB
 				}
 			} else {
 				for (int i = 0; i < nSectionWidth; i++) {
@@ -46,7 +53,7 @@ CXMMImage::CXMMImage(int nWidth, int nHeight, int nFirstX, int nLastX, int nFirs
 					pDst[d] = ((uint16)pSrc[s+2] << 6);//((((uint16) pSrc[s+2]) << 8) + pSrc[s+2]) >> 2;
 				}
 			}
-			pDst += 3*m_nPaddedWidth;
+			pDst += m_nChannels*m_nPaddedWidth;
 			pSrc += nSrcLineWidthPadded;
 		}
 	}
@@ -68,6 +75,7 @@ void* CXMMImage::ConvertToDIBRGBA() const {
 	
 	uint16* pSrc = (uint16*) m_pMemory;
 	uint8* pDst = pDIB;
+	bool bHasAlpha = (m_nChannels == 4);
 	for (int j = 0; j < m_nHeight; j++) {
 		for (int i = 0; i < m_nWidth; i++) {
 			int d = i*4;
@@ -77,9 +85,15 @@ void* CXMMImage::ConvertToDIBRGBA() const {
 			pDst[d+1] = (uint8)(pSrc[s] >> 6);
 			s += m_nPaddedWidth;
 			pDst[d+2] = (uint8)(pSrc[s] >> 6);
-			pDst[d+3] = 0xFF;
+			// Preserve the filtered alpha from the 4th plane; opaque for 3-channel images.
+			if (bHasAlpha) {
+				s += m_nPaddedWidth;
+				pDst[d+3] = (uint8)(pSrc[s] >> 6);
+			} else {
+				pDst[d+3] = 0xFF;
+			}
 		}
-		pSrc += 3*m_nPaddedWidth;
+		pSrc += m_nChannels*m_nPaddedWidth;
 		pDst += m_nWidth*4;
 	}
 
@@ -90,7 +104,8 @@ void* CXMMImage::ConvertToDIBRGBA() const {
 // Private
 /////////////////////////////////////////////////////////////////////////////////////////
 
-void CXMMImage::Init(int nWidth, int nHeight, bool bPadHeight, int padding) {
+void CXMMImage::Init(int nWidth, int nHeight, int nChannels, bool bPadHeight, int padding) {
+	m_nChannels = nChannels;
 	// pad scanlines
 	m_nPaddedWidth = Helpers::DoPadding(nWidth, padding);
 	if (bPadHeight) {

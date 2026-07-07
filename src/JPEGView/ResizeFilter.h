@@ -1,12 +1,14 @@
 #pragma once
 
 // Maximal length of filter kernels. The kernels may be shorter but never longer.
+// SIMD kernels use a single 128-bit packed int16 format (8 lanes). google/highway
+// widens the lanes to 256 bit at runtime on AVX2 targets, so the on-disk kernel
+// format is always this one regardless of the runtime ISA.
 #define MAX_FILTER_LEN 16
 
 enum FilterSIMDType {
 	FilterSIMDType_None, // filter is not for SIMD processing
-	FilterSIMDType_SSE, // filter is for SSE (and MMX) 128 bit SIMD
-	FilterSIMDType_AVX // filter is for AVX 256 bit SIMD
+	FilterSIMDType_SSE   // filter is for SIMD (128-bit packed) processing, widened at runtime by highway
 };
 
 struct FilterKernel {
@@ -23,8 +25,10 @@ struct FilterKernelBlock {
 	int NumKernels; // this is NUM_KERNELS_RESIZE + border handling kernels as needed
 };
 
-// Filter kernel and filter kernel block for SSE (SIMD).
-// For SSE, we need 8 repetitions of each kernel element (128 bit in total, SSE register size)
+// Filter kernel and filter kernel block for SIMD processing.
+// Each kernel element is repeated 8 times to fill a 128-bit (8 x int16) lane. The
+// highway-backed filter reads these with a 128-bit load and lets the runtime
+// dispatcher widen to 256 bit on AVX2 targets.
 struct XMMKernelElement {
 	int16 valueRepeated[8];
 };
@@ -39,26 +43,6 @@ struct XMMFilterKernel {
 struct XMMFilterKernelBlock {
 	XMMFilterKernel * Kernels;
 	XMMFilterKernel** Indices; // Length equals target size
-	int NumKernels; // this is NUM_KERNELS_RESIZE + border handling kernels as needed
-	uint8* UnalignedMemory; // do not use directly
-};
-
-// Filter kernel and filter kernel block for AVX (SIMD).
-// For AVX, we need 16 repetitions of each kernel element (256 bit in total, AVX register size)
-struct AVXKernelElement {
-	int16 valueRepeated[16];
-};
-
-struct AVXFilterKernel {
-	int FilterLen;
-	int FilterOffset;
-	int pad[6]; // padd to 32 bytes before kernel starts
-	AVXKernelElement Kernel[1]; // this is a placeholder for a kernel of FilterLen elements
-};
-
-struct AVXFilterKernelBlock {
-	AVXFilterKernel * Kernels;
-	AVXFilterKernel** Indices; // Length equals target size
 	int NumKernels; // this is NUM_KERNELS_RESIZE + border handling kernels as needed
 	uint8* UnalignedMemory; // do not use directly
 };
@@ -89,13 +73,9 @@ public:
 	// lifetime of the CResizeFilter object that generated it.
 	const FilterKernelBlock& GetFilterKernels() const { return m_kernels; }
 
-	// As above, returns the structure suitable for XMM processing with aligned memory.
-	// CResizeFilter must have been created with XMM support (FilterSIMDType_SSE)
+	// As above, returns the structure suitable for SIMD processing with aligned memory.
+	// CResizeFilter must have been created with SIMD support (FilterSIMDType_SSE)
 	const XMMFilterKernelBlock& GetXMMFilterKernels() const { assert(m_filterSIMDType == FilterSIMDType_SSE); return m_kernelsXMM; }
-
-	// As above, returns the structure suitable for AVX2 processing with aligned memory.
-	// CResizeFilter must have been created with AVX2 support (FilterSIMDType_AVX)
-	const AVXFilterKernelBlock& GetAVXFilterKernels() const { assert(m_filterSIMDType == FilterSIMDType_AVX); return m_kernelsAVX; }
 
 	// Get bicubic filter kernels for fractional positions. These kernels have length 4 and must be applied with offset -1 to current integer position.
 	// E.g. when requesting 33 kernels, the kernel for fractional position 0.5 is starting at pKernels[4 * 16]
@@ -113,13 +93,11 @@ private:
 	int16 m_Filter[MAX_FILTER_LEN];
 	FilterKernelBlock m_kernels;
 	XMMFilterKernelBlock m_kernelsXMM;
-	AVXFilterKernelBlock m_kernelsAVX;
 	FilterSIMDType m_filterSIMDType;
 	int m_nRefCnt;
 
 	void CalculateFilterKernels();
 	void CalculateXMMFilterKernels();
-	void CalculateAVXFilterKernels();
 
 	// Checks if this filter matches the given parameters
 	bool ParametersMatch(int nSourceSize, int nTargetSize, double dSharpen, EFilterType eFilter, FilterSIMDType filterSIMDType);
@@ -164,7 +142,8 @@ private:
 	const CResizeFilter& m_filter;
 };
 
-// Helper class for accessing filters from filter cache, automatically releasing the filter when object goes out of scope
+// Helper class for accessing SIMD-packed filters from filter cache, automatically releasing the filter when object goes out of scope.
+// The same packed format is used for all SIMD widths; highway widens it at runtime.
 class CAutoXMMFilter {
 public:
 	CAutoXMMFilter(int nSourceSize, int nTargetSize, double dSharpen, EFilterType eFilter) 
@@ -173,19 +152,6 @@ public:
 	const XMMFilterKernelBlock& Kernels() { return m_filter.GetXMMFilterKernels(); }
 	
 	~CAutoXMMFilter() { CResizeFilterCache::This().ReleaseFilter(m_filter); }
-private:
-	const CResizeFilter& m_filter;
-};
-
-// Helper class for accessing filters from filter cache, automatically releasing the filter when object goes out of scope
-class CAutoAVXFilter {
-public:
-	CAutoAVXFilter(int nSourceSize, int nTargetSize, double dSharpen, EFilterType eFilter)
-		: m_filter(CResizeFilterCache::This().GetFilter(nSourceSize, nTargetSize, dSharpen, eFilter, FilterSIMDType_AVX)) {}
-
-	const AVXFilterKernelBlock& Kernels() { return m_filter.GetAVXFilterKernels(); }
-
-	~CAutoAVXFilter() { CResizeFilterCache::This().ReleaseFilter(m_filter); }
 private:
 	const CResizeFilter& m_filter;
 };

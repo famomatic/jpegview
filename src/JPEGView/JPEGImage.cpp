@@ -35,7 +35,6 @@ static void RotateInplace(const CSize& imageSize, double& dX, double& dY, double
 static bool SupportsSIMD(Helpers::CPUType cpuType) {
 	switch (cpuType)
 	{
-	case Helpers::CPU_MMX:
 	case Helpers::CPU_SSE:
 	case Helpers::CPU_AVX2:
 		return true;
@@ -47,8 +46,6 @@ static bool SupportsSIMD(Helpers::CPUType cpuType) {
 static CBasicProcessing::SIMDArchitecture ToSIMDArchitecture(Helpers::CPUType cpuType) {
 	switch (cpuType)
 	{
-	case Helpers::CPU_MMX:
-		return CBasicProcessing::MMX;
 	case Helpers::CPU_SSE:
 		return CBasicProcessing::SSE;
 	case Helpers::CPU_AVX2:
@@ -641,12 +638,8 @@ void* CJPEGImage::Resample(CSize fullTargetSize, CSize clippingSize, CPoint targ
 					CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels, dSharpen, filter);
 			}
 		}
-		// High-quality resampling discards alpha (only RGB is filtered). For images with a real alpha
-		// channel, restore the alpha by point-sampling the original so transparency survives resizing.
-		if (pResult != NULL && m_bHasAlpha && m_nOriginalChannels == 4) {
-			CBasicProcessing::RestoreAlphaChannel(fullTargetSize, targetOffset, clippingSize,
-				CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, pResult);
-		}
+		// High-quality SIMD resampling now filters the alpha plane together with RGB
+		// (the CXMMImage stores 4 planes for BGRA sources), so no alpha restore is needed.
 		return pResult;
 	} else {
 		bool bHasRotation = fabs(dRotation) > 1e-3;

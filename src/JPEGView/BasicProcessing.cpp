@@ -5,18 +5,9 @@
 #include "Helpers.h"
 #include "WorkThread.h"
 #include "ProcessingThreadPool.h"
-#ifdef _WIN64
-#include "ApplyFilterAVX.h"
-#endif
+#include "ApplyFilterHighway.h"
 #include <math.h>
 
-
-// This macro allows for aligned definition of a 16 byte value with initialization of the 8 components
-// to a single value
-#define DECLARE_ALIGNED_DQWORD(name, initializer) \
-	int16 _tempVal##name[16]; \
-	int16* name = (int16*)((((PTR_INTEGRAL_TYPE)&(_tempVal##name) + 15) & ~15)); \
-	name[0] = name[1] = name[2] = name[3] = name[4] = name[5] = name[6] = name[7] = initializer;
 
 #define ALPHA_OPAQUE 0xFF000000
 
@@ -27,21 +18,13 @@ static TCHAR s_TimingInfo[256];
 // Processing images stripwise on thread pool
 /////////////////////////////////////////////////////////////////////////////////////////////
 
-static void* SampleDown_HQ_MMX_SSE_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
-	CSize sourceSize, const void* pIJLPixels, int nChannels, double dSharpen,
-	EFilterType eFilter, bool bSSE, uint8* pTarget);
-
-static void* SampleDown_HQ_AVX_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
-	CSize sourceSize, const void* pIJLPixels, int nChannels, double dSharpen,
-	EFilterType eFilter, uint8* pTarget);
-
-static void* SampleUp_HQ_MMX_SSE_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
-	CSize sourceSize, const void* pIJLPixels, int nChannels, bool bSSE,
-	uint8* pTarget);
-
-static void* SampleUp_HQ_AVX_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
-	CSize sourceSize, const void* pIJLPixels, int nChannels,
-	uint8* pTarget);
+// Single high-quality core used by both up- and downsampling. Highway selects the
+// best ISA at runtime, so there is no separate MMX/SSE/AVX variant any more.
+// nChannels (3 or 4) is threaded through so the alpha plane is filtered when the
+// source carries transparency.
+static void* SampleHQ_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
+	CSize sourceSize, const void* pPixels, int nChannels, double dSharpen,
+	EFilterType eFilter, bool bUpsampling, uint8* pTarget);
 
 static void* ApplyLDC32bpp_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize dibSize,
 	CSize ldcMapSize, const void* pDIBPixels, const int32* pSatLUTs, const uint8* pLUT, const uint8* pLDCMap,
@@ -66,54 +49,39 @@ class CRequestUpDownSampling : public CProcessingRequest {
 public:
 	CRequestUpDownSampling(const void* pSourcePixels, CSize sourceSize, void* pTargetPixels,
 		CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
-		int nChannels, double dSharpen, EFilterType eFilter, CBasicProcessing::SIMDArchitecture simd)
+		int nChannels, double dSharpen, EFilterType eFilter)
 		: CProcessingRequest(pSourcePixels, sourceSize, pTargetPixels, fullTargetSize, fullTargetOffset, clippedTargetSize) {
 		Channels = nChannels;
 		Sharpen = dSharpen;
 		Filter = eFilter;
-		SIMD = simd;
-		StripPadding = (simd == CBasicProcessing::AVX2) ? 16 : 8; // important to set for AVX
+		// Highway widens to 256-bit (16 lanes) on AVX2 and uses 8 lanes on SSE2.
+		// Pad strips to 16 so both paths see aligned block boundaries.
+		StripPadding = 16;
 	}
 
 	virtual bool ProcessStrip(int offsetY, int sizeY) {
 		if (Filter == Filter_Upsampling_Bicubic) {
-			if (SIMD == CBasicProcessing::AVX2)
-				return NULL != SampleUp_HQ_AVX_Core(FullTargetSize,
-					CPoint(FullTargetOffset.x, FullTargetOffset.y + offsetY),
-					CSize(ClippedTargetSize.cx, sizeY),
-					SourceSize, SourcePixels,
-					Channels,
-					(uint8*)TargetPixels + ClippedTargetSize.cx * 4 * offsetY);
-			else
-				return NULL != SampleUp_HQ_MMX_SSE_Core(FullTargetSize,
-					CPoint(FullTargetOffset.x, FullTargetOffset.y + offsetY),
-					CSize(ClippedTargetSize.cx, sizeY),
-					SourceSize, SourcePixels,
-					Channels, SIMD == CBasicProcessing::SSE,
-					(uint8*)TargetPixels + ClippedTargetSize.cx * 4 * offsetY);
+			return NULL != SampleHQ_Core(FullTargetSize,
+				CPoint(FullTargetOffset.x, FullTargetOffset.y + offsetY),
+				CSize(ClippedTargetSize.cx, sizeY),
+				SourceSize, SourcePixels,
+				Channels, 0.0,
+				Filter, true,
+				(uint8*)TargetPixels + ClippedTargetSize.cx * 4 * offsetY);
+		} else {
+			return NULL != SampleHQ_Core(FullTargetSize,
+				CPoint(FullTargetOffset.x, FullTargetOffset.y + offsetY),
+				CSize(ClippedTargetSize.cx, sizeY),
+				SourceSize, SourcePixels,
+				Channels, Sharpen,
+				Filter, false,
+				(uint8*)TargetPixels + ClippedTargetSize.cx * 4 * offsetY);
 		}
-		else if (SIMD == CBasicProcessing::AVX2)
-			return NULL != SampleDown_HQ_AVX_Core(FullTargetSize,
-				CPoint(FullTargetOffset.x, FullTargetOffset.y + offsetY),
-				CSize(ClippedTargetSize.cx, sizeY),
-				SourceSize, SourcePixels,
-				Channels, Sharpen,
-				Filter,
-				(uint8*)TargetPixels + ClippedTargetSize.cx * 4 * offsetY);
-		else
-			return NULL != SampleDown_HQ_MMX_SSE_Core(FullTargetSize,
-				CPoint(FullTargetOffset.x, FullTargetOffset.y + offsetY),
-				CSize(ClippedTargetSize.cx, sizeY),
-				SourceSize, SourcePixels,
-				Channels, Sharpen,
-				Filter, SIMD == CBasicProcessing::SSE,
-				(uint8*)TargetPixels + ClippedTargetSize.cx * 4 * offsetY);
 	}
 
 	int Channels;
 	double Sharpen;
 	EFilterType Filter;
-	CBasicProcessing::SIMDArchitecture SIMD;
 };
 
 class CRequestLDC : public CProcessingRequest {
@@ -1784,10 +1752,11 @@ void* CBasicProcessing::SampleDown_HQ(CSize fullTargetSize, CPoint fullTargetOff
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////
-// High quality downsampling (Helpers for SSE and MMX implementation)
+// High quality downsampling (rotation helpers, shared by all SIMD paths)
 /////////////////////////////////////////////////////////////////////////////////////////////
 
-// Rotates a line of 'simdPixelsPerRegister' pixels from source to targt
+// Rotates one line of simdPixelsPerRegister int16 values from source to target.
+// nIncTargetLine advances to the next output row within the destination plane.
 inline static const int16* RotateLine(const int16* pSource, int16* pTarget, int nIncTargetLine, int simdPixelsPerRegister) {
 	for (int i = 0; i < simdPixelsPerRegister - 1; i++)
 	{
@@ -1798,6 +1767,9 @@ inline static const int16* RotateLine(const int16* pSource, int16* pTarget, int 
 	return pSource;
 }
 
+// Rotates one channel of a BGRA DIB pixel (the first channel, written as a uint32
+// with alpha forced opaque for 3-channel sources, or the B byte followed by separate
+// G/R/A writes for 4-channel sources).
 inline static const int16* RotateLineToDIB_1(const int16* pSource, uint8* pTarget, int nIncTargetLine, int simdPixelsPerRegister) {
 	const int FP_05 = 42; // 0.5 (actually a bit more) in fixed point, improves rounding
 	for (int i = 0; i < simdPixelsPerRegister - 1; i++)
@@ -1822,33 +1794,39 @@ inline static const int16* RotateLineToDIB(const int16* pSource, uint8* pTarget,
 
 // Rotate a block in a CXMMImage. Blockwise rotation is needed because with normal
 // rotation, trashing occurs, making rotation a very slow operation.
-// The input format is what the ResizeYCore() method outputs:
-// RRRRRRRRGGGGGGGGBBBBBBBB... (blocks of 'simdPixelsPerRegister' pixels of a channel).
-// After rotation, the format is line interleaved again:
-// RRRRRRRRRRR...
-// GGGGGGGGGGG...
-// BBBBBBBBBBB...
+// The input format is what the filter outputs: per-channel blocks of
+// simdPixelsPerRegister pixels (B-blocks, then G-blocks, then R-blocks, [then A-blocks]).
+// After rotation, the format is line interleaved per plane again.
+// nChannels is 3 or 4 depending on the source.
 static void RotateBlock(const int16* pSrc, int16* pTgt, int nWidth, int nHeight,
 						int nXStart, int nYStart, int nBlockWidth, int nBlockHeight,
-						int simdPixelsPerRegister) {
+						int simdPixelsPerRegister, int nChannels) {
 	int nPaddedWidth = Helpers::DoPadding(nWidth, simdPixelsPerRegister);
 	int nPaddedHeight = Helpers::DoPadding(nHeight, simdPixelsPerRegister);
 	int nIncTargetChannel = nPaddedHeight;
-	int nIncTargetLine = nIncTargetChannel * 3;
-	int nIncSource = nPaddedWidth * 3 - nBlockWidth * 3;
-	const int16* pSource = pSrc + nPaddedWidth * 3 * nYStart + nXStart * 3;
-	int16* pTarget = pTgt + nPaddedHeight * 3 * nXStart + nYStart;
+	int nIncTargetLine = nIncTargetChannel * nChannels;
+	int nIncSource = nPaddedWidth * nChannels - nBlockWidth * nChannels;
+	const int16* pSource = pSrc + nPaddedWidth * nChannels * nYStart + nXStart * nChannels;
+	int16* pTarget = pTgt + nPaddedHeight * nChannels * nXStart + nYStart;
 	int16* pStartYPtr = pTarget;
 	int nLoopX = Helpers::DoPadding(nBlockWidth, simdPixelsPerRegister) / simdPixelsPerRegister;
 	int nTargetIncrement = ((simdPixelsPerRegister - 1) * nIncTargetLine) + nIncTargetChannel;
 
 	for (int i = 0; i < nBlockHeight; i++) {
 		for (int j = 0; j < nLoopX; j++) {
+			// Channel 0 (B)
 			pSource = RotateLine(pSource, pTarget, nIncTargetLine, simdPixelsPerRegister);
 			pTarget += nIncTargetChannel;
-			pSource =  RotateLine(pSource, pTarget, nIncTargetLine, simdPixelsPerRegister);
+			// Channel 1 (G)
+			pSource = RotateLine(pSource, pTarget, nIncTargetLine, simdPixelsPerRegister);
 			pTarget += nIncTargetChannel;
-			pSource =  RotateLine(pSource, pTarget, nIncTargetLine, simdPixelsPerRegister);
+			// Channel 2 (R)
+			pSource = RotateLine(pSource, pTarget, nIncTargetLine, simdPixelsPerRegister);
+			if (nChannels == 4) {
+				pTarget += nIncTargetChannel;
+				// Channel 3 (A)
+				pSource = RotateLine(pSource, pTarget, nIncTargetLine, simdPixelsPerRegister);
+			}
 			pTarget += nTargetIncrement;
 		}
 		pStartYPtr++;
@@ -1857,27 +1835,39 @@ static void RotateBlock(const int16* pSrc, int16* pTgt, int nWidth, int nHeight,
 	}
 }
 
-// Same as above, directly rotates into a 32 bpp DIB
+// Same as above, directly rotates into a 32 bpp BGRA DIB. The destination is always
+// 4 bytes per pixel; for 3-channel sources the alpha byte is set opaque, for 4-channel
+// sources the filtered alpha plane is written as the 4th byte.
 static void RotateBlockToDIB(const int16* pSrc, uint8* pTgt, int nWidth, int nHeight,
 							 int nXStart, int nYStart, int nBlockWidth, int nBlockHeight,
-							 int simdPixelsPerRegister) {
+							 int simdPixelsPerRegister, int nChannels) {
 	int nPaddedWidth = Helpers::DoPadding(nWidth, simdPixelsPerRegister);
 	int nPaddedHeight = Helpers::DoPadding(nHeight, simdPixelsPerRegister);
 	int nIncTargetLine = nHeight * 4;
-	int nIncSource = nPaddedWidth * 3 - nBlockWidth * 3;
-	const int16* pSource = pSrc + nPaddedWidth * 3 * nYStart + nXStart * 3;
+	int nIncSource = nPaddedWidth * nChannels - nBlockWidth * nChannels;
+	const int16* pSource = pSrc + nPaddedWidth * nChannels * nYStart + nXStart * nChannels;
 	uint8* pTarget = pTgt + nHeight * 4 * nXStart + nYStart * 4;
 	uint8* pStartYPtr = pTarget;
 	int nLoopX = Helpers::DoPadding(nBlockWidth, simdPixelsPerRegister) / simdPixelsPerRegister;
+	// After writing B, G, R the pointer must skip the alpha byte; after writing the
+	// alpha byte (4-channel case) it advances to the next pixel row.
 	int nTargetIncrement = simdPixelsPerRegister * nIncTargetLine - 2;
 
 	for (int i = 0; i < nBlockHeight; i++) {
 		for (int j = 0; j < nLoopX; j++) {
+			// Channel 0 (B)
 			pSource = RotateLineToDIB_1(pSource, pTarget, nIncTargetLine, simdPixelsPerRegister);
 			pTarget++;
+			// Channel 1 (G)
 			pSource = RotateLineToDIB(pSource, pTarget, nIncTargetLine, simdPixelsPerRegister);
 			pTarget++;
+			// Channel 2 (R)
 			pSource = RotateLineToDIB(pSource, pTarget, nIncTargetLine, simdPixelsPerRegister);
+			if (nChannels == 4) {
+				pTarget++;
+				// Channel 3 (A) - write the filtered alpha as the 4th byte.
+				pSource = RotateLineToDIB(pSource, pTarget, nIncTargetLine, simdPixelsPerRegister);
+			}
 			pTarget += nTargetIncrement;
 		}
 		pStartYPtr += 4;
@@ -1889,7 +1879,8 @@ static void RotateBlockToDIB(const int16* pSrc, uint8* pTgt, int nWidth, int nHe
 // RotateFlip the source image by 90 deg and return rotated image
 // RotateFlip is invertible: img = RotateFlip(RotateFlip(img))
 static CXMMImage* Rotate(const CXMMImage* pSourceImg, int simdPixelsPerRegister) {
-	CXMMImage* targetImage = new CXMMImage(pSourceImg->GetHeight(), pSourceImg->GetWidth(), true, simdPixelsPerRegister);
+	int nChannels = pSourceImg->GetNumChannels();
+	CXMMImage* targetImage = new CXMMImage(pSourceImg->GetHeight(), pSourceImg->GetWidth(), nChannels, true, simdPixelsPerRegister);
 	if (targetImage->AlignedPtr() == NULL) {
 		delete targetImage;
 		return NULL;
@@ -1906,7 +1897,7 @@ static CXMMImage* Rotate(const CXMMImage* pSourceImg, int simdPixelsPerRegister)
 				nX, nY, 
 				min(cnBlockSize, pSourceImg->GetPaddedWidth() - nX), // !! here we need to use the padded width
 				min(cnBlockSize, pSourceImg->GetHeight() - nY),
-				simdPixelsPerRegister);
+				simdPixelsPerRegister, nChannels);
 			nX += cnBlockSize;
 		}
 		nY += cnBlockSize;
@@ -1917,7 +1908,7 @@ static CXMMImage* Rotate(const CXMMImage* pSourceImg, int simdPixelsPerRegister)
 
 // RotateFlip the source image by 90 deg and return rotated image as 32 bpp DIB
 static void* RotateToDIB(const CXMMImage* pSourceImg, int simdPixelsPerRegister, uint8* pTarget = NULL) {
-
+	int nChannels = pSourceImg->GetNumChannels();
 	const int16* pSource = (const int16*) pSourceImg->AlignedPtr();
 	if (pTarget == NULL) {
 		pTarget = new(std::nothrow) uint8[pSourceImg->GetHeight() * 4 * Helpers::DoPadding(pSourceImg->GetWidth(), simdPixelsPerRegister)];
@@ -1933,7 +1924,7 @@ static void* RotateToDIB(const CXMMImage* pSourceImg, int simdPixelsPerRegister,
 				nX, nY, 
 				min(cnBlockSize, pSourceImg->GetPaddedWidth() - nX),  // !! here we need to use the padded width
 				min(cnBlockSize, pSourceImg->GetHeight() - nY),
-				simdPixelsPerRegister);
+				simdPixelsPerRegister, nChannels);
 
 			nX += cnBlockSize;
 		}
@@ -1942,712 +1933,147 @@ static void* RotateToDIB(const CXMMImage* pSourceImg, int simdPixelsPerRegister,
 
 	return pTarget;
 }
-
 /////////////////////////////////////////////////////////////////////////////////////////////
-// High quality filtering (SSE implementation)
-/////////////////////////////////////////////////////////////////////////////////////////////
-
-#ifdef _WIN64
-// Apply filter in y direction in SSE
-// No inline assembly is supported in 64 bit mode, thus intrinsics are used instead.
-// nSourceHeight: Height of source image, only here to match interface of C++ implementation
-// nTargetHeight: Height of target image after resampling
-// nWidth: Width of source image
-// nStartY_FP: 16.16 fixed point number, denoting the y-start subpixel coordinate
-// nStartX: Start of filtering in x-direction (not an FP number)
-// nIncrementY_FP: 16.16 fixed point number, denoting the increment for the y coordinates
-// filter: filter to apply
-// nFilterOffset: Offset into filter (to filter.Indices array)
-// pSourceImg: Source image
-// The filter is applied to 'nTargetHeight' rows of the input image at positions
-// nStartY_FP, nStartY_FP+nIncrementY_FP, ... 
-// In X direction, the filter is applied starting from column /nStartX\ to (including) \nStartX+nWidth-1/
-// where the /\ symbol denotes padding to lower 8 pixel boundary and \/ padding to the upper 8 pixel
-// boundary.
-static CXMMImage* ApplyFilter_SSE(int nSourceHeight, int nTargetHeight, int nWidth,
-	int nStartY_FP, int nStartX, int nIncrementY_FP,
-	const XMMFilterKernelBlock& filter,
-	int nFilterOffset, const CXMMImage* pSourceImg) {
-
-	int nStartXAligned = nStartX & ~7;
-	int nEndXAligned = (nStartX + nWidth + 7) & ~7;
-	CXMMImage* tempImage = new CXMMImage(nEndXAligned - nStartXAligned, nTargetHeight, 8);
-	if (tempImage->AlignedPtr() == NULL) {
-		delete tempImage;
-		return NULL;
-	}
-
-	int nCurY = nStartY_FP;
-	int nChannelLenBytes = pSourceImg->GetPaddedWidth() * sizeof(short);
-	int nRowLenBytes = nChannelLenBytes * 3;
-	int nNumberOfBlocksX = (nEndXAligned - nStartXAligned) >> 3;
-	const uint8* pSourceStart = (const uint8*)pSourceImg->AlignedPtr() + nStartXAligned * sizeof(short);
-	XMMFilterKernel** pKernelIndexStart = filter.Indices;
-
-	DECLARE_ALIGNED_DQWORD(ONE_XMM, 16383 - 42); // 1.0 in fixed point notation, minus rounding correction
-
-	__m128i xmm0 = *((__m128i*)ONE_XMM);
-	__m128i xmm1 = _mm_setzero_si128();
-	__m128i xmm2;
-	__m128i xmm3;
-	__m128i xmm4 = _mm_setzero_si128();
-	__m128i xmm5 = _mm_setzero_si128();
-	__m128i xmm6 = _mm_setzero_si128();
-	__m128i xmm7;
-
-	__m128i* pDestination = (__m128i*)tempImage->AlignedPtr();
-
-	for (int y = 0; y < nTargetHeight; y++) {
-		uint32 nCurYInt = (uint32)nCurY >> 16; // integer part of Y
-		int filterIndex = y + nFilterOffset;
-		XMMFilterKernel* pKernel = pKernelIndexStart[filterIndex];
-		int filterLen = pKernel->FilterLen;
-		int filterOffset = pKernel->FilterOffset;
-		const __m128i* pFilterStart = (__m128i*)&(pKernel->Kernel);
-		const __m128i* pSourceRow = (const __m128i*)(pSourceStart + ((int)nCurYInt - filterOffset) * nRowLenBytes);
-
-		for (int x = 0; x < nNumberOfBlocksX; x++) {
-			const __m128i* pSource = pSourceRow;
-			const __m128i* pFilter = pFilterStart;
-			xmm4 = _mm_setzero_si128();
-			xmm5 = _mm_setzero_si128();
-			xmm6 = _mm_setzero_si128();
-			for (int i = 0; i < filterLen; i++) {
-				xmm7 = *pFilter;
-
-				// the pixel data RED channel
-				xmm2 = *pSource;
-				xmm2 = _mm_add_epi16(xmm2, xmm2);
-				xmm2 = _mm_mulhi_epi16(xmm2, xmm7);
-				xmm2 = _mm_add_epi16(xmm2, xmm2);
-				xmm4 = _mm_adds_epi16(xmm4, xmm2);
-				pSource = (__m128i*)((uint8*)pSource + nChannelLenBytes);
-
-				// the pixel data GREEN channel
-				xmm3 = *pSource;
-				xmm3 = _mm_add_epi16(xmm3, xmm3);
-				xmm3 = _mm_mulhi_epi16(xmm3, xmm7);
-				xmm3 = _mm_add_epi16(xmm3, xmm3);
-				xmm5 = _mm_adds_epi16(xmm5, xmm3);
-				pSource = (__m128i*)((uint8*)pSource + nChannelLenBytes);
-
-				// the pixel data BLUE channel
-				xmm2 = *pSource;
-				xmm2 = _mm_add_epi16(xmm2, xmm2);
-				xmm2 = _mm_mulhi_epi16(xmm2, xmm7);
-				xmm2 = _mm_add_epi16(xmm2, xmm2);
-				xmm6 = _mm_adds_epi16(xmm6, xmm2);
-				pSource = (__m128i*)((uint8*)pSource + nChannelLenBytes);
-
-				pFilter++;
-			}
-
-			// limit to range 0 (in xmm1), 16383-42 (in xmm0)
-			xmm4 = _mm_min_epi16(xmm4, xmm0);
-			xmm5 = _mm_min_epi16(xmm5, xmm0);
-			xmm6 = _mm_min_epi16(xmm6, xmm0);
-
-			xmm1 = _mm_setzero_si128();
-
-			xmm4 = _mm_max_epi16(xmm4, xmm1);
-			xmm5 = _mm_max_epi16(xmm5, xmm1);
-			xmm6 = _mm_max_epi16(xmm6, xmm1);
-
-			// store result in blocks
-			*pDestination++ = xmm4;
-			*pDestination++ = xmm5;
-			*pDestination++ = xmm6;
-
-			pSourceRow++;
-		};
-
-		nCurY += nIncrementY_FP;
-	};
-
-	return tempImage;
-}
-
-#else
-// Apply filter in y direction in SSE
-// nSourceHeight: Height of source image, only here to match interface of C++ implementation
-// nTargetHeight: Height of target image after resampling
-// nWidth: Width of source image
-// nStartY_FP: 16.16 fixed point number, denoting the y-start subpixel coordinate
-// nStartX: Start of filtering in x-direction (not an FP number)
-// nIncrementY_FP: 16.16 fixed point number, denoting the increment for the y coordinates
-// filter: filter to apply
-// nFilterOffset: Offset into filter (to filter.Indices array)
-// pSourceImg: Source image
-// The filter is applied to 'nTargetHeight' rows of the input image at positions
-// nStartY_FP, nStartY_FP+nIncrementY_FP, ... 
-// In X direction, the filter is applied starting from column /nStartX\ to (including) \nStartX+nWidth-1/
-// where the /\ symbol denotes padding to lower 8 pixel boundary and \/ padding to the upper 8 pixel
-// boundary.
-static CXMMImage* ApplyFilter_SSE(int nSourceHeight, int nTargetHeight, int nWidth,
-								  int nStartY_FP, int nStartX, int nIncrementY_FP,
-								  const XMMFilterKernelBlock& filter,
-								  int nFilterOffset, const CXMMImage* pSourceImg) {
-	
-	int nStartXAligned = nStartX & ~7;
-	int nEndXAligned = (nStartX + nWidth + 7) & ~7;
-	CXMMImage* tempImage = new CXMMImage(nEndXAligned - nStartXAligned, nTargetHeight, 8);
-	if (tempImage->AlignedPtr() == NULL) {
-		delete tempImage;
-		return NULL;
-	}
-	int16* pDest = (int16*) tempImage->AlignedPtr();
-
-	int nCurY = nStartY_FP;
-	int nChannelLenBytes = pSourceImg->GetPaddedWidth()*2;
-	int nRowLenBytes = nChannelLenBytes*3;
-	int nLoopY = 0;
-	int nLoopXStart = (nEndXAligned - nStartXAligned) >> 3;
-	int nLoopX = nLoopXStart;
-	const uint8* pSourceStart = (const uint8*)pSourceImg->AlignedPtr() + nStartXAligned*2;
-	void* pKernelIndexStart = &(filter.Indices[0]);
-	int   nFilterLen;
-	void* pFilterStart;
-	DECLARE_ALIGNED_DQWORD(pFPONE, 16383 - 42);
-
-	_asm {
-		mov ebx, pFPONE
-		movdqa xmm0, [ebx] // this value remains in mm0, it represents 1.0 in fixed point format
-		mov edi, pDest
-		
-startYLoop:
-		mov eax, nCurY
-		shr eax, 16        // integer part of Y
-
-		mov ebx, nLoopY
-		add ebx, nFilterOffset
-		mov ecx, pKernelIndexStart
-		mov ecx, [ecx + 4*ebx] // now the address of the XMM filter kernel to use is in ecx
-		mov ebx, [ecx] // filter length is in ebx
-		mov edx, [ecx + 4] // filter offset is in edx
-		add ecx, 16 // ecx now on first filter element
-
-		sub eax, edx      // subtract the filter offset
-		mul nRowLenBytes
-		add eax, pSourceStart // source start in eax
-
-		// For the row loop, the following register allocations are done.
-		// These registers are not touched in the pixel loop.
-		// EDX: Length of one row per channel, fixed
-		// ESI: Source pixel ptr for row loop
-		// EDI: Target pixel ptr for row loop
-		mov edx, nChannelLenBytes
-		mov esi, eax
-		mov nFilterLen, ebx
-		mov pFilterStart, ecx
-
-startXLoop:
-		// For the pixel loop, the following register allocations are done.
-		// EAX: Source pixel ptr, incremented
-		// EBX: Filter length, decremented
-		// ECX: Filter kernel ptr, incremented
-
-		// pixel loop init, eight pixels are calculated with SSE
-		pxor   xmm4, xmm4   // filter sum R
-		pxor   xmm5, xmm5   // filter sum G
-		pxor   xmm6, xmm6   // filter sum B
-
-FilterKernelLoop:
-		movdqa xmm7, [ecx]  // load kernel element
-		movdqa xmm2, [eax]  // the pixel data RED channel
-		paddw  xmm2, xmm2
-		pmulhw xmm2, xmm7
-		paddw  xmm2, xmm2
-		paddsw xmm4, xmm2
-		add    eax, edx
-		movdqa xmm3, [eax]  // the pixel data GREEN channel
-		paddw  xmm3, xmm3
-		pmulhw xmm3, xmm7
-		paddw  xmm3, xmm3
-		paddsw xmm5, xmm3
-		add    eax, edx
-		movdqa xmm2, [eax]  // the pixel data BLUE channel
-		paddw  xmm2, xmm2
-		pmulhw xmm2, xmm7
-		paddw  xmm2, xmm2
-		paddsw xmm6, xmm2
-		add    eax, edx
-		add    ecx, 16      // next kernel element
-		sub    ebx, 1
-		jnz    FilterKernelLoop
-
-		// min-max to 0, 16383-42
-		pminsw xmm4, xmm0
-		pminsw xmm5, xmm0
-		pminsw xmm6, xmm0
-		pxor   xmm1, xmm1
-		pmaxsw xmm4, xmm1
-		pmaxsw xmm5, xmm1
-		pmaxsw xmm6, xmm1
-
-		// store result in blocks
-		movdqa [edi], xmm4
-		movdqa [edi + 16], xmm5
-		movdqa [edi + 32], xmm6
-		add   edi, 48
-		add   esi, 16
-
-		mov eax, esi  // prepare for next 8 pixels of row
-		mov ebx, nFilterLen
-		mov ecx, pFilterStart
-
-		dec nLoopX
-		jnz startXLoop
-
-		mov eax, nLoopXStart
-		mov nLoopX, eax
-		mov eax, nCurY
-		add eax, nIncrementY_FP
-		mov nCurY, eax
-		mov ecx, nLoopY
-		inc ecx
-		mov nLoopY, ecx
-		cmp ecx, nTargetHeight
-		jl  startYLoop
-	}
-
-	return tempImage;
-}
-
-CXMMImage* ApplyFilter_AVX(int nSourceHeight, int nTargetHeight, int nWidth,
-	int nStartY_FP, int nStartX, int nIncrementY_FP,
-	const AVXFilterKernelBlock& filter,
-	int nFilterOffset, const CXMMImage* pSourceImg) {
-
-	// not supported in 32 bit
-	return NULL;
-}
-
-#endif
-
-/////////////////////////////////////////////////////////////////////////////////////////////
-// High quality filtering (MMX implementation)
+// High quality filtering (google/highway SIMD implementation)
 /////////////////////////////////////////////////////////////////////////////////////////////
 
-#ifdef _WIN64
-// Not used in 64 bit - uses always SSE version for 64 bit
-static CXMMImage* ApplyFilter_MMX(int nSourceHeight, int nTargetHeight, int nWidth,
-	int nStartY_FP, int nStartX, int nIncrementY_FP,
-	const XMMFilterKernelBlock& filter,
-	int nFilterOffset, const CXMMImage* pSourceImg) {
-	return NULL;
-}
-#else
-// Apply filter in y direction in MMX
-static CXMMImage* ApplyFilter_MMX(int nSourceHeight, int nTargetHeight, int nWidth,
-								  int nStartY_FP, int nStartX, int nIncrementY_FP,
-								  const XMMFilterKernelBlock& filter,
-								  int nFilterOffset, const CXMMImage* pSourceImg) {
-
-	int nStartXAligned = nStartX & ~7;
-	int nEndXAligned = (nStartX + nWidth + 7) & ~7;
-	CXMMImage* tempImage = new CXMMImage(nEndXAligned - nStartXAligned, nTargetHeight, 8);
-	if (tempImage->AlignedPtr() == NULL) {
-		delete tempImage;
-		return NULL;
-	}
-	int16* pDest = (int16*) tempImage->AlignedPtr();
-
-	int nCurY = nStartY_FP;
-	int nChannelLenBytes = pSourceImg->GetPaddedWidth()*2;
-	int nRowLenBytes = nChannelLenBytes*3;
-	int nLoopY = 0;
-	int nLoopXStart = (nEndXAligned - nStartXAligned)/8;
-	int nLoopX = nLoopXStart;
-	const uint8* pSourceStart = (const uint8*)pSourceImg->AlignedPtr() + nStartXAligned*2;
-	void* pKernelIndexStart = &(filter.Indices[0]);
-	int   nFilterLen;
-	void* pFilterStart;
-	int nSaveESI;
-	DECLARE_ALIGNED_DQWORD(pFPONE, 16383 - 42);
-
-	_asm {
-		mov ebx, pFPONE
-		movq mm0, [ebx] // this value remains in mm0, it represents 1.0 in fixed point format
-		mov edi, pDest
-		
-startYLoop:
-		mov eax, nCurY
-		shr eax, 16        // integer part of Y
-
-		mov ebx, nLoopY
-		add ebx, nFilterOffset
-		mov ecx, pKernelIndexStart
-		mov ecx, [ecx + 4*ebx] // now the address of the XMM filter kernel to use is in ecx
-		mov ebx, [ecx] // filter length is in ebx
-		mov edx, [ecx + 4] // filter offset is in edx
-		add ecx, 16  // ecx now on first filter element
-
-		sub eax, edx      // subtract the filter offset
-		mul nRowLenBytes
-		add eax, pSourceStart // source start in eax
-
-		// For the row loop, the following register allocations are done.
-		// These registers are not touched in the pixel loop.
-		// EDX: Length of one row per channel, fixed
-		// ESI: Source pixel ptr for row loop
-		// EDI: Target pixel ptr for row loop
-		mov edx, nChannelLenBytes
-		mov esi, eax
-		mov nFilterLen, ebx
-		mov pFilterStart, ecx
-
-startXLoop:
-		// For the pixel loop, the following register allocations are done.
-		// EAX: Source pixel ptr, incremented
-		// EBX: Filter length, decremented
-		// ECX: Filter kernel ptr, incremented
-
-		mov    nSaveESI, esi
-		mov    esi, 2
-
-Loop8Pixels:
-		// pixel loop init, eight pixels are calculated with SSE
-		pxor   mm4, mm4   // filter sum R
-		pxor   mm5, mm5   // filter sum G
-		pxor   mm6, mm6   // filter sum B
-
-FilterKernelLoop:
-		movq   mm7, [ecx]  // load kernel element
-		movq   mm2, [eax]  // the pixel data RED channel
-		paddw  mm2, mm2
-		pmulhw mm2, mm7
-		paddw  mm2, mm2
-		paddsw mm4, mm2
-		add    eax, edx
-		movq   mm3, [eax]  // the pixel data GREEN channel
-		paddw  mm3, mm3
-		pmulhw mm3, mm7
-		paddw  mm3, mm3
-		paddsw mm5, mm3
-		add    eax, edx
-		movq   mm2, [eax]  // the pixel data BLUE channel
-		paddw  mm2, mm2
-		pmulhw mm2, mm7
-		paddw  mm2, mm2
-		paddsw mm6, mm2
-		add    eax, edx
-		add    ecx, 16      // next kernel element
-		sub    ebx, 1
-		jnz    FilterKernelLoop
-
-		// min-max to 0, 16383-42
-		pminsw mm4, mm0
-		pminsw mm5, mm0
-		pminsw mm6, mm0
-		pxor   mm1, mm1
-		pmaxsw mm4, mm1
-		pmaxsw mm5, mm1
-		pmaxsw mm6, mm1
-
-		// store result in blocks
-		movq [edi], mm4
-		movq [edi + 16], mm5
-		movq [edi + 32], mm6
-		add   edi, 8
-		mov   eax, nSaveESI
-		add   eax, 8
-		mov   ebx, nFilterLen
-		mov   ecx, pFilterStart
-
-		dec   esi
-		jnz   Loop8Pixels
-		
-		mov   esi, nSaveESI
-		add   esi, 16
-		add   edi, 32
-
-		mov eax, esi  // prepare for next 8 pixels of row
-		mov ebx, nFilterLen
-		mov ecx, pFilterStart
-
-		dec nLoopX
-		jnz startXLoop
-
-		mov eax, nLoopXStart
-		mov nLoopX, eax
-		mov eax, nCurY
-		add eax, nIncrementY_FP
-		mov nCurY, eax
-		mov ecx, nLoopY
-		inc ecx
-		mov nLoopY, ecx
-		cmp ecx, nTargetHeight
-		jl  startYLoop
-		emms
-	}
-
-	return tempImage;
-}
-#endif
-
-/////////////////////////////////////////////////////////////////////////////////////////////
-// High quality down- and up-sampling (SIMD implementation)
-/////////////////////////////////////////////////////////////////////////////////////////////
-
-void* SampleDown_HQ_MMX_SSE_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
+// Single high-quality core for both up- and downsampling. The actual filter
+// convolution is dispatched to ApplyFilter_Highway, which runtime-selects SSE2
+// (x86) or AVX2 (x64) via google/highway. nChannels (3 or 4) flows through the
+// whole pipeline so the alpha plane is filtered together with RGB when the
+// source carries transparency - no separate alpha-restore pass is needed.
+//
+// The two-pass separable filter is identical to the legacy cores: filter Y,
+// rotate 90 deg, filter X (in the rotated frame), rotate back into a DIB.
+// bUpsampling selects the bicubic kernel path with sharpen = 0.
+void* SampleHQ_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
 	CSize sourceSize, const void* pPixels, int nChannels, double dSharpen,
-	EFilterType eFilter, bool bSSE, uint8* pTarget) {
+	EFilterType eFilter, bool bUpsampling, uint8* pTarget) {
 
-	CAutoXMMFilter filterY(sourceSize.cy, fullTargetSize.cy, dSharpen, eFilter);
-	const XMMFilterKernelBlock& kernelsY = filterY.Kernels();
-	CAutoXMMFilter filterX(sourceSize.cx, fullTargetSize.cx, dSharpen, eFilter);
-	const XMMFilterKernelBlock& kernelsX = filterX.Kernels();
+	// Highway widens to 256-bit (16 int16 lanes) on AVX2 and uses 128-bit (8 lanes)
+	// on SSE2. Use 8 as the planar padding granularity: the packed kernels repeat
+	// each tap 8 times, and LoadDup128 broadcasts that 128-bit element on AVX2.
+	const int nSIMDPixels = 8;
 
-	uint32 nIncrementX = (uint32)(sourceSize.cx << 16)/fullTargetSize.cx + 1;
-	uint32 nIncrementY = (uint32)(sourceSize.cy << 16)/fullTargetSize.cy + 1;
+	if (bUpsampling) {
+		CAutoXMMFilter filterY(sourceSize.cy, fullTargetSize.cy, 0.0, Filter_Upsampling_Bicubic);
+		const XMMFilterKernelBlock& kernelsY = filterY.Kernels();
+		CAutoXMMFilter filterX(sourceSize.cx, fullTargetSize.cx, 0.0, Filter_Upsampling_Bicubic);
+		const XMMFilterKernelBlock& kernelsX = filterX.Kernels();
 
-	int nIncOffsetX = (nIncrementX - 65536) >> 1;
-	int nIncOffsetY = (nIncrementY - 65536) >> 1;
-	int nFirstX = (uint32)(nIncOffsetX + nIncrementX*fullTargetOffset.x) >> 16;
-	nFirstX = max(0, nFirstX - kernelsX.Indices[fullTargetOffset.x]->FilterOffset);
-	int nLastX  = (uint32)(nIncOffsetX + nIncrementX*(fullTargetOffset.x + clippedTargetSize.cx - 1)) >> 16;
-	XMMFilterKernel* pLastXFilter = kernelsX.Indices[fullTargetOffset.x + clippedTargetSize.cx - 1];
-	nLastX  = min(sourceSize.cx - 1, nLastX - pLastXFilter->FilterOffset + pLastXFilter->FilterLen - 1);
-	int nFirstY = (uint32)(nIncOffsetY + nIncrementY*fullTargetOffset.y) >> 16;
-	nFirstY = max(0, nFirstY - kernelsY.Indices[fullTargetOffset.y]->FilterOffset);
-	int nLastY  = (uint32)(nIncOffsetY + nIncrementY*(fullTargetOffset.y + clippedTargetSize.cy - 1)) >> 16;
-	XMMFilterKernel* pLastYFilter = kernelsY.Indices[fullTargetOffset.y + clippedTargetSize.cy - 1];
-	nLastY  = min(sourceSize.cy - 1, nLastY - pLastYFilter->FilterOffset + pLastYFilter->FilterLen - 1);
-	int nFilterOffsetX = fullTargetOffset.x;
-	int nFilterOffsetY = fullTargetOffset.y;
-	int nStartX = nIncOffsetX + nIncrementX*fullTargetOffset.x - 65536*nFirstX;
-	int nStartY = nIncOffsetY + nIncrementY*fullTargetOffset.y - 65536*nFirstY;
+		int nTargetWidth = clippedTargetSize.cx;
+		int nTargetHeight = clippedTargetSize.cy;
+		int nSourceWidth = sourceSize.cx;
+		int nSourceHeight = sourceSize.cy;
 
-	// Resize Y
-	double t1 = Helpers::GetExactTickCount();
-	CXMMImage* pImage1 = new CXMMImage(sourceSize.cx, sourceSize.cy, nFirstX, nLastX, nFirstY, nLastY, pPixels, nChannels, 8);
-	if (pImage1->AlignedPtr() == NULL) {
+		uint32 nIncrementX = (uint32)(65536*(uint32)(nSourceWidth - 1)/(fullTargetSize.cx - 1));
+		uint32 nIncrementY = (uint32)(65536*(uint32)(nSourceHeight - 1)/(fullTargetSize.cy - 1));
+
+		int nFirstX = max(0, int((uint32)(nIncrementX*fullTargetOffset.x) >> 16) - 1);
+		int nLastX = min(sourceSize.cx - 1, int(((uint32)(nIncrementX*(fullTargetOffset.x + nTargetWidth - 1)) >> 16) + 2));
+		int nFirstY = max(0, int((uint32)(nIncrementY*fullTargetOffset.y) >> 16) - 1);
+		int nLastY = min(sourceSize.cy - 1, int(((uint32)(nIncrementY*(fullTargetOffset.y + nTargetHeight - 1)) >> 16) + 2));
+		int nFilterOffsetX = fullTargetOffset.x;
+		int nFilterOffsetY = fullTargetOffset.y;
+		int nStartX = nIncrementX*fullTargetOffset.x - 65536*nFirstX;
+		int nStartY = nIncrementY*fullTargetOffset.y - 65536*nFirstY;
+
+		CXMMImage* pImage1 = new CXMMImage(nSourceWidth, nSourceHeight, nFirstX, nLastX, nFirstY, nLastY, pPixels, nChannels, nSIMDPixels);
+		if (pImage1->AlignedPtr() == NULL) { delete pImage1; return NULL; }
+		CXMMImage* pImage2 = hwy_ext::ApplyFilter_Highway(pImage1->GetHeight(), nTargetHeight, pImage1->GetWidth(), nStartY, 0, nIncrementY, kernelsY, nFilterOffsetY, pImage1);
 		delete pImage1;
-		return NULL;
+		if (pImage2 == NULL) return NULL;
+		CXMMImage* pImage3 = Rotate(pImage2, nSIMDPixels);
+		delete pImage2;
+		if (pImage3 == NULL) return NULL;
+		CXMMImage* pImage4 = hwy_ext::ApplyFilter_Highway(pImage3->GetHeight(), nTargetWidth, pImage3->GetHeight(), nStartX, 0, nIncrementX, kernelsX, nFilterOffsetX, pImage3);
+		delete pImage3;
+		if (pImage4 == NULL) return NULL;
+		void* pTargetDIB = RotateToDIB(pImage4, nSIMDPixels, pTarget);
+		delete pImage4;
+		return pTargetDIB;
+	} else {
+		CAutoXMMFilter filterY(sourceSize.cy, fullTargetSize.cy, dSharpen, eFilter);
+		const XMMFilterKernelBlock& kernelsY = filterY.Kernels();
+		CAutoXMMFilter filterX(sourceSize.cx, fullTargetSize.cx, dSharpen, eFilter);
+		const XMMFilterKernelBlock& kernelsX = filterX.Kernels();
+
+		uint32 nIncrementX = (uint32)(sourceSize.cx << 16)/fullTargetSize.cx + 1;
+		uint32 nIncrementY = (uint32)(sourceSize.cy << 16)/fullTargetSize.cy + 1;
+
+		int nIncOffsetX = (nIncrementX - 65536) >> 1;
+		int nIncOffsetY = (nIncrementY - 65536) >> 1;
+		int nFirstX = (uint32)(nIncOffsetX + nIncrementX*fullTargetOffset.x) >> 16;
+		nFirstX = max(0, nFirstX - kernelsX.Indices[fullTargetOffset.x]->FilterOffset);
+		int nLastX  = (uint32)(nIncOffsetX + nIncrementX*(fullTargetOffset.x + clippedTargetSize.cx - 1)) >> 16;
+		XMMFilterKernel* pLastXFilter = kernelsX.Indices[fullTargetOffset.x + clippedTargetSize.cx - 1];
+		nLastX  = min(sourceSize.cx - 1, nLastX - pLastXFilter->FilterOffset + pLastXFilter->FilterLen - 1);
+		int nFirstY = (uint32)(nIncOffsetY + nIncrementY*fullTargetOffset.y) >> 16;
+		nFirstY = max(0, nFirstY - kernelsY.Indices[fullTargetOffset.y]->FilterOffset);
+		int nLastY  = (uint32)(nIncOffsetY + nIncrementY*(fullTargetOffset.y + clippedTargetSize.cy - 1)) >> 16;
+		XMMFilterKernel* pLastYFilter = kernelsY.Indices[fullTargetOffset.y + clippedTargetSize.cy - 1];
+		nLastY  = min(sourceSize.cy - 1, nLastY - pLastYFilter->FilterOffset + pLastYFilter->FilterLen - 1);
+		int nFilterOffsetX = fullTargetOffset.x;
+		int nFilterOffsetY = fullTargetOffset.y;
+		int nStartX = nIncOffsetX + nIncrementX*fullTargetOffset.x - 65536*nFirstX;
+		int nStartY = nIncOffsetY + nIncrementY*fullTargetOffset.y - 65536*nFirstY;
+
+		CXMMImage* pImage1 = new CXMMImage(sourceSize.cx, sourceSize.cy, nFirstX, nLastX, nFirstY, nLastY, pPixels, nChannels, nSIMDPixels);
+		if (pImage1->AlignedPtr() == NULL) { delete pImage1; return NULL; }
+		CXMMImage* pImage2 = hwy_ext::ApplyFilter_Highway(pImage1->GetHeight(), clippedTargetSize.cy, pImage1->GetWidth(), nStartY, 0, nIncrementY, kernelsY, nFilterOffsetY, pImage1);
+		delete pImage1;
+		if (pImage2 == NULL) return NULL;
+		CXMMImage* pImage3 = Rotate(pImage2, nSIMDPixels);
+		delete pImage2;
+		if (pImage3 == NULL) return NULL;
+		CXMMImage* pImage4 = hwy_ext::ApplyFilter_Highway(pImage3->GetHeight(), clippedTargetSize.cx, clippedTargetSize.cy, nStartX, 0, nIncrementX, kernelsX, nFilterOffsetX, pImage3);
+		delete pImage3;
+		if (pImage4 == NULL) return NULL;
+		void* pTargetDIB = RotateToDIB(pImage4, nSIMDPixels, pTarget);
+		delete pImage4;
+		return pTargetDIB;
 	}
-	double t2 = Helpers::GetExactTickCount();
-	CXMMImage* pImage2 = bSSE ? ApplyFilter_SSE(pImage1->GetHeight(), clippedTargetSize.cy, pImage1->GetWidth(), nStartY, 0, nIncrementY, kernelsY, nFilterOffsetY, pImage1) :
-		ApplyFilter_MMX(pImage1->GetHeight(), clippedTargetSize.cy, pImage1->GetWidth(), nStartY, 0, nIncrementY, kernelsY, nFilterOffsetY, pImage1);
-	delete pImage1;
-	if (pImage2 == NULL) return NULL;
-	double t3 = Helpers::GetExactTickCount();
-	// Rotate
-	CXMMImage* pImage3 = Rotate(pImage2, 8);
-	delete pImage2;
-	if (pImage3 == NULL) return NULL;
-	double t4 = Helpers::GetExactTickCount();
-	// Resize Y again
-	CXMMImage* pImage4 = bSSE ? ApplyFilter_SSE(pImage3->GetHeight(), clippedTargetSize.cx, clippedTargetSize.cy, nStartX, 0, nIncrementX, kernelsX, nFilterOffsetX, pImage3) :
-		ApplyFilter_MMX(pImage3->GetHeight(), clippedTargetSize.cx, clippedTargetSize.cy, nStartX, 0, nIncrementX, kernelsX, nFilterOffsetX, pImage3);
-	delete pImage3;
-	if (pImage4 == NULL) return NULL;
-	double t5 = Helpers::GetExactTickCount();
-	// Rotate back
-	void* pTargetDIB = RotateToDIB(pImage4, 8, pTarget);
-	double t6 = Helpers::GetExactTickCount();
-
-	delete pImage4;
-
-	_stprintf_s(s_TimingInfo, 256, _T("Create: %.2f, Filter1: %.2f, Rotate: %.2f, Filter2: %.2f, Rotate: %.2f"), t2 - t1, t3 - t2, t4 - t3, t5 - t4, t6 - t5);
-	
-	return pTargetDIB;
 }
 
-void* SampleDown_HQ_AVX_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
-	CSize sourceSize, const void* pPixels, int nChannels, double dSharpen,
-	EFilterType eFilter, uint8* pTarget) {
-
-	CAutoAVXFilter filterY(sourceSize.cy, fullTargetSize.cy, dSharpen, eFilter);
-	const AVXFilterKernelBlock& kernelsY = filterY.Kernels();
-	CAutoAVXFilter filterX(sourceSize.cx, fullTargetSize.cx, dSharpen, eFilter);
-	const AVXFilterKernelBlock& kernelsX = filterX.Kernels();
-
-	uint32 nIncrementX = (uint32)(sourceSize.cx << 16) / fullTargetSize.cx + 1;
-	uint32 nIncrementY = (uint32)(sourceSize.cy << 16) / fullTargetSize.cy + 1;
-
-	int nIncOffsetX = (nIncrementX - 65536) >> 1;
-	int nIncOffsetY = (nIncrementY - 65536) >> 1;
-	int nFirstX = (uint32)(nIncOffsetX + nIncrementX*fullTargetOffset.x) >> 16;
-	nFirstX = max(0, nFirstX - kernelsX.Indices[fullTargetOffset.x]->FilterOffset);
-	int nLastX = (uint32)(nIncOffsetX + nIncrementX*(fullTargetOffset.x + clippedTargetSize.cx - 1)) >> 16;
-	AVXFilterKernel* pLastXFilter = kernelsX.Indices[fullTargetOffset.x + clippedTargetSize.cx - 1];
-	nLastX = min(sourceSize.cx - 1, nLastX - pLastXFilter->FilterOffset + pLastXFilter->FilterLen - 1);
-	int nFirstY = (uint32)(nIncOffsetY + nIncrementY*fullTargetOffset.y) >> 16;
-	nFirstY = max(0, nFirstY - kernelsY.Indices[fullTargetOffset.y]->FilterOffset);
-	int nLastY = (uint32)(nIncOffsetY + nIncrementY*(fullTargetOffset.y + clippedTargetSize.cy - 1)) >> 16;
-	AVXFilterKernel* pLastYFilter = kernelsY.Indices[fullTargetOffset.y + clippedTargetSize.cy - 1];
-	nLastY = min(sourceSize.cy - 1, nLastY - pLastYFilter->FilterOffset + pLastYFilter->FilterLen - 1);
-	int nFilterOffsetX = fullTargetOffset.x;
-	int nFilterOffsetY = fullTargetOffset.y;
-	int nStartX = nIncOffsetX + nIncrementX*fullTargetOffset.x - 65536 * nFirstX;
-	int nStartY = nIncOffsetY + nIncrementY*fullTargetOffset.y - 65536 * nFirstY;
-
-	// Resize Y
-	double t1 = Helpers::GetExactTickCount();
-	CXMMImage* pImage1 = new CXMMImage(sourceSize.cx, sourceSize.cy, nFirstX, nLastX, nFirstY, nLastY, pPixels, nChannels, 16);
-	if (pImage1->AlignedPtr() == NULL) {
-		delete pImage1;
-		return NULL;
-	}
-	double t2 = Helpers::GetExactTickCount();
-	CXMMImage* pImage2 = ApplyFilter_AVX(pImage1->GetHeight(), clippedTargetSize.cy, pImage1->GetWidth(), nStartY, 0, nIncrementY, kernelsY, nFilterOffsetY, pImage1);
-	delete pImage1;
-	if (pImage2 == NULL) return NULL;
-	double t3 = Helpers::GetExactTickCount();
-	// Rotate
-	CXMMImage* pImage3 = Rotate(pImage2, 16);
-	delete pImage2;
-	if (pImage3 == NULL) return NULL;
-	double t4 = Helpers::GetExactTickCount();
-	// Resize Y again
-	CXMMImage* pImage4 = ApplyFilter_AVX(pImage3->GetHeight(), clippedTargetSize.cx, clippedTargetSize.cy, nStartX, 0, nIncrementX, kernelsX, nFilterOffsetX, pImage3);
-	delete pImage3;
-	if (pImage4 == NULL) return NULL;
-	double t5 = Helpers::GetExactTickCount();
-	// Rotate back
-	void* pTargetDIB = RotateToDIB(pImage4, 16, pTarget);
-	double t6 = Helpers::GetExactTickCount();
-
-	delete pImage4;
-
-	_stprintf_s(s_TimingInfo, 256, _T("Create: %.2f, Filter1: %.2f, Rotate: %.2f, Filter2: %.2f, Rotate: %.2f"), t2 - t1, t3 - t2, t4 - t3, t5 - t4, t6 - t5);
-
-	return pTargetDIB;
-}
-
-void* SampleUp_HQ_MMX_SSE_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
-	CSize sourceSize, const void* pPixels, int nChannels, bool bSSE, uint8* pTarget) {
-	int nTargetWidth = clippedTargetSize.cx;
-	int nTargetHeight = clippedTargetSize.cy;
-	int nSourceWidth = sourceSize.cx;
-	int nSourceHeight = sourceSize.cy;
-
-	uint32 nIncrementX = (uint32)(65536*(uint32)(nSourceWidth - 1)/(fullTargetSize.cx - 1));
-	uint32 nIncrementY = (uint32)(65536*(uint32)(nSourceHeight - 1)/(fullTargetSize.cy - 1));
-
-	int nFirstX = max(0, int((uint32)(nIncrementX*fullTargetOffset.x) >> 16) - 1);
-	int nLastX = min(sourceSize.cx - 1, int(((uint32)(nIncrementX*(fullTargetOffset.x + nTargetWidth - 1)) >> 16) + 2));
-	int nFirstY = max(0, int((uint32)(nIncrementY*fullTargetOffset.y) >> 16) - 1);
-	int nLastY = min(sourceSize.cy - 1, int(((uint32)(nIncrementY*(fullTargetOffset.y + nTargetHeight - 1)) >> 16) + 2));
-	int nFirstTargetWidth = nLastX - nFirstX + 1;
-	int nFirstTargetHeight = nTargetHeight;
-	int nFilterOffsetX = fullTargetOffset.x;
-	int nFilterOffsetY = fullTargetOffset.y;
-	int nStartX = nIncrementX*fullTargetOffset.x - 65536*nFirstX;
-	int nStartY = nIncrementY*fullTargetOffset.y - 65536*nFirstY;
-
-	CAutoXMMFilter filterY(nSourceHeight, fullTargetSize.cy, 0.0, Filter_Upsampling_Bicubic);
-	const XMMFilterKernelBlock& kernelsY = filterY.Kernels();
-
-	CAutoXMMFilter filterX(nSourceWidth, fullTargetSize.cx, 0.0, Filter_Upsampling_Bicubic);
-	const XMMFilterKernelBlock& kernelsX = filterX.Kernels();
-
-	// Resize Y
-	CXMMImage* pImage1 = new CXMMImage(nSourceWidth, nSourceHeight, nFirstX, nLastX, nFirstY, nLastY, pPixels, nChannels, 8);
-	if (pImage1->AlignedPtr() == NULL) {
-		delete pImage1;
-		return NULL;
-	}
-	CXMMImage* pImage2 = bSSE ? ApplyFilter_SSE(pImage1->GetHeight(), nTargetHeight, pImage1->GetWidth(), nStartY, 0, nIncrementY, kernelsY, nFilterOffsetY, pImage1) :
-		ApplyFilter_MMX(pImage1->GetHeight(), nTargetHeight, pImage1->GetWidth(), nStartY, 0, nIncrementY, kernelsY, nFilterOffsetY, pImage1);
-	delete pImage1;
-	if (pImage2 == NULL) return NULL;
-	CXMMImage* pImage3 = Rotate(pImage2, 8);
-	delete pImage2;
-	if (pImage3 == NULL) return NULL;
-	CXMMImage* pImage4 = bSSE ? ApplyFilter_SSE(pImage3->GetHeight(), nTargetWidth, nTargetHeight, nStartX, 0, nIncrementX, kernelsX, nFilterOffsetX, pImage3) :
-		ApplyFilter_MMX(pImage3->GetHeight(), nTargetWidth, nTargetHeight, nStartX, 0, nIncrementX, kernelsX, nFilterOffsetX, pImage3);
-	delete pImage3;
-	if (pImage4 == NULL) return NULL;
-	void* pTargetDIB = RotateToDIB(pImage4, 8, pTarget);
-	delete pImage4;
-	
-	return pTargetDIB;
-}
-
-void* SampleUp_HQ_AVX_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
-	CSize sourceSize, const void* pPixels, int nChannels, uint8* pTarget) {
-
-	int nTargetWidth = clippedTargetSize.cx;
-	int nTargetHeight = clippedTargetSize.cy;
-	int nSourceWidth = sourceSize.cx;
-	int nSourceHeight = sourceSize.cy;
-
-	uint32 nIncrementX = (uint32)(65536 * (uint32)(nSourceWidth - 1) / (fullTargetSize.cx - 1));
-	uint32 nIncrementY = (uint32)(65536 * (uint32)(nSourceHeight - 1) / (fullTargetSize.cy - 1));
-
-	int nFirstX = max(0, int((uint32)(nIncrementX*fullTargetOffset.x) >> 16) - 1);
-	int nLastX = min(sourceSize.cx - 1, int(((uint32)(nIncrementX*(fullTargetOffset.x + nTargetWidth - 1)) >> 16) + 2));
-	int nFirstY = max(0, int((uint32)(nIncrementY*fullTargetOffset.y) >> 16) - 1);
-	int nLastY = min(sourceSize.cy - 1, int(((uint32)(nIncrementY*(fullTargetOffset.y + nTargetHeight - 1)) >> 16) + 2));
-	int nFirstTargetWidth = nLastX - nFirstX + 1;
-	int nFirstTargetHeight = nTargetHeight;
-	int nFilterOffsetX = fullTargetOffset.x;
-	int nFilterOffsetY = fullTargetOffset.y;
-	int nStartX = nIncrementX*fullTargetOffset.x - 65536 * nFirstX;
-	int nStartY = nIncrementY*fullTargetOffset.y - 65536 * nFirstY;
-
-	CAutoAVXFilter filterY(nSourceHeight, fullTargetSize.cy, 0.0, Filter_Upsampling_Bicubic);
-	const AVXFilterKernelBlock& kernelsY = filterY.Kernels();
-
-	CAutoAVXFilter filterX(nSourceWidth, fullTargetSize.cx, 0.0, Filter_Upsampling_Bicubic);
-	const AVXFilterKernelBlock& kernelsX = filterX.Kernels();
-
-	// Resize Y
-	CXMMImage* pImage1 = new CXMMImage(nSourceWidth, nSourceHeight, nFirstX, nLastX, nFirstY, nLastY, pPixels, nChannels, 16);
-	if (pImage1->AlignedPtr() == NULL) {
-		delete pImage1;
-		return NULL;
-	}
-	CXMMImage* pImage2 = ApplyFilter_AVX(pImage1->GetHeight(), nTargetHeight, pImage1->GetWidth(), nStartY, 0, nIncrementY, kernelsY, nFilterOffsetY, pImage1);
-	delete pImage1;
-	if (pImage2 == NULL) return NULL;
-	CXMMImage* pImage3 = Rotate(pImage2, 16);
-	delete pImage2;
-	if (pImage3 == NULL) return NULL;
-	CXMMImage* pImage4 = ApplyFilter_AVX(pImage3->GetHeight(), nTargetWidth, nTargetHeight, nStartX, 0, nIncrementX, kernelsX, nFilterOffsetX, pImage3);
-	delete pImage3;
-	if (pImage4 == NULL) return NULL;
-	void* pTargetDIB = RotateToDIB(pImage4, 16, pTarget);
-	delete pImage4;
-
-	return pTargetDIB;
-}
+/////////////////////////////////////////////////////////////////////////////////////////////
+// High quality down- and up-sampling (public SIMD entry points)
+/////////////////////////////////////////////////////////////////////////////////////////////
 
 void* CBasicProcessing::SampleDown_HQ_SIMD(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
 	CSize sourceSize, const void* pPixels, int nChannels, double dSharpen,
-	EFilterType eFilter, SIMDArchitecture simd) {
+	EFilterType eFilter, SIMDArchitecture /*simd*/) {
 	if (pPixels == NULL || clippedTargetSize.cx <= 0 || clippedTargetSize.cy <= 0) {
 		return NULL;
 	}
-	int padding = (simd == AVX2) ? 16 : 8;
-	uint8* pTarget = new(std::nothrow) uint8[clippedTargetSize.cx * 4 * Helpers::DoPadding(clippedTargetSize.cy, padding)];
+	// Highway pads strips to 16 rows; the target buffer is sized for the padded height
+	// so partial strips written by the worker threads stay in bounds.
+	uint8* pTarget = new(std::nothrow) uint8[clippedTargetSize.cx * 4 * Helpers::DoPadding(clippedTargetSize.cy, 16)];
 	if (pTarget == NULL) return NULL;
 	CProcessingThreadPool& threadPool = CProcessingThreadPool::This();
 	CRequestUpDownSampling request(pPixels, sourceSize,
 		pTarget, fullTargetSize, fullTargetOffset, clippedTargetSize,
-		nChannels, dSharpen, eFilter, simd);
+		nChannels, dSharpen, eFilter);
 	bool bSuccess = threadPool.Process(&request);
 
 	return bSuccess ? pTarget : NULL;
 }
 
 void* CBasicProcessing::SampleUp_HQ_SIMD(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
-	CSize sourceSize, const void* pPixels, int nChannels, SIMDArchitecture simd) {
+	CSize sourceSize, const void* pPixels, int nChannels, SIMDArchitecture /*simd*/) {
 	if (pPixels == NULL || fullTargetSize.cx < 2 || fullTargetSize.cy < 2 || clippedTargetSize.cx <= 0 || clippedTargetSize.cy <= 0) {
 		return NULL;
 	}
-	int padding = (simd == AVX2) ? 16 : 8;
-	uint8* pTarget = new(std::nothrow) uint8[clippedTargetSize.cx * 4 * Helpers::DoPadding(clippedTargetSize.cy, padding)];
+	uint8* pTarget = new(std::nothrow) uint8[clippedTargetSize.cx * 4 * Helpers::DoPadding(clippedTargetSize.cy, 16)];
 	if (pTarget == NULL) return NULL;
 	CProcessingThreadPool& threadPool = CProcessingThreadPool::This();
 	CRequestUpDownSampling request(pPixels, sourceSize,
 		pTarget, fullTargetSize, fullTargetOffset, clippedTargetSize,
-		nChannels, 0.0, Filter_Upsampling_Bicubic, simd);
+		nChannels, 0.0, Filter_Upsampling_Bicubic);
 	bool bSuccess = threadPool.Process(&request);
 
 	return bSuccess ? pTarget : NULL;
 }
+
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 // Unsharp mask

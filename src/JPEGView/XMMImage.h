@@ -7,15 +7,18 @@
 // BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBxxx
 // GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGxxx
 // RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRxxx
-// BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBxxx
-// GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGxxx
-// RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRxxx
+// When the source DIB has 4 channels (BGRA), the alpha is stored as a 4th plane
+// so high-quality resampling filters it together with RGB:
+// AAAA... (same layout as the B, G, R planes above).
+// For 3-channel (BGR) sources only 3 planes are stored, matching the legacy layout.
 class CXMMImage
 {
 public:
 	// padding is in pixels (not bytes)
 	CXMMImage(int nWidth, int nHeight, int padding);
 	CXMMImage(int nWidth, int nHeight, bool bPadHeight, int padding); // padding is in pixels (not bytes), width is always padded, height only when bPadHeight is true
+	// padding is in pixels (not bytes), nChannels planes (3 for BGR, 4 for BGRA) are stored
+	CXMMImage(int nWidth, int nHeight, int nChannels, bool bPadHeight, int padding);
 	// convert from section of 24 or 32 bpp DIB, from first to (and including) last column and row
 	// padding is in pixels(not bytes)
 	CXMMImage(int nWidth, int nHeight, int nFirstX, int nLastX, int nFirstY, int nLastY, const void* pDIB, int nChannels, int padding);
@@ -30,17 +33,20 @@ public:
 	int GetHeight() const { return m_nHeight; }
 	int GetPaddedWidth() const { return m_nPaddedWidth; }
 	int GetPaddedHeight() const { return m_nPaddedHeight; }
+	// Number of channels stored (3 for BGR sources, 4 for BGRA sources).
+	int GetNumChannels() const { return m_nChannels; }
 
 	// Generate a BGRA (32 bit) DIB and return it, caller gets ownership of returned object
 	void* ConvertToDIBRGBA() const;
 
 private:
 	int GetLineSize() const { return m_nPaddedWidth*2; }
-	int GetMemSize() const { return GetLineSize()*3*m_nPaddedHeight; }
-	void Init(int nWidth, int nHeight, bool bPadHeight, int padding);
+	int GetMemSize() const { return GetLineSize()*m_nChannels*m_nPaddedHeight; }
+	void Init(int nWidth, int nHeight, int nChannels, bool bPadHeight, int padding);
 
 	void* m_pMemory;
 	int m_nWidth, m_nHeight;
 	int m_nPaddedWidth; // in pixels
 	int m_nPaddedHeight; // in pixels
+	int m_nChannels; // number of planes stored (3 or 4)
 };

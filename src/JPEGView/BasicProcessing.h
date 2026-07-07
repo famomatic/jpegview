@@ -8,9 +8,8 @@ public:
 	// SIMD architecture register width
 	enum SIMDArchitecture
 	{
-		MMX, // 64 bit
-		SSE, // 128 bit
-		AVX2 // 256 bit
+		SSE, // 128 bit (highway runtime-dispatched; kept for API compatibility)
+		AVX2 // 256 bit (highway runtime-dispatched; kept for API compatibility)
 	};
 
 	// Note for all methods: The caller gets ownership of the returned image and is responsible to delete 

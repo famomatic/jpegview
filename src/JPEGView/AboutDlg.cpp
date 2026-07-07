@@ -10,12 +10,10 @@
 
 static LPCTSTR GetSIMDModeString() {
 	Helpers::CPUType cpuType = CSettingsProvider::This().AlgorithmImplementation();
-	if (cpuType == Helpers::CPU_MMX) {
-		return _T("64-bit MMX");
-	} else if (cpuType == Helpers::CPU_SSE) {
-		return _T("128-bit SSE2");
+	if (cpuType == Helpers::CPU_SSE) {
+		return _T("128-bit SSE2 (Highway)");
 	} else if (cpuType == Helpers::CPU_AVX2) {
-		return _T("256-bit AVX2");
+		return _T("256-bit AVX2 (Highway)");
 	}
 	else {
 		return _T("Generic CPU");

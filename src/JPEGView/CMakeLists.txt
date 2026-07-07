@@ -1,7 +1,7 @@
 # JPEGView.exe - main application
 add_executable(JPEGView WIN32
     AboutDlg.cpp
-    ApplyFilterAVX.cpp
+    ApplyFilterHighway.cpp
     AVIFWrapper.cpp
     BasicProcessing.cpp
     BatchCopyDlg.cpp
@@ -131,10 +131,9 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         /EHsc)
 
     # AVX for ApplyFilterAVX on x64 builds.
-    if(CMAKE_VS_PLATFORM_NAME STREQUAL "x64")
-        set_source_files_properties(ApplyFilterAVX.cpp PROPERTIES
-            COMPILE_OPTIONS "/arch:AVX")
-    endif()
+    # google/highway runtime-dispatches SSE2/AVX2 from a single translation
+    # unit (ApplyFilterHighway.cpp), so the per-file /arch:AVX split that the
+    # old AVX kernel needed is gone.
 
     # Static runtime (/MT, /MTd) to match the vcpkg static-* triplet.
     set(_rt "$<$<CONFIG:Debug>:MultiThreadedDebug>$<$<NOT:$<CONFIG:Debug>>:MultiThreaded>")
@@ -148,6 +147,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     target_link_libraries(JPEGView PRIVATE
         WICLoader
         ${JPEGVIEW_DEP_TARGETS}
+        hwy::hwy
         Dbghelp
         gdiplus)
 
