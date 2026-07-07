@@ -176,79 +176,60 @@ void GetZoomParameters(float & fZoom, CPoint & offsets, CSize imageSize, CSize w
 	offsets = CPoint(nOffsetX, nOffsetY);
 }
 
-#ifdef _WIN64
-static CPUType ProbeSSEorAVX2() {
-	__try {
-		// check if CPU supports AVX and the xgetbv instruction
-		int abcd[4];
-		__cpuid(abcd, 1);
-		if ((abcd[2] & 0x18000000) != 0x18000000) // AVX and OSXSAVE bits
-			return CPU_SSE;
-		if ((abcd[2] & 0x04000000) == 0) // XSAVE bit, support for xgetbv
-			return CPU_SSE;
-
-		// check if operating system supports AVX(2)
-		unsigned long long xcr0 = _xgetbv(0);
-		if ((xcr0 & 6) != 6)
-			return CPU_SSE; // nope, only use SSE
-
-		// check if AVX2 instructions are supported
-		const int AVX2BITMASK = 1 << 5;
-		__cpuidex(abcd, 7, 0);
-		return (abcd[1] & AVX2BITMASK) ? CPU_AVX2 : CPU_SSE;
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER) {
-		return CPU_SSE;
-	}
-}
-#endif
-
 CPUType ProbeCPU(void) {
 	static CPUType cpuType = CPU_Unknown;
 	if (cpuType != CPU_Unknown) {
 		return cpuType;
 	}
 
-#ifdef _WIN64
-	return ProbeSSEorAVX2(); // 64 bit always supports at least SSE
-#else
 	// Structured exception handling is mandatory, try/catch(...) does not catch such severe stuff.
+	// Uses compiler intrinsics so the same code path works on x86 and x64 (inline _asm is not
+	// supported by the MSVC x64 compiler).
 	cpuType = CPU_Generic;
 	__try {
-		uint32 FeatureMask;
-		_asm {
-			mov eax, 1
-			cpuid
-			mov FeatureMask, edx
-		}
+		int abcd[4];
+		__cpuid(abcd, 1);
+		uint32 FeatureMask = abcd[3]; // edx
+
 		if ((FeatureMask & (1 << 26)) != 0) {
-			cpuType = CPU_SSE; // this means SSE2
+			// SSE2 available - check for AVX(2) support on top of it
+			if ((abcd[2] & 0x18000000) == 0x18000000 && // AVX and OSXSAVE bits
+				(abcd[2] & 0x04000000) != 0) {          // XSAVE bit, support for xgetbv
+				// check if operating system supports AVX(2)
+				unsigned long long xcr0 = _xgetbv(0);
+				if ((xcr0 & 6) == 6) {
+					// check if AVX2 instructions are supported
+					int abcd7[4];
+					__cpuidex(abcd7, 7, 0);
+					const int AVX2BITMASK = 1 << 5;
+					cpuType = (abcd7[1] & AVX2BITMASK) ? CPU_AVX2 : CPU_SSE;
+				} else {
+					cpuType = CPU_SSE; // OS does not support AVX, only use SSE
+				}
+			} else {
+				cpuType = CPU_SSE;
+			}
 		} else if ((FeatureMask & (1 << 25)) != 0) {
 			cpuType = CPU_MMX; // yes, we need SSE as the pmax/pmin stuff was coming with the PIII and SSE
 		} else {
 			// last chance - check if AMD and if yes, test for AMD MMX extensions that also implement pmax/pmin
-			_asm {
-				mov eax, 0
-				cpuid
-				cmp ebx, 0x68747541 // is AMD processor?
-				jne GiveUp
-				mov eax, 0x80000001
-				cpuid
-				mov FeatureMask, edx
-GiveUp:
-				mov FeatureMask, 0
+			__cpuid(abcd, 0);
+			bool isAmd = (abcd[1] == 0x68747541); // ebx == 'Auth' (AMD processor?)
+			if (isAmd) {
+				__cpuid(abcd, 0x80000001);
+				if ((abcd[3] & (1 << 22)) != 0) {
+					cpuType = CPU_MMX; // extended AMD MMX instructions
+				}
 			}
-			if ((FeatureMask & (1 << 22)) != 0) {
-				cpuType = CPU_MMX; // extended AMD MMX instructions
+			if (cpuType == CPU_Unknown) {
+				cpuType = CPU_Generic;
 			}
 		}
-		
 	} __except ( EXCEPTION_EXECUTE_HANDLER ) {
 		// even CPUID is not supported, use generic code
 		return cpuType;
 	}
 	return cpuType;
-#endif
 }
 
 // returns if the CPU supports some form of hardware multiprocessing, e.g. hyperthreading or multicore
