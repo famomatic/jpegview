@@ -9,6 +9,7 @@
 #include "TJPEGWrapper.h"
 #include "WEBPWrapper.h"
 #include "QOIWrapper.h"
+#include "ThumbnailCache.h"
 #include <gdiplus.h>
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -469,8 +470,16 @@ bool CSaveImage::SaveImage(LPCTSTR sFileName, CJPEGImage * pImage, const CImageP
 		}
 	}
 	pImage->EnableDimming(true);
+pImage->EnableDimming(true);
 
-	return bSuccess;
+// The on-disk thumbnail cache keys on file identity (path + size + mtime).
+// After saving, the destination file changed - drop any stale cache entry so
+// the next open rebuilds the thumbnail from the fresh pixels.
+if (bSuccess) {
+CThumbnailCache::This().Invalidate(sFileName);
+}
+
+return bSuccess;
 }
 
 bool CSaveImage::SaveImage(LPCTSTR sFileName, CJPEGImage * pImage, bool bUseLosslessWEBP)

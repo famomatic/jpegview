@@ -1332,8 +1332,13 @@ void CImageLoadThread::ProcessReadJXRRequest(CRequest* request) {
 }
 
 bool CImageLoadThread::ProcessImageAfterLoad(CRequest * request) {
-	// set process parameters depending on filename
-	request->Image->SetFileDependentProcessParams(request->FileName, &(request->ProcessParams));
+	// Remember the source file path on the image so the on-disk thumbnail
+	// cache can key entries by it later (in CreateThumbnailImage()).
+	if (request->Image != NULL && !request->FileName.IsEmpty()) {
+		request->Image->SetSourceFile(request->FileName);
+	}
+// set process parameters depending on filename
+request->Image->SetFileDependentProcessParams(request->FileName, &(request->ProcessParams));
 
 	// First do rotation, this maybe modifies the width and height
 	if (!request->Image->VerifyRotation(CRotationParams(request->ProcessParams.RotationParams, request->ProcessParams.RotationParams.Rotation + request->ProcessParams.UserRotation))) {

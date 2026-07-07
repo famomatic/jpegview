@@ -91,6 +91,7 @@ add_executable(JPEGView WIN32
     EXRWrapper.cpp
     HDRWrapper.cpp
     JXRWrapper.cpp
+    ThumbnailCache.cpp
     CrtDbgStub.cpp
     res/JPEGView.ico)
 

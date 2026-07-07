@@ -137,13 +137,20 @@ CSettingsProvider::CSettingsProvider(void) {
 	else {
 		m_eCPUAlgorithm = Helpers::ProbeCPU();
 	}
-	m_nNumCores = GetInt(_T("CPUCoresUsed"), 0, 0, 4);
+	// CPUCoresUsed accepts 0 (auto-detect, uncapped) or an explicit count up to
+	// 64 threads. The legacy hard cap of 4 was removed so modern multi-core
+	// machines are fully utilised; see ProcessingThreadPool.
+	m_nNumCores = GetInt(_T("CPUCoresUsed"), 0, 0, 64);
 	if (m_nNumCores == 0) {
 		m_nNumCores = Helpers::NumCoresPerPhysicalProc();
-		if (m_nNumCores > 4) m_nNumCores = 4;
+		if (m_nNumCores < 1) m_nNumCores = 1;
 	}
 
 	CString sDownSampling = GetString(_T("DownSamplingFilter"), _T("BestQuality"));
+	// Persistent on-disk thumbnail cache under %TEMP%\JPEGView\thumbcache\.
+	// Default on, 200 MB. Set ThumbnailCacheEnabled=false or MaxMB=0 to disable.
+	m_bThumbnailCacheEnabled = GetBool(_T("ThumbnailCacheEnabled"), true);
+	m_nThumbnailCacheMaxMB = GetInt(_T("ThumbnailCacheMaxMB"), 200, 8, 8192);
 	if (sDownSampling.CompareNoCase(_T("NoAliasing")) == 0) {
 		m_eDownsamplingFilter = Filter_Downsampling_No_Aliasing;
 	}

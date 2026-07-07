@@ -49,9 +49,22 @@ DisplayMonitor=-1
 ; Use AutoDetect to detect the best possible algorithm to use
 CPUType=AutoDetect
 
-; Number of CPU cores used. Set to 0 for auto detection.
-; Must be 1 to 4, or 0 for auto detect.
+; Number of CPU cores used for parallel image processing.
+; 0 = auto detect (uses all physical cores, uncapped).
+; 1 to 64 = use exactly that many cores.
 CPUCoresUsed=0
+
+; Persistent on-disk thumbnail cache.
+; The small preview image shown in the zoom navigator / print preview is
+; decoded once and cached to disk under %TEMP%\JPEGView\thumbcache\ so
+; revisiting a file is instant. Cache files are auto-evicted (LRU) and live
+; in the user TEMP dir, so they never pollute your image folders.
+; true  = enable (default)
+; false = disable
+ThumbnailCacheEnabled=true
+; Maximum total cache size in megabytes. Older entries are removed first.
+; Range 8 to 8192. Set to a small value to effectively disable.
+ThumbnailCacheMaxMB=200
 
 ; Editor for INI files
 ; notepad : Use notepad.exe

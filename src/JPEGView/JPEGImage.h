@@ -206,6 +206,11 @@ public:
 	// returns the number of channels in the OriginalPixels (3 or 4, corresponding to 24 bpp and 32 bpp)
 	int OriginalChannels() const { return m_nOriginalChannels; }
 
+	// Source file path the image was loaded from (empty for clipboard/etc).
+	// Used only as a key for the on-disk thumbnail cache; not dereferenced.
+	LPCTSTR SourceFile() const { return m_sSourceFile; }
+	void SetSourceFile(LPCTSTR sFile) { m_sSourceFile = (sFile == NULL) ? _T("") : sFile; }
+
 	// raw access to DIB pixels with no LUT applied - do not delete or store the returned pointer
 	// note that this DIB can be NULL due to optimization if currently only the processed DIB is maintained
 	void* DIBPixels() { return m_pDIBPixels; }
@@ -357,6 +362,12 @@ private:
 	int m_nOrigWidth, m_nOrigHeight; // these may changes by rotation
 	int m_nInitOrigWidth, m_nInitOrigHeight; // original width of image when constructed (before any rotation and crop)
 	int m_nOriginalChannels;
+	CString m_sSourceFile; // source file path, for thumbnail cache keying
+	// Transient state used only inside CreateThumbnailImage() to carry the
+	// resolved source file signature from the cache-lookup to the cache-store.
+	__int64 m_cacheFileSize;
+	FILETIME m_cacheFileModTime;
+	bool m_cacheFileValid;
 	__int64 m_nPixelHash;
 	EImageFormat m_eImageFormat;
 	TJSAMP m_eJPEGChromoSampling;

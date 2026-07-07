@@ -47,6 +47,9 @@ public:
 	LPCTSTR Language() { return m_sLanguage; }
 	Helpers::CPUType AlgorithmImplementation() { return m_eCPUAlgorithm; }
 	int NumberOfCoresToUse() { return m_nNumCores; }
+	// Persistent on-disk thumbnail cache (stored under %TEMP%\JPEGView\thumbcache\).
+	bool ThumbnailCacheEnabled() { return m_bThumbnailCacheEnabled; }
+	int  ThumbnailCacheMaxMB() { return m_nThumbnailCacheMaxMB; }
 	EFilterType DownsamplingFilter() { return m_eDownsamplingFilter; }
 	Helpers::ESorting Sorting() { return m_eSorting; }
 	bool IsSortedAscending() { return m_bIsSortedAscending; }
@@ -219,6 +222,8 @@ private:
 	CString m_sLanguage;
 	Helpers::CPUType m_eCPUAlgorithm;
 	int m_nNumCores;
+	bool m_bThumbnailCacheEnabled;
+	int m_nThumbnailCacheMaxMB;
 	EFilterType m_eDownsamplingFilter;
 	Helpers::ESorting m_eSorting;
 	bool m_bIsSortedAscending;

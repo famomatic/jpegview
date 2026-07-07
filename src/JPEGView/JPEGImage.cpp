@@ -11,6 +11,7 @@
 #include "RawMetadata.h"
 #include "MaxImageDef.h"
 #include "turbojpeg.h"
+#include "ThumbnailCache.h"
 #include <math.h>
 #include <assert.h>
 
@@ -130,6 +131,11 @@ CJPEGImage::CJPEGImage(int nWidth, int nHeight, void* pPixels, void* pEXIFData, 
 	m_bUnsharpMaskParamsValid = false;
 	m_bIsThumbnailImage = bIsThumbnailImage;
 	m_pCachedProcessedHistogram = NULL;
+
+	m_sSourceFile = _T("");
+	m_cacheFileSize = 0;
+	memset(&m_cacheFileModTime, 0, sizeof(FILETIME));
+	m_cacheFileValid = false;
 
 	m_bCropped = false;
 	m_bIsDestructivelyProcessed = false;
@@ -1477,6 +1483,45 @@ CJPEGImage* CJPEGImage::CreateThumbnailImage() {
 	if (m_pLDC == NULL) {
 		m_pLDC = new CLocalDensityCorr(*this, true);
 	}
+
+	// On-disk thumbnail cache: if this image came from a file, try to restore a
+	// previously cached downsampled copy. The key is derived from path + size +
+	// mtime, so any edit invalidates it automatically. Only large images (the
+	// expensive path that downsamples via the LDC) benefit from caching; small
+	// images already take a cheap full-pixel copy below.
+	const bool bCacheEligible = !m_sSourceFile.IsEmpty() && (m_nOrigWidth * m_nOrigHeight >= 120000);
+	if (bCacheEligible) {
+		// Resolve current file identity (size + mtime) from disk.
+		HANDLE hFile = ::CreateFile(m_sSourceFile, GENERIC_READ, FILE_SHARE_READ, NULL,
+			OPEN_EXISTING, 0, NULL);
+		if (hFile != INVALID_HANDLE_VALUE) {
+			FILETIME ftMod;
+			LARGE_INTEGER liSize;
+			bool bHaveStat = (::GetFileTime(hFile, NULL, NULL, &ftMod) != FALSE) &&
+				(::GetFileSizeEx(hFile, &liSize) != FALSE);
+			::CloseHandle(hFile);
+			if (bHaveStat && liSize.QuadPart > 0) {
+				CJPEGImage* pCached = NULL;
+				int nCacheOrigW = 0, nCacheOrigH = 0;
+			if (CThumbnailCache::This().TryGet(m_sSourceFile, liSize.QuadPart, ftMod,
+					pCached, nCacheOrigW, nCacheOrigH)) {
+				return pCached; // cache hit - caller takes ownership
+			}
+			// Cache miss: remember the signature so we can store the result.
+				// We pass it to the cache after building the thumbnail below.
+				m_cacheFileSize = liSize.QuadPart;
+				m_cacheFileModTime = ftMod;
+				m_cacheFileValid = true;
+			} else {
+				m_cacheFileValid = false;
+			}
+		} else {
+			m_cacheFileValid = false;
+		}
+	} else {
+		m_cacheFileValid = false;
+	}
+
 	void* pPixels = NULL;
 	int nWidth, nHeight;
 	if (m_nOrigWidth*m_nOrigHeight < 120000) {
@@ -1497,7 +1542,18 @@ CJPEGImage* CJPEGImage::CreateThumbnailImage() {
 		nHeight = psiSize.cy;
 		pPixels = m_pLDC->GetPSImageAsDIB();
 	}
-	return new CJPEGImage(nWidth, nHeight, pPixels, NULL, 4, -1, IF_CLIPBOARD, false, 0, 1, 0, m_pLDC, true);
+	CJPEGImage* pThumb = new CJPEGImage(nWidth, nHeight, pPixels, NULL, 4, -1, IF_CLIPBOARD, false, 0, 1, 0, m_pLDC, true);
+
+	// Store the freshly built thumbnail to disk for next time, if we resolved a
+	// valid source file signature above. Pass our original dimensions so the
+	// cache entry is self-describing.
+	if (bCacheEligible && m_cacheFileValid && pThumb != NULL) {
+		CThumbnailCache::This().Put(m_sSourceFile, m_cacheFileSize,
+			m_cacheFileModTime, pThumb, m_nOrigWidth, m_nOrigHeight);
+	}
+	m_cacheFileValid = false;
+
+	return pThumb;
 }
 
 void CJPEGImage::DrawGridLines(void * pDIB, const CSize& dibSize) {
@@ -1518,4 +1574,3 @@ void CJPEGImage::DrawGridLines(void * pDIB, const CSize& dibSize) {
 		}
 	}
 }
-
