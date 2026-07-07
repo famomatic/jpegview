@@ -1849,9 +1849,16 @@ static void RotateBlockToDIB(const int16* pSrc, uint8* pTgt, int nWidth, int nHe
 	uint8* pTarget = pTgt + nHeight * 4 * nXStart + nYStart * 4;
 	uint8* pStartYPtr = pTarget;
 	int nLoopX = Helpers::DoPadding(nBlockWidth, simdPixelsPerRegister) / simdPixelsPerRegister;
-	// After writing B, G, R the pointer must skip the alpha byte; after writing the
-	// alpha byte (4-channel case) it advances to the next pixel row.
-	int nTargetIncrement = simdPixelsPerRegister * nIncTargetLine - 2;
+	// Each pixel writes nChannels channel bytes (B,G,R[+A]) into the dest BGRA DIB. Between
+	// channels the loop does pTarget++ (nChannels-1 times: after B, after G, and after R in
+	// the 4-channel case). This increment then advances to the next transposed pixel column,
+	// i.e. simdPixelsPerRegister dest rows down = simdPixelsPerRegister*nIncTargetLine bytes,
+	// minus the (nChannels-1) pTarget++ already applied. The legacy 3-channel code hard-coded
+	// -2 (= -(3-1)); the 4-channel alpha path needs -3 (= -(4-1)). Using -nChannels would be
+	// one byte short and shift B/G/R by one byte per column (visible RGB tearing); using -2
+	// unconditionally leaves the alpha write one byte past each pixel, corrupting the next
+	// column's B (heap corruption). Net advance per pixel = simdPixelsPerRegister*nIncTargetLine.
+	int nTargetIncrement = simdPixelsPerRegister * nIncTargetLine - (nChannels - 1);
 
 	for (int i = 0; i < nBlockHeight; i++) {
 		for (int j = 0; j < nLoopX; j++) {
@@ -1951,9 +1958,14 @@ void* SampleHQ_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clipped
 	EFilterType eFilter, bool bUpsampling, uint8* pTarget) {
 
 	// Highway widens to 256-bit (16 int16 lanes) on AVX2 and uses 128-bit (8 lanes)
-	// on SSE2. Use 8 as the planar padding granularity: the packed kernels repeat
-	// each tap 8 times, and LoadDup128 broadcasts that 128-bit element on AVX2.
-	const int nSIMDPixels = 8;
+	// on SSE2. The packed kernel format stores each tap repeated 8 times (128-bit)
+	// and LoadDup128 broadcasts it to 256-bit at runtime, but the source/dest pixel
+	// buffers are read/written in full N-wide vectors, so the planar buffers must be
+	// padded to the largest lane width (16) to keep AVX2 loads/stores in bounds even
+	// when N is selected at runtime. Using 16 here also keeps the CXMMImage layout
+	// consistent with ApplyFilter_Highway's tempImage (padded to N) and with the
+	// worker-thread strip target buffer (padded to 16 in Sample*_HQ_SIMD).
+	const int nSIMDPixels = 16;
 
 	if (bUpsampling) {
 		CAutoXMMFilter filterY(sourceSize.cy, fullTargetSize.cy, 0.0, Filter_Upsampling_Bicubic);
@@ -1986,7 +1998,7 @@ void* SampleHQ_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clipped
 		CXMMImage* pImage3 = Rotate(pImage2, nSIMDPixels);
 		delete pImage2;
 		if (pImage3 == NULL) return NULL;
-		CXMMImage* pImage4 = hwy_ext::ApplyFilter_Highway(pImage3->GetHeight(), nTargetWidth, pImage3->GetHeight(), nStartX, 0, nIncrementX, kernelsX, nFilterOffsetX, pImage3);
+		CXMMImage* pImage4 = hwy_ext::ApplyFilter_Highway(pImage3->GetHeight(), nTargetWidth, nTargetHeight, nStartX, 0, nIncrementX, kernelsX, nFilterOffsetX, pImage3);
 		delete pImage3;
 		if (pImage4 == NULL) return NULL;
 		void* pTargetDIB = RotateToDIB(pImage4, nSIMDPixels, pTarget);

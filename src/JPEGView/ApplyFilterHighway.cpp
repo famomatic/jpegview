@@ -43,7 +43,11 @@ CXMMImage* ApplyFilterKernel(int /*nSourceHeight*/, int nTargetHeight, int nWidt
 
 	int nStartXAligned = nStartX & ~static_cast<int>((N - 1));
 	int nEndXAligned = (nStartX + nWidth + static_cast<int>(N - 1)) & ~static_cast<int>((N - 1));
-	CXMMImage* tempImage = new CXMMImage(nEndXAligned - nStartXAligned, nTargetHeight, nChannels, static_cast<int>(N));
+	// NOTE: CXMMImage has a 4-arg overload CXMMImage(w,h,bool bPadHeight,int padding); passing the
+	// channel count as the 3rd arg would be silently coerced to bool and allocate only 3 planes,
+	// so the 4-plane (alpha) write below runs off the end of the buffer. Use the explicit
+	// (width,height,nChannels,bPadHeight,padding) ctor with the same padding the legacy code used.
+	CXMMImage* tempImage = new CXMMImage(nEndXAligned - nStartXAligned, nTargetHeight, nChannels, false, static_cast<int>(N));
 	if (tempImage->AlignedPtr() == NULL) {
 		delete tempImage;
 		return NULL;
