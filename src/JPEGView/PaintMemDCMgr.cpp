@@ -3,6 +3,7 @@
 #include "EXIFDisplay.h"
 #include "SettingsProvider.h"
 #include "PaintMemDCMgr.h"
+#include "GpuRenderTarget.h"
 
 CPaintMemDCMgr::CPaintMemDCMgr(CPaintDC& paintDC) : m_paintDC(paintDC) {
 	m_nNumElems = 0;
@@ -121,9 +122,51 @@ CRect CPaintMemDCMgr::CreatePanelRegion(CPanel* pPanel, float fDimFactor, bool b
 
 void CPaintMemDCMgr::BlitImageToMemDC(void* pDIBData, BITMAPINFO* pBitmapInfo, CPoint destination, float fBlendFactor) {
 	CSize bitmapSize(abs(pBitmapInfo->bmiHeader.biWidth), abs(pBitmapInfo->bmiHeader.biHeight));
+
+	// Opt-in GPU output path: when the Direct2D render target is available,
+	// push the DIB region into each managed memory DC via the GPU instead of
+	// GDI SetDIBitsToDevice. The dim/blend compositing still runs in GDI
+	// afterwards (BitBltBlended) - we only replace the DIB->DC transfer, which
+	// is the bandwidth-heavy part for large images. If DrawBGRA fails for any
+	// region we fall back to the GDI path for that region.
+	CGpuRenderTarget& grt = CGpuRenderTarget::Instance();
+	const bool bUseGpu = grt.IsAvailable();
+
 	for (int i = 0; i < m_nNumElems; i++) {
 		if (m_managedRegions[i].MemoryDC.m_hDC != NULL) {
 			CRect rect = m_managedRegions[i].DisplayRect;
+			if (bUseGpu) {
+				// GPU blit of the visible DIB sub-rect into this memory DC.
+				// The DIB is laid out at (destination) within the full image;
+				// the region rect clips to the visible part.
+				CRect visRect;
+				visRect.IntersectRect(rect, CRect(destination.x, destination.y,
+					destination.x + bitmapSize.cx, destination.y + bitmapSize.cy));
+				if (!visRect.IsRectNull()) {
+					int srcOffX = visRect.left - destination.x;
+					int srcOffY = visRect.top - destination.y;
+					int subW = visRect.Width();
+					int subH = visRect.Height();
+					// Pointer into the DIB for the visible sub-rect. DIB rows are
+					// bottom-up (biHeight > 0) or top-down (biHeight < 0); the
+					// JPEGView pipeline produces top-down 32bpp BGRA, so index
+					// directly. For safety handle both orientations.
+					bool bTopDown = (pBitmapInfo->bmiHeader.biHeight < 0);
+					int fullH = bitmapSize.cy;
+					const uint8_t* pBase = (const uint8_t*)pDIBData;
+					const uint8_t* pSub;
+					if (bTopDown) {
+						pSub = pBase + ((size_t)srcOffY * bitmapSize.cx + srcOffX) * 4;
+					} else {
+						pSub = pBase + ((size_t)(fullH - 1 - srcOffY - (subH - 1)) * bitmapSize.cx + srcOffX) * 4;
+					}
+					if (grt.DrawBGRA(m_managedRegions[i].MemoryDC.m_hDC,
+							visRect.left - rect.left, visRect.top - rect.top,
+							subW, subH, pSub, subW, subH)) {
+						continue; // GPU blit succeeded, skip the GDI path
+					}
+				}
+			}
 			if (m_managedRegions[i].Blend) {
 				CPanel* pPanel = m_managedRegions[i].DisplayRegion;
 				BitBltBlended(m_managedRegions[i].MemoryDC, m_paintDC, CSize(rect.Width(), rect.Height()), pDIBData, pBitmapInfo, 

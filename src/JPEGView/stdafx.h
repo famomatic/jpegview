@@ -8,11 +8,7 @@
 #pragma warning(disable:4018)
 #pragma warning(disable:4800)
 
-// Change these values to use different versions
-#define WINVER		0x0601
-#define _WIN32_WINNT	0x0601
-#define _WIN32_IE	0x0700
-#define _RICHEDIT_VER	0x0300
+#include "targetver.h"
 
 #include <tchar.h>
 #include <atlbase.h>

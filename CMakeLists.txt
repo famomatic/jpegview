@@ -9,6 +9,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
+
+# Enable CTest so the GPU compute-pass tests can be run with `ctest`.
+enable_testing()
 # Build artifacts go under <build>/out, matching the old vcxproj output layout.
 if(NOT CMAKE_RUNTIME_OUTPUT_DIRECTORY)
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out")

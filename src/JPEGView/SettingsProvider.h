@@ -78,6 +78,10 @@ public:
 	int SlideShowEffectTimeMs() { return m_nSlideShowEffectTimeMs; }
 	bool ForceGDIPlus() { return m_bForceGDIPlus; }
 	bool SingleInstance() { return m_bSingleInstance; }
+	// Offload hot image-processing passes (resampling, unsharp mask, LDC, LUT)
+	// to a D3D11 compute backend when a FL 11_0 adapter is available. Falls back
+	// to the CPU backend automatically if no usable GPU is present.
+	bool EnableGPUImageProcessing() { return m_bEnableGPUImageProcessing; }
 	bool SingleFullScreenInstance() { return m_bSingleFullScreenInstance; }
 	int JPEGSaveQuality() { return m_nJPEGSaveQuality; }
 	int WEBPSaveQuality() { return m_nWEBPSaveQuality; }
@@ -254,6 +258,7 @@ private:
 	Helpers::ETransitionEffect m_eSlideShowTransitionEffect;
 	int m_nSlideShowEffectTimeMs;
 	bool m_bForceGDIPlus;
+	bool m_bEnableGPUImageProcessing;
 	bool m_bSingleInstance;
 	bool m_bSingleFullScreenInstance;
 	int m_nJPEGSaveQuality;

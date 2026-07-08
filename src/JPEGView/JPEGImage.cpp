@@ -1,6 +1,7 @@
 #include "StdAfx.h"
 #include "JPEGImage.h"
 #include "BasicProcessing.h"
+#include "ImageProcessor.h"
 #include "XMMImage.h"
 #include "Helpers.h"
 #include "SettingsProvider.h"
@@ -30,30 +31,6 @@ static void RotateInplace(const CSize& imageSize, double& dX, double& dY, double
 	double dYr = sin(dAngle) * dX + cos(dAngle) * dY;
 	dX = dXr;
 	dY = dYr;
-}
-
-static bool SupportsSIMD(Helpers::CPUType cpuType) {
-	switch (cpuType)
-	{
-	case Helpers::CPU_SSE:
-	case Helpers::CPU_AVX2:
-		return true;
-	default:
-		return false;
-	}
-}
-
-static CBasicProcessing::SIMDArchitecture ToSIMDArchitecture(Helpers::CPUType cpuType) {
-	switch (cpuType)
-	{
-	case Helpers::CPU_SSE:
-		return CBasicProcessing::SSE;
-	case Helpers::CPU_AVX2:
-		return CBasicProcessing::AVX2;
-	default:
-		assert(false);
-		return (CBasicProcessing::SIMDArchitecture)(-1);
-	}
 }
 
 ///////////////////////////////////////////////////////////////////////////////////
@@ -324,10 +301,10 @@ bool CJPEGImage::ApplyUnsharpMaskToOriginalPixels(const CUnsharpMaskParams & uns
 	bool bSuccess = false;
 	int16* pGray = CBasicProcessing::Create1Channel16bppGrayscaleImage(m_nOrigWidth, m_nOrigHeight, m_pOrigPixels, m_nOriginalChannels);
 	if (pGray != NULL) {
-		int16* pSmoothed = CBasicProcessing::GaussFilter16bpp1Channel(CSize(m_nOrigWidth, m_nOrigHeight), CPoint(0, 0), 
+		int16* pSmoothed = CImageProcessorFactory::Get().GaussFilter16bpp1Channel(CSize(m_nOrigWidth, m_nOrigHeight), CPoint(0, 0),
 			CSize(m_nOrigWidth, m_nOrigHeight), unsharpMaskParams.Radius, pGray);
 		if (pSmoothed != NULL) {
-			bSuccess = NULL != CBasicProcessing::UnsharpMask(CSize(m_nOrigWidth, m_nOrigHeight), CPoint(0,0), CSize(m_nOrigWidth, m_nOrigHeight), 
+			bSuccess = NULL != CImageProcessorFactory::Get().UnsharpMask(CSize(m_nOrigWidth, m_nOrigHeight), CPoint(0,0), CSize(m_nOrigWidth, m_nOrigHeight),
 				unsharpMaskParams.Amount, unsharpMaskParams.Threshold, pGray, pSmoothed, m_pOrigPixels, m_pOrigPixels, m_nOriginalChannels);
 		}
 		delete[] pSmoothed;
@@ -590,57 +567,18 @@ void CJPEGImage::ResampleWithPan(void* & pDIBPixels, void* & pDIBPixelsLUTProces
 void* CJPEGImage::Resample(CSize fullTargetSize, CSize clippingSize, CPoint targetOffset, 
 						  EProcessingFlags eProcFlags, double dSharpen, double dRotation, EResizeType eResizeType) {
 
-	Helpers::CPUType cpu = CSettingsProvider::This().AlgorithmImplementation();
-	// NOTE: Hacky workaround... there is probably a very obscure bug in the AVX2 implementation
-	//       which causes WaitForSingleObject to wait indefinitely on SampleUp_HQ_SIMD()
-	//       when window dimensions are > 3224 pixels wide.
-	//
-	// This obscure bug ONLY manifests itself on RELEASE builds, and not DEBUG builds, meaning
-	// it happens only when optimization is turned on.  I haven't had the chance to trial and error exactly
-	// which optimization flag causes the freeze, but that's a future TODO
-	//
-	// A lot of trial and error tests has a freeze happening at 3226 pixels wide, but not at 3224 pixels. (client rect pixels)
-	// (I was not able to test how this all behaves if it's 3224 pixels high, so, when displays get that cool, then we might have to revisit this hack)
-	// The AVX2 code is very advanced, and I don't have the expertise to debug it -sylikc
-	//
-	// The known workarounds based on GitHub issues is to either set CPUType=SSE or HighQualityResampling=false
-	//
-	// So, here, we detect and fallback to SSE when the conditions are met.  To be safe, I set the limit at 3200 pixels
-#ifdef AVX_SSE_FREEZE_FALLBACK
-	if (cpu == Helpers::CPU_AVX2 && clippingSize.cx > 3200) {
-		// only override the usage for SSE for these specific conditions
-		// AVX2 is supposed to be ~2.4x faster than SSE
-		cpu = Helpers::CPU_SSE;
-	}
-#endif
+EFilterType filter = CSettingsProvider::This().DownsamplingFilter();
 
-	EFilterType filter = CSettingsProvider::This().DownsamplingFilter();
+if (fullTargetSize.cx > 65535 || fullTargetSize.cy > 65535) return NULL;
 
-	if (fullTargetSize.cx > 65535 || fullTargetSize.cy > 65535) return NULL;
-
-	if (GetProcessingFlag(eProcFlags, PFLAG_HighQualityResampling) && 
-		!(eResizeType == NoResize && (filter == Filter_Downsampling_Best_Quality || filter == Filter_Downsampling_No_Aliasing))) {
-		void* pResult = NULL;
-		if (SupportsSIMD(cpu)) {
-			if (eResizeType == UpSample) {
-				pResult = CBasicProcessing::SampleUp_HQ_SIMD(fullTargetSize, targetOffset, clippingSize,
-					CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels, ToSIMDArchitecture(cpu));
-			} else {
-				pResult = CBasicProcessing::SampleDown_HQ_SIMD(fullTargetSize, targetOffset, clippingSize,
-					CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels, dSharpen, filter, ToSIMDArchitecture(cpu));
-			}
-		} else {
-			if (eResizeType == UpSample) {
-				pResult = CBasicProcessing::SampleUp_HQ(fullTargetSize, targetOffset, clippingSize,
-					CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels);
-			} else {
-				pResult = CBasicProcessing::SampleDown_HQ(fullTargetSize, targetOffset, clippingSize,
-					CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels, dSharpen, filter);
-			}
-		}
-		// High-quality SIMD resampling now filters the alpha plane together with RGB
-		// (the CXMMImage stores 4 planes for BGRA sources), so no alpha restore is needed.
-		return pResult;
+if (GetProcessingFlag(eProcFlags, PFLAG_HighQualityResampling) && 
+    !(eResizeType == NoResize && (filter == Filter_Downsampling_Best_Quality || filter == Filter_Downsampling_No_Aliasing))) {
+        void* pResult = CImageProcessorFactory::Get().ResampleHQ(fullTargetSize, targetOffset, clippingSize,
+            CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels, dSharpen, filter,
+            eResizeType == UpSample);
+        // High-quality SIMD resampling now filters the alpha plane together with RGB
+        // (the CXMMImage stores 4 planes for BGRA sources), so no alpha restore is needed.
+        return pResult;
 	} else {
 		bool bHasRotation = fabs(dRotation) > 1e-3;
 		void* pResult;
@@ -664,7 +602,6 @@ void* CJPEGImage::Resample(CSize fullTargetSize, CSize clippingSize, CPoint targ
 
 void* CJPEGImage::InternalResize(void* pixels, int channels, EResizeFilter filter, CSize targetSize, CSize sourceSize) {
 	EResizeType eResizeType = GetResizeType(targetSize, sourceSize);
-	Helpers::CPUType cpu = CSettingsProvider::This().AlgorithmImplementation();
 
 	if (filter == Resize_PointFilter) {
 		return CBasicProcessing::PointSample(targetSize, CPoint(0, 0), targetSize, sourceSize, pixels, channels);
@@ -673,23 +610,8 @@ void* CJPEGImage::InternalResize(void* pixels, int channels, EResizeFilter filte
 	EFilterType downSamplingFilter = (filter == Resize_NoAliasing) ? Filter_Downsampling_No_Aliasing : Filter_Downsampling_Best_Quality;
 	double dSharpen = (filter == Resize_SharpenLow) ? 0.15 : (filter == Resize_SharpenMedium) ? 0.3 : 0.0;
 
-	if (SupportsSIMD(cpu)) {
-		if (eResizeType == UpSample) {
-			return CBasicProcessing::SampleUp_HQ_SIMD(targetSize, CPoint(0, 0), targetSize,
-				sourceSize, pixels, channels, ToSIMDArchitecture(cpu));
-		} else {
-			return CBasicProcessing::SampleDown_HQ_SIMD(targetSize, CPoint(0, 0), targetSize,
-				sourceSize, pixels, channels, dSharpen, downSamplingFilter, ToSIMDArchitecture(cpu));
-		}
-	} else {
-		if (eResizeType == UpSample) {
-			return CBasicProcessing::SampleUp_HQ(targetSize, CPoint(0, 0), targetSize,
-				sourceSize, pixels, channels);
-		} else {
-			return CBasicProcessing::SampleDown_HQ(targetSize, CPoint(0, 0), targetSize,
-				sourceSize, pixels, channels, dSharpen, downSamplingFilter);
-		}
-	}
+	return CImageProcessorFactory::Get().ResampleHQ(targetSize, CPoint(0, 0), targetSize,
+		sourceSize, pixels, channels, dSharpen, downSamplingFilter, eResizeType == UpSample);
 }
 
 CPoint CJPEGImage::ConvertOffset(CSize fullTargetSize, CSize clippingSize, CPoint targetOffset) {
@@ -1126,7 +1048,7 @@ void* CJPEGImage::ApplyUnsharpMask(const CUnsharpMaskParams * pUnsharpMaskParams
 		m_pGrayImage = CBasicProcessing::Create1Channel16bppGrayscaleImage(m_ClippingSize.cx, m_ClippingSize.cy, m_pDIBPixels, 4);
 	}
 	if (m_pSmoothGrayImage == NULL) {
-		m_pSmoothGrayImage = CBasicProcessing::GaussFilter16bpp1Channel(m_ClippingSize, CPoint(0, 0), 
+		m_pSmoothGrayImage = CImageProcessorFactory::Get().GaussFilter16bpp1Channel(m_ClippingSize, CPoint(0, 0),
 			m_ClippingSize, pUnsharpMaskParams->Radius, m_pGrayImage);
 	}
 	if (m_pGrayImage == NULL || m_pSmoothGrayImage == NULL) {
@@ -1134,7 +1056,7 @@ void* CJPEGImage::ApplyUnsharpMask(const CUnsharpMaskParams * pUnsharpMaskParams
 	}
 
 	uint32* pNewImage = new(std::nothrow) uint32[m_ClippingSize.cx * m_ClippingSize.cy];
-	return (pNewImage == NULL) ? NULL : CBasicProcessing::UnsharpMask(m_ClippingSize, CPoint(0,0), m_ClippingSize, 
+	return (pNewImage == NULL) ? NULL : CImageProcessorFactory::Get().UnsharpMask(m_ClippingSize, CPoint(0,0), m_ClippingSize,
 		pUnsharpMaskParams->Amount, pUnsharpMaskParams->Threshold, m_pGrayImage, m_pSmoothGrayImage, m_pDIBPixels, pNewImage, 4);
 }
 
@@ -1255,14 +1177,14 @@ void* CJPEGImage::ApplyCorrectionLUTandLDC(const CImageProcessingParams & imageP
 		// LUT or/and LDC --> apply correction
 		uint8* pLUT = CHistogramCorr::CombineLUTs(m_pLUTAllChannels, m_pLUTRGB);
 		if (bLDC) {
-			pCachedTargetDIB = CBasicProcessing::ApplyLDC32bpp(fullTargetSize, targetOffset, dibSize, m_pLDC->GetLDCMapSize(),
+			pCachedTargetDIB = CImageProcessorFactory::Get().ApplyLDC32bpp(fullTargetSize, targetOffset, dibSize, m_pLDC->GetLDCMapSize(),
 				pSourceDIB, bMustUseSaturationLUTs ? m_pSaturationLUTs : NULL, pLUT, m_pLDC->GetLDCMap(),
 				m_pLDC->GetBlackPt(), m_pLDC->GetWhitePt(), (float)imageProcParams.LightenShadowSteepness);
 		} else {
 			if (bMustUseSaturationLUTs) {
-				pCachedTargetDIB = CBasicProcessing::ApplySaturationAnd3ChannelLUT32bpp(dibSize.cx, dibSize.cy, pSourceDIB, m_pSaturationLUTs, pLUT);
+				pCachedTargetDIB = CImageProcessorFactory::Get().ApplySaturationAnd3ChannelLUT32bpp(dibSize.cx, dibSize.cy, pSourceDIB, m_pSaturationLUTs, pLUT);
 			} else {
-				pCachedTargetDIB = CBasicProcessing::Apply3ChannelLUT32bpp(dibSize.cx, dibSize.cy, pSourceDIB, pLUT);
+				pCachedTargetDIB = CImageProcessorFactory::Get().Apply3ChannelLUT32bpp(dibSize.cx, dibSize.cy, pSourceDIB, pLUT);
 			}
 		}
 		delete[] pLUT;

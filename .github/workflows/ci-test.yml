@@ -1,0 +1,48 @@
+name: CI (build + ctest)
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: windows-2022
+    env:
+      VCPKG_ROOT: C:\vcpkg
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Init build-required submodules
+        shell: cmd
+        run: git submodule update --init deps/WTL-sf extras/third_party/qoi extras/third_party/nanosvg
+
+      - name: Fetch vcpkg baseline commit
+        shell: powershell
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          Write-Host "Fetching vcpkg baseline commit $baseline into $env:VCPKG_ROOT"
+          git -C $env:VCPKG_ROOT fetch --depth=1 origin $baseline
+          git -C $env:VCPKG_ROOT checkout $baseline
+
+      - name: Configure (CMake + vcpkg manifest mode)
+        shell: cmd
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-windows-static
+        run: |
+          cmake -B build -S . -G "Visual Studio 17 2022" -A x64 ^
+            -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
+            -DVCPKG_OVERLAY_PORTS=%CD%/vcpkg-triplets ^
+            -DVCPKG_OVERLAY_TRIPLETS=%CD%/vcpkg-triplets
+
+      - name: Build
+        shell: cmd
+        run: cmake --build build --config Debug --target CpuImageProcTest GpuLutTest GpuLdcTest GpuLdcSatTest GpuResampleTest GpuUnsharpTest GpuGaussTest GpuDeviceTest
+
+      - name: Run ctest
+        shell: cmd
+        run: ctest --test-dir build --build-config Debug --output-on-failure --timeout 60
