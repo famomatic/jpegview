@@ -202,9 +202,14 @@ void CPaintMemDCMgr::BlitImageToMemDC(void* pDIBData, BITMAPINFO* pBitmapInfo, C
 					} else {
 						pSub = pBase + ((size_t)(fullH - 1 - srcOffY - (subH - 1)) * bitmapSize.cx + srcOffX) * 4;
 					}
+					// Pass the full DIB row stride (bitmapSize.cx*4) as srcStride:
+					// pSub points into a sub-rect of a larger DIB, so each source row
+					// is bitmapSize.cx pixels wide, not subW. A tightly-packed stride
+					// (subW*4) here shifts every row and paints a diagonal band over
+					// the panel rect - the Release-only shearing bug.
 					if (grt.DrawBGRA(m_managedRegions[i].MemoryDC.m_hDC,
 							visRect.left - rect.left, visRect.top - rect.top,
-							subW, subH, pSub, subW, subH)) {
+							subW, subH, pSub, subW, subH, bitmapSize.cx * 4)) {
 						continue; // GPU blit succeeded, skip the GDI path
 					}
 				}

@@ -68,10 +68,13 @@ bool CGpuRenderTarget::Init() {
 }
 
 bool CGpuRenderTarget::DrawBGRA(HDC hdc, int dstX, int dstY, int width, int height,
-    const void* pBGRA, int srcWidth, int srcHeight) {
+    const void* pBGRA, int srcWidth, int srcHeight, int srcStride) {
     if (!IsAvailable() || !hdc || !pBGRA || width <= 0 || height <= 0) {
         return false;
     }
+    // A stride of 0 means 'tightly packed' (srcWidth*4) for backward
+    // compatibility with callers that own a full-width buffer.
+    if (srcStride <= 0) srcStride = srcWidth * 4;
 
     // Bind the DC for this draw.
     RECT rcDst = { dstX, dstY, dstX + width, dstY + height };
@@ -83,22 +86,28 @@ bool CGpuRenderTarget::DrawBGRA(HDC hdc, int dstX, int dstY, int width, int heig
     // Create or reuse the bitmap. ID2D1DCRenderTarget returns ID2D1Bitmap (not
     // Bitmap1); cast through CreateCompatibleRenderTarget if needed. Here we
     // create a standalone bitmap via the factory.
-    if (m_lastW != srcWidth || m_lastH != srcHeight || !m_pBitmap) {
+    if (m_lastW != srcWidth || m_lastH != srcHeight || m_lastStride != srcStride || !m_pBitmap) {
         if (m_pBitmap) { m_pBitmap->Release(); m_pBitmap = nullptr; }
         D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
                               D2D1_ALPHA_MODE_PREMULTIPLIED));
         D2D1_SIZE_U sz = D2D1::SizeU(srcWidth, srcHeight);
+        // The bitmap's own pitch is srcWidth*4 (tightly packed); the source
+        // stride only matters for CopyFromMemory below.
         hr = m_pDCRT->CreateBitmap(sz, nullptr, srcWidth * 4, &props, &m_pBitmap);
         if (FAILED(hr) || !m_pBitmap) {
             return false;
         }
         m_lastW = srcWidth;
         m_lastH = srcHeight;
+        m_lastStride = srcStride;
     }
 
     D2D1_RECT_U rect = D2D1::RectU(0, 0, srcWidth, srcHeight);
-    hr = m_pBitmap->CopyFromMemory(&rect, pBGRA, srcWidth * 4);
+    // Use the real source row stride so a sub-rect of a wider DIB copies each
+    // row from the correct offset. Passing srcWidth*4 here when the source is
+    // a sub-rect of a larger DIB shifts every row and paints a diagonal band.
+    hr = m_pBitmap->CopyFromMemory(&rect, pBGRA, srcStride);
     if (FAILED(hr)) {
         return false;
     }
