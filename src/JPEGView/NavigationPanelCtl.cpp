@@ -11,6 +11,8 @@
 #include "RotationPanelCtl.h"
 #include "PanelMgr.h"
 #include "PaintMemDCMgr.h"
+#include <vector>
+#include <cstdint>
 
 // Gets the command ID of the file deletion command according to the INI file setting
 static int GetDeleteCommandId() {
@@ -36,6 +38,7 @@ CNavigationPanelCtl::CNavigationPanelCtl(CMainDlg* pMainDlg, CPanel* pImageProcP
 	m_nBlendInNavPanelCountdown = 0;
 	m_pMemDCAnimation = NULL;
 	m_hOffScreenBitmapAnimation = NULL;
+	m_sizeMemDCAnimation = CSize(0, 0);
 	m_pPanel = m_pNavPanel = new CNavigationPanel(pMainDlg->m_hWnd, this, pImageProcPanel, pMainDlg->GetKeyMap(), pFullScreenMode, &(CMainDlg::IsCurrentImageFitToScreen), pMainDlg);
 	m_pNavPanel->GetBtnHome()->SetButtonPressedHandler(&OnGotoImage, this, CMainDlg::POS_First);
 	m_pNavPanel->GetBtnPrev()->SetButtonPressedHandler(&OnGotoImage, this, CMainDlg::POS_Previous);
@@ -76,8 +79,24 @@ void CNavigationPanelCtl::AdjustMaximalWidth(int nMaxWidth) {
 
 bool CNavigationPanelCtl::IsVisible() {
 	bool bMouseInNavPanel = m_bMouseInNavPanel && !m_pMainDlg->GetImageProcPanelCtl()->IsVisible();
-	return m_bEnabled && !(m_fCurrentBlendingFactorNavPanel <= 0.0f && !bMouseInNavPanel) &&
-		!m_pMainDlg->IsInMovieMode() && !m_pMainDlg->IsDoCropping() && (m_pMainDlg->IsMouseOn() || bMouseInNavPanel);
+	if (!m_bEnabled || m_pMainDlg->IsInMovieMode() || m_pMainDlg->IsDoCropping()) {
+		return false;
+	}
+	// Hide the panel when it does not fit inside the client area. When the
+	// window is shrunk below the panel's minimum width (see NAV_PANEL_MIN_SCALE)
+	// the panel would otherwise extend past the window edges and paint garbage.
+	// Only enforce this in windowed mode; in full screen the panel is always
+	// within the monitor and the fade animation handles the rest.
+	if (!m_pMainDlg->IsFullScreenMode()) {
+		CRect panelRect = PanelRect();
+		CRect clientRect = m_pMainDlg->ClientRect();
+		if (panelRect.left < clientRect.left || panelRect.right > clientRect.right ||
+			panelRect.top < clientRect.top || panelRect.bottom > clientRect.bottom) {
+			return false;
+		}
+	}
+	return !(m_fCurrentBlendingFactorNavPanel <= 0.0f && !bMouseInNavPanel) &&
+		(m_pMainDlg->IsMouseOn() || bMouseInNavPanel);
 }
 
 void CNavigationPanelCtl::SetActive(bool bActive) {
@@ -237,29 +256,94 @@ void CNavigationPanelCtl::DoNavPanelAnimation() {
 	if (bDoAnimation) {
 		CRect rectNavPanel = PanelRect();
 		CDC screenDC = m_pMainDlg->GetDC();
-		void* pDIBData = pCurrentImage->DIBPixelsLastProcessed(false);
-		if (pDIBData != NULL) {
-			if (m_pMemDCAnimation == NULL) {
-				m_pMemDCAnimation = new CDC();
-				m_hOffScreenBitmapAnimation = CPaintMemDCMgr::PrepareRectForMemDCPainting(*m_pMemDCAnimation, screenDC, rectNavPanel);
+		// Recreate the off-screen bitmap when the nav panel rect changed
+		// since the last frame (zoom/resize moves or resizes the panel).
+		// Reusing a stale bitmap of the wrong size makes BitBlt draw into a
+		// mismatched surface, producing a garbled panel.
+		CSize sizeNeeded(rectNavPanel.Width(), rectNavPanel.Height());
+		if (sizeNeeded.cx <= 0 || sizeNeeded.cy <= 0) {
+			// Panel has no visible area; skip painting this frame.
+		} else if (m_pMemDCAnimation == NULL || m_sizeMemDCAnimation != sizeNeeded) {
+			if (m_pMemDCAnimation != NULL) {
+				delete m_pMemDCAnimation;
+				m_pMemDCAnimation = NULL;
+				if (m_hOffScreenBitmapAnimation != NULL) {
+					::DeleteObject(m_hOffScreenBitmapAnimation);
+					m_hOffScreenBitmapAnimation = NULL;
+				}
+			}
+			m_pMemDCAnimation = new CDC();
+			m_hOffScreenBitmapAnimation = CPaintMemDCMgr::PrepareRectForMemDCPainting(*m_pMemDCAnimation, screenDC, rectNavPanel);
+			m_sizeMemDCAnimation = sizeNeeded;
+		}
+		if (m_pMemDCAnimation != NULL) {
+			// The nav panel floats over the image, it does not have a solid
+			// background. Copy the current on-screen pixels of the panel rect
+			// into the memory DC so the blend composites the panel over the
+			// real image (which may have just changed due to zoom/pan) rather
+			// than a stale background-color fill that makes the image look
+			// stretched/smeared while zooming.
+			m_pMemDCAnimation->BitBlt(0, 0, rectNavPanel.Width(), rectNavPanel.Height(), screenDC, rectNavPanel.left, rectNavPanel.top, SRCCOPY);
+
+			// Paint the nav panel into an off-screen DC, then alpha-blend it
+			// over the captured screen pixels. The image DIB is NOT redrawn
+			// here: it is already on screen (captured above), and re-blitting
+			// the DIB with a possibly stale size/offset (while zooming) is
+			// what produced the diagonal shearing / smearing.
+			CDC memDCPanel;
+			memDCPanel.CreateCompatibleDC(screenDC);
+			CBitmap bitmapPanel;
+			bitmapPanel.CreateCompatibleBitmap(screenDC, rectNavPanel.Width(), rectNavPanel.Height());
+			memDCPanel.SelectBitmap(bitmapPanel);
+			// Start from the captured pixels so the panel blends over the
+			// real image, then paint the panel on top.
+			memDCPanel.BitBlt(0, 0, rectNavPanel.Width(), rectNavPanel.Height(), *m_pMemDCAnimation, 0, 0, SRCCOPY);
+			m_pNavPanel->OnPaint(memDCPanel, CPoint(-rectNavPanel.left, -rectNavPanel.top));
+
+			// Blend the panel over the captured screen pixels manually instead of
+			// via GDI AlphaBlend. AlphaBlend miscalculates the source bitmap stride
+			// under /O2 (Release-only; Debug is correct), which paints a diagonal
+			// shearing band across the panel rect during the fade animation. The
+			// per-pixel constant-alpha blend is identical math but bypasses GDI's
+			// AlphaBlend stride handling. The panel rect is small so the cost is
+			// negligible. See CPaintMemDCMgr::BitBltBlended (panel overload) for the
+			// same fix on the static paint path.
+			{
+				int nPW = rectNavPanel.Width();
+				int nPH = rectNavPanel.Height();
+				BITMAPINFO bi32{};
+				bi32.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+				bi32.bmiHeader.biWidth = nPW;
+				bi32.bmiHeader.biHeight = -nPH;
+				bi32.bmiHeader.biPlanes = 1;
+				bi32.bmiHeader.biBitCount = 32;
+				bi32.bmiHeader.biCompression = BI_RGB;
+
+				std::vector<uint8_t> panelBits((size_t)nPW * nPH * 4);
+				std::vector<uint8_t> dstBits((size_t)nPW * nPH * 4);
+				::GetDIBits(memDCPanel, (HBITMAP)(HGDIOBJ)::GetCurrentObject(memDCPanel, OBJ_BITMAP),
+					0, (UINT)nPH, panelBits.data(), &bi32, DIB_RGB_COLORS);
+				::GetDIBits(*m_pMemDCAnimation, (HBITMAP)(HGDIOBJ)::GetCurrentObject(*m_pMemDCAnimation, OBJ_BITMAP),
+					0, (UINT)nPH, dstBits.data(), &bi32, DIB_RGB_COLORS);
+
+				int ia = (int)(m_fCurrentBlendingFactorNavPanel * 255.0f + 0.5f);
+				if (ia < 0) ia = 0;
+				if (ia > 255) ia = 255;
+				const uint8_t* s = panelBits.data();
+				uint8_t* d = dstBits.data();
+				const size_t nPx = (size_t)nPW * (size_t)nPH;
+				for (size_t i = 0; i < nPx; i++) {
+					size_t o = i * 4;
+					int b = s[o + 0], g = s[o + 1], r = s[o + 2], a = s[o + 3];
+					int db = d[o + 0], dg = d[o + 1], dr = d[o + 2], da = d[o + 3];
+					d[o + 0] = (uint8_t)((db * (255 - ia) + b * ia) / 255);
+					d[o + 1] = (uint8_t)((dg * (255 - ia) + g * ia) / 255);
+					d[o + 2] = (uint8_t)((dr * (255 - ia) + r * ia) / 255);
+					d[o + 3] = (uint8_t)((da * (255 - ia) + a * ia) / 255);
+				}
+				::SetDIBitsToDevice(*m_pMemDCAnimation, 0, 0, nPW, nPH, 0, 0, 0, nPH, dstBits.data(), &bi32, DIB_RGB_COLORS);
 			}
 
-			CBrush backBrush;
-			backBrush.CreateSolidBrush(CSettingsProvider::This().ColorBackground());
-			m_pMemDCAnimation->FillRect(CRect(0, 0, rectNavPanel.Width(), rectNavPanel.Height()), backBrush);
-
-			BITMAPINFO bmInfo{ 0 };
-			bmInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-			bmInfo.bmiHeader.biWidth = pCurrentImage->DIBWidth();
-			bmInfo.bmiHeader.biHeight = -pCurrentImage->DIBHeight();
-			bmInfo.bmiHeader.biPlanes = 1;
-			bmInfo.bmiHeader.biBitCount = 32;
-			bmInfo.bmiHeader.biCompression = BI_RGB;
-			int xDest = (m_pMainDlg->ClientRect().Width() - pCurrentImage->DIBWidth()) / 2 + m_pMainDlg->GetDIBOffset().x;
-			int yDest = (m_pMainDlg->ClientRect().Height() - pCurrentImage->DIBHeight()) / 2 + m_pMainDlg->GetDIBOffset().y;
-			CPaintMemDCMgr::BitBltBlended(*m_pMemDCAnimation, screenDC, CSize(rectNavPanel.Width(), rectNavPanel.Height()), pDIBData, &bmInfo, 
-								  CPoint(xDest - rectNavPanel.left, yDest - rectNavPanel.top), CSize(pCurrentImage->DIBWidth(), pCurrentImage->DIBHeight()), 
-								  *m_pNavPanel, CPoint(-rectNavPanel.left, -rectNavPanel.top), m_fCurrentBlendingFactorNavPanel);
 			screenDC.BitBlt(rectNavPanel.left, rectNavPanel.top, rectNavPanel.Width(), rectNavPanel.Height(), *m_pMemDCAnimation, 0, 0, SRCCOPY);
 		}
 	}
@@ -278,6 +362,7 @@ void CNavigationPanelCtl::EndNavPanelAnimation() {
 			m_pMemDCAnimation = NULL;
 			::DeleteObject(m_hOffScreenBitmapAnimation);
 			m_hOffScreenBitmapAnimation = NULL;
+			m_sizeMemDCAnimation = CSize(0, 0);
 		}
 		
 	}
