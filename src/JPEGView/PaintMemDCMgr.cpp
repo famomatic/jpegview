@@ -4,6 +4,8 @@
 #include "SettingsProvider.h"
 #include "PaintMemDCMgr.h"
 #include "GpuRenderTarget.h"
+#include <vector>
+#include <cstdint>
 
 CPaintMemDCMgr::CPaintMemDCMgr(CPaintDC& paintDC) : m_paintDC(paintDC) {
 	m_nNumElems = 0;
@@ -89,19 +91,59 @@ void CPaintMemDCMgr::BitBltBlended(CDC & dc, CDC & paintDC, const CSize& dcSize,
 	dc.SetDIBitsToDevice(dibStart.x, dibStart.y, 
 		dibSize.cx, dibSize.cy, 0, 0, 0, dibSize.cy, pDIBData, pbmInfo, DIB_RGB_COLORS);
 
+	// Build the composited panel (image + panel glyphs) in a 32bpp DIB section
+	// and blend it over the image manually. GDI AlphaBlend() miscalculates the
+	// source bitmap stride under /O2 (Release-only; Debug is correct), producing
+	// a diagonal shearing band exactly over the panel rect. Doing the per-pixel
+	// blend ourselves removes the dependence on GDI's AlphaBlend stride handling.
+	// The panel rect is small, so the cost is negligible.
+	BITMAPINFO bi32{};
+	bi32.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+	bi32.bmiHeader.biWidth = nW;
+	bi32.bmiHeader.biHeight = -nH; // top-down to match the image DIB orientation
+	bi32.bmiHeader.biPlanes = 1;
+	bi32.bmiHeader.biBitCount = 32;
+	bi32.bmiHeader.biCompression = BI_RGB;
+
 	CDC memDCPanel;
 	memDCPanel.CreateCompatibleDC(paintDC);
+	void* pPanelBits = NULL;
 	CBitmap bitmapPanel;
-	bitmapPanel.CreateCompatibleBitmap(paintDC, nW, nH);
+	bitmapPanel.Attach(::CreateDIBSection((HDC)memDCPanel, &bi32, DIB_RGB_COLORS, &pPanelBits, NULL, 0));
 	memDCPanel.SelectBitmap(bitmapPanel);
 	memDCPanel.BitBlt(0, 0, nW, nH, dc, 0, 0, SRCCOPY);
 	panel.OnPaint(memDCPanel, offsetPanel);
-	
-	BLENDFUNCTION blendFunc{ 0 };
-	blendFunc.BlendOp = AC_SRC_OVER;
-	blendFunc.SourceConstantAlpha = (unsigned char)(fBlendFactor*255 + 0.5f);
-	blendFunc.AlphaFormat = 0;
-	dc.AlphaBlend(0, 0, nW, nH, memDCPanel, 0, 0, nW, nH, blendFunc);
+	// Ensure the DIB section backing memDCPanel is fully updated before reading
+	// its bits directly through pPanelBits below.
+	::GdiFlush();
+
+	// Read the current image pixels (the destination of the blend) into a
+	// matching 32bpp buffer. GetDIBits gives us dc's current content (the image
+	// already drawn via SetDIBitsToDevice above).
+	std::vector<uint8_t> dstBits((size_t)nW * nH * 4);
+	::GetDIBits(dc, (HBITMAP)(HGDIOBJ)::GetCurrentObject(dc, OBJ_BITMAP),
+		0, (UINT)nH, dstBits.data(), &bi32, DIB_RGB_COLORS);
+
+	// Constant-alpha blend: dc = dc*(1-a) + panel*a. Both buffers are opaque
+	// 32bpp BGRA (alpha 0xFF), so a straight channel blend is correct.
+	int ia = (int)(fBlendFactor * 255.0f + 0.5f);
+	if (ia < 0) ia = 0;
+	if (ia > 255) ia = 255;
+	const uint8_t* s = (const uint8_t*)pPanelBits;
+	uint8_t* d = dstBits.data();
+	const size_t nPx = (size_t)nW * (size_t)nH;
+	for (size_t i = 0; i < nPx; i++) {
+		size_t o = i * 4;
+		int b = s[o + 0], g = s[o + 1], r = s[o + 2], a = s[o + 3];
+		int db = d[o + 0], dg = d[o + 1], dr = d[o + 2], da = d[o + 3];
+		d[o + 0] = (uint8_t)((db * (255 - ia) + b * ia) / 255);
+		d[o + 1] = (uint8_t)((dg * (255 - ia) + g * ia) / 255);
+		d[o + 2] = (uint8_t)((dr * (255 - ia) + r * ia) / 255);
+		d[o + 3] = (uint8_t)((da * (255 - ia) + a * ia) / 255);
+	}
+
+	// Write the blended pixels back to the panel memory DC.
+	::SetDIBitsToDevice(dc, 0, 0, nW, nH, 0, 0, 0, nH, dstBits.data(), &bi32, DIB_RGB_COLORS);
 }
 
 CRect CPaintMemDCMgr::CreatePanelRegion(CPanel* pPanel, float fDimFactor, bool bBlendPanel) {
