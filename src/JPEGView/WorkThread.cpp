@@ -127,8 +127,30 @@ void CWorkThread::ThreadFunc(void* arg) {
 
 		// if there are no more requests, sleep until woke up
 		if (nNumUnprocessedRequests == 0 && !thisPtr->m_bTerminate) {
-			::WaitForSingleObject(thisPtr->m_wakeUp, INFINITE);
-			::ResetEvent(thisPtr->m_wakeUp);
+			// m_wakeUp is a manual-reset event. The classic lost-wakeup
+			// pattern here is: check the queue (empty) -> a producer posts a
+			// request and SetEvent() -> we ResetEvent() -> we wait forever.
+			// Close the window by re-checking the queue under the lock while
+			// holding the event in the reset state: if a request arrived
+			// between the first check and here, ProcessAsync already called
+			// SetEvent, so the event is signaled and we skip the wait.
+			bool bStillEmpty;
+			{
+				::EnterCriticalSection(&thisPtr->m_csList);
+				::ResetEvent(thisPtr->m_wakeUp);
+				bStillEmpty = true;
+				std::list<CRequestBase*>::iterator iter2;
+				for (iter2 = thisPtr->m_requestList.begin(); iter2 != thisPtr->m_requestList.end(); iter2++) {
+					if ((*iter2)->Processed == false) {
+						bStillEmpty = false;
+						break;
+					}
+				}
+				::LeaveCriticalSection(&thisPtr->m_csList);
+			}
+			if (bStillEmpty) {
+				::WaitForSingleObject(thisPtr->m_wakeUp, INFINITE);
+			}
 		}
 	} while (!thisPtr->m_bTerminate);
 	if (thisPtr->m_bCoInitialize) {

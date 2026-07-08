@@ -15,6 +15,7 @@
 #include "LazySource.h"
 #include <tiffio.h>
 #include <vector>
+#include <mutex>
 
 class CTiffLazySource : public CLazySource
 {
@@ -52,5 +53,10 @@ private:
 	std::vector<int> m_pyramidIFDs;
 	int m_nCurrentPyramidLevel;
 	bool m_bUseRGBA;
+
+	// Serializes all access to m_tif. libtiff is not thread-safe and a single
+	// TIFF* cannot be touched concurrently; the resampler (ProcessingThreadPool)
+	// and LDC/histogram (SamplePoint) can both reach this source at once.
+	std::mutex m_tifLock;
 };
 // end

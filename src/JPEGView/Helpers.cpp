@@ -99,8 +99,11 @@ CSize GetVirtualImageSize(CSize originalImageSize, CSize screenSize, EAutoZoomMo
 		// ---------------------------------------------
 		newSize = CSize((int)(originalImageSize.cx * dZoom + 0.5), (int)(originalImageSize.cy * dZoom + 0.5));
 	}
-	newSize.cx = max(1, min(65535, newSize.cx));
-	newSize.cy = max(1, min(65535, newSize.cy));
+	// Use MAX_IMAGE_DIMENSION (65535 on x86, 1,000,000 on x64) instead of a
+	// hardcoded 65535 so the virtual image size limit matches the decode
+	// limit enforced by ProcessImageAfterLoad/Resample.
+	newSize.cx = max(1, min((int)MAX_IMAGE_DIMENSION, newSize.cx));
+	newSize.cy = max(1, min((int)MAX_IMAGE_DIMENSION, newSize.cy));
 	return newSize;
 }
 

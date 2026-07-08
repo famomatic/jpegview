@@ -5,6 +5,13 @@
 
 double CEXIFReader::UNKNOWN_DOUBLE_VALUE = 283740261.192864;
 
+// File-scope base/size of the APP1 block currently being parsed. The static
+// Read* helpers below cannot access instance members, so they consult these
+// globals to bounds-check EXIF offset pointers. Only valid while a
+// CEXIFReader constructor is on the stack (single-threaded parse).
+static uint8* g_pEXIFApp1Base = NULL;
+static int g_nEXIFApp1Size = 0;
+
 static uint32 ReadUInt(void * ptr, bool bLittleEndian) {
 	uint32 nValue = *((uint32*)ptr);
 	if (!bLittleEndian) {
@@ -49,7 +56,23 @@ static uint8* FindTag(uint8* ptr, uint8* ptrLast, uint16 nTag, bool bLittleEndia
 	return NULL;
 }
 
-static void ReadStringTag(CString & strOut, uint8* ptr, uint8* pTIFFHeader, bool bLittleEndian, bool bTryReadAsUTF8 = false, uint32 maxLength = 65536) {
+// Validates that (pTIFFHeader + nOffset) .. (pTIFFHeader + nOffset + nNeedBytes)
+// lies entirely within [pApp1, pApp1 + nApp1Size). EXIF offsets are attacker
+// controlled (taken straight from the file), so every indirect pointer built
+// from a tag offset must be bounds-checked before it is dereferenced.
+// Returns NULL if the range is out of bounds, otherwise pTIFFHeader + nOffset.
+static inline uint8* SafeOffset(uint8* pTIFFHeader, uint32 nOffset, size_t nNeedBytes,
+	uint8* pApp1, int nApp1Size) {
+	if (pTIFFHeader == NULL || pApp1 == NULL || nApp1Size <= 0) return NULL;
+	// pTIFFHeader is always pApp1 + 10 in this file; guard against underflow.
+	if (pTIFFHeader < pApp1) return NULL;
+	ptrdiff_t tiffBase = pTIFFHeader - pApp1;
+	// nOffset + nNeedBytes must fit in nApp1Size - tiffBase.
+	if ((unsigned __int64)nOffset + nNeedBytes > (unsigned __int64)(nApp1Size - tiffBase)) return NULL;
+	return pTIFFHeader + nOffset;
+}
+
+static void ReadStringTag(CString & strOut, uint8* ptr, uint8* pTIFFHeader, bool bLittleEndian, bool bTryReadAsUTF8 = false, uint32 maxLength = 65536, uint8* pApp1 = NULL, int nApp1Size = 0) {
 	try {
 		if (ptr != NULL && ReadUShort(ptr + 2, bLittleEndian) == 2) {
 			uint32 nSize = ReadUInt(ptr + 4, bLittleEndian);
@@ -57,8 +80,27 @@ static void ReadStringTag(CString & strOut, uint8* ptr, uint8* pTIFFHeader, bool
 				strOut.Empty();
 				return;
 			}
-			LPCSTR pString = (nSize <= 4) ? (LPCSTR)(ptr + 8) : (LPCSTR)(pTIFFHeader + ReadUInt(ptr + 8, bLittleEndian));
+			LPCSTR pString;
+			if (nSize <= 4) {
+				pString = (LPCSTR)(ptr + 8);
+			} else {
+				uint32 nStrOffset = ReadUInt(ptr + 8, bLittleEndian);
+				uint8* pStr = SafeOffset(pTIFFHeader, nStrOffset, 1, pApp1, nApp1Size);
+				if (pStr == NULL) {
+					strOut.Empty();
+					return;
+				}
+				pString = (LPCSTR)pStr;
+			}
 			int nMaxChars = min(nSize, (int)strlen(pString));
+			// Clamp to the remaining bytes inside the EXIF block so strlen()
+			// (which ran on the validated pointer) cannot read past the end.
+			if (pApp1 != NULL && nApp1Size > 0) {
+				ptrdiff_t used = (uint8*)pString - pApp1;
+				if (used < 0 || used >= nApp1Size) { strOut.Empty(); return; }
+				int nAvail = nApp1Size - (int)used;
+				if (nMaxChars > nAvail) nMaxChars = nAvail;
+			}
 			if (bTryReadAsUTF8) {
 				CString strUTF8 = Helpers::TryConvertFromUTF8((uint8*)pString, nMaxChars);
 				if (!strUTF8.IsEmpty()) {
@@ -76,12 +118,18 @@ static void ReadStringTag(CString & strOut, uint8* ptr, uint8* pTIFFHeader, bool
 	}
 }
 
-static void ReadUserCommentTag(CString & strOut, uint8* ptr, uint8* pTIFFHeader, bool bLittleEndian) {
+static void ReadUserCommentTag(CString & strOut, uint8* ptr, uint8* pTIFFHeader, bool bLittleEndian, uint8* pApp1 = NULL, int nApp1Size = 0) {
 	try {
 		if (ptr != NULL && ReadUShort(ptr + 2, bLittleEndian) == 7) {
 			int nSize = ReadUInt(ptr + 4, bLittleEndian);
 			if (nSize > 10 && nSize <= 4096) {
-				LPCSTR sCodeDesc = (LPCSTR)(pTIFFHeader + ReadUInt(ptr + 8, bLittleEndian));
+				uint32 nCommentOffset = ReadUInt(ptr + 8, bLittleEndian);
+				uint8* pComment = SafeOffset(pTIFFHeader, nCommentOffset, (size_t)nSize, pApp1, nApp1Size);
+				if (pComment == NULL) {
+					strOut.Empty();
+					return;
+				}
+				LPCSTR sCodeDesc = (LPCSTR)pComment;
 				if (strcmp(sCodeDesc, "ASCII") == 0) {
 					strOut = CString((LPCSTR)(sCodeDesc + 8), nSize - 8);
 				} else if (strcmp(sCodeDesc, "UNICODE") == 0) {
@@ -169,8 +217,15 @@ static int ReadRationalTag(Rational & rational, uint8* ptr, uint8* pTIFFHeader, 
 		if (index < nCount) {
 			if (nType == 5 || nType == 10) {
 				int nOffset = ReadUInt(ptr + 8, bLittleEndian) + index * 8;
-				rational.Numerator = ReadUInt(pTIFFHeader + nOffset, bLittleEndian);
-				rational.Denominator = ReadUInt(pTIFFHeader + nOffset + 4, bLittleEndian);
+				// Rational is 8 bytes, so it is always stored at an offset
+				// (never inline). Bounds-check the indirect pointer before
+				// dereferencing - the offset comes straight from the file.
+				uint8* pRat = SafeOffset(pTIFFHeader, nOffset, 8, g_pEXIFApp1Base, g_nEXIFApp1Size);
+				if (pRat == NULL) {
+					return nType;
+				}
+				rational.Numerator = ReadUInt(pRat, bLittleEndian);
+				rational.Denominator = ReadUInt(pRat + 4, bLittleEndian);
 				if (rational.Numerator != 0 && rational.Denominator != 0) {
 					// Calculate the ggT
 					uint32 nModulo;
@@ -265,11 +320,17 @@ CEXIFReader::CEXIFReader(void* pApp1Block, EImageFormat eImageFormat)
 	m_dAltitude = UNKNOWN_DOUBLE_VALUE;
 
 	m_pApp1 = (uint8*)pApp1Block;
+	m_nApp1Size = 0;
 	// APP1 marker
 	if (m_pApp1[0] != 0xFF || m_pApp1[1] != 0xE1) {
 		return;
 	}
 	int nApp1Size = m_pApp1[2]*256 + m_pApp1[3] + 2;
+	m_nApp1Size = nApp1Size;
+	// Publish to file-scope globals so the static Read* helpers can
+	// bounds-check EXIF offset pointers. Reset on constructor exit.
+	g_pEXIFApp1Base = m_pApp1;
+	g_nEXIFApp1Size = nApp1Size;
 
 	// Read TIFF header
 	uint8* pTIFFHeader = m_pApp1 + 10;
@@ -309,16 +370,16 @@ CEXIFReader::CEXIFReader(void* pApp1Block, EImageFormat eImageFormat)
 	m_pTagOrientation = pTagOrientation;
 
 	uint8* pTagModel = FindTag(pIFD0, pLastIFD0, 0x110, bLittleEndian);
-	ReadStringTag(m_sModel, pTagModel, pTIFFHeader, bLittleEndian);
+	ReadStringTag(m_sModel, pTagModel, pTIFFHeader, bLittleEndian, false, 65536, m_pApp1, nApp1Size);
 
 	uint8* pTagImageDesc = FindTag(pIFD0, pLastIFD0, 0x10E, bLittleEndian);
-	ReadStringTag(m_sImageDescription, pTagImageDesc, pTIFFHeader, bLittleEndian, true);
+	ReadStringTag(m_sImageDescription, pTagImageDesc, pTIFFHeader, bLittleEndian, true, 65536, m_pApp1, nApp1Size);
 
 	// Add the manufacturer name if not contained in model name
 	if (!m_sModel.IsEmpty()) {
 		CString sMake;
 		uint8* pTagMake = FindTag(pIFD0, pLastIFD0, 0x10F, bLittleEndian);
-		ReadStringTag(sMake, pTagMake, pTIFFHeader, bLittleEndian);
+		ReadStringTag(sMake, pTagMake, pTIFFHeader, bLittleEndian, false, 65536, m_pApp1, nApp1Size);
 		if (!sMake.IsEmpty()) {
 			int nSpace = sMake.Find(_T(' '));
 			CString sMakeL(nSpace > 0 ? sMake.Left(nSpace) : sMake);
@@ -329,11 +390,11 @@ CEXIFReader::CEXIFReader(void* pApp1Block, EImageFormat eImageFormat)
 	}
 
 	uint8* pTagSoftware = FindTag(pIFD0, pLastIFD0, 0x0131, bLittleEndian);
-	ReadStringTag(m_sSoftware, pTagSoftware, pTIFFHeader, bLittleEndian);
+	ReadStringTag(m_sSoftware, pTagSoftware, pTIFFHeader, bLittleEndian, false, 65536, m_pApp1, nApp1Size);
 
 	uint8* pTagModDate = FindTag(pIFD0, pLastIFD0, 0x0132, bLittleEndian);
 	CString sModDate;
-	ReadStringTag(sModDate, pTagModDate, pTIFFHeader, bLittleEndian);
+	ReadStringTag(sModDate, pTagModDate, pTIFFHeader, bLittleEndian, false, 65536, m_pApp1, nApp1Size);
 	ParseDateString(m_dateTime, sModDate);
 
 	uint8* pTagEXIFIFD = FindTag(pIFD0, pLastIFD0, 0x8769, bLittleEndian);
@@ -363,7 +424,7 @@ CEXIFReader::CEXIFReader(void* pApp1Block, EImageFormat eImageFormat)
 	}
 	uint8* pTagAcquisitionDate = FindTag(pEXIFIFD, pLastEXIF, 0x9003, bLittleEndian);
 	CString sAcqDate;
-	ReadStringTag(sAcqDate, pTagAcquisitionDate, pTIFFHeader, bLittleEndian);
+	ReadStringTag(sAcqDate, pTagAcquisitionDate, pTIFFHeader, bLittleEndian, false, 65536, m_pApp1, nApp1Size);
 	ParseDateString(m_acqDate, sAcqDate);
 
 	uint8* pTagExposureTime = FindTag(pEXIFIFD, pLastEXIF, 0x829A, bLittleEndian);
@@ -391,7 +452,7 @@ CEXIFReader::CEXIFReader(void* pApp1Block, EImageFormat eImageFormat)
 		ReadLongTag(pTagISOSpeed2, bLittleEndian);
 
 	uint8* pTagUserComment = FindTag(pEXIFIFD, pLastEXIF, 0x9286, bLittleEndian);
-	ReadUserCommentTag(m_sUserComment, pTagUserComment, pTIFFHeader, bLittleEndian);
+	ReadUserCommentTag(m_sUserComment, pTagUserComment, pTIFFHeader, bLittleEndian, m_pApp1, nApp1Size);
 	// Samsung Galaxy puts this useless comment into each JPEG, just ignore
 	if (m_sUserComment == "User comments") {	
 		m_sUserComment = "";
@@ -469,7 +530,12 @@ void CEXIFReader::UpdateJPEGThumbnail(unsigned char* pJPEGStream, int nStreamLen
 	uint8* pTagOffsetSOI = FindTag(m_pIFD1, m_pLastIFD1, 0x0201, m_bLittleEndian);
 	uint32 nOffsetSOI = ReadLongTag(pTagOffsetSOI, m_bLittleEndian);
 	uint8* pTIFFHeader = m_pApp1 + 10;
-	uint8* pSOI = pTIFFHeader + nOffsetSOI;
+	// Bounds-check the thumbnail SOI offset before writing - it comes from
+	// the (possibly edited) EXIF block and a corrupt offset would write OOB.
+	uint8* pSOI = SafeOffset(pTIFFHeader, nOffsetSOI, (size_t)nStreamLen + 2, m_pApp1, m_nApp1Size);
+	if (pSOI == NULL) {
+		return;
+	}
 	memcpy(pSOI + 2, pJPEGStream, nStreamLen);
 
 	uint8* pTagJPEGBytes = FindTag(m_pIFD1, m_pLastIFD1, 0x0202, m_bLittleEndian);
@@ -499,7 +565,7 @@ void CEXIFReader::ReadGPSData(uint8* pTIFFHeader, uint8* pTagGPSIFD, int nApp1Si
 	if (pTagLatitudeRef == NULL)
 		return;
 	CString latitudeRef;
-	ReadStringTag(latitudeRef, pTagLatitudeRef, pTIFFHeader, bLittleEndian, false, 2);
+	ReadStringTag(latitudeRef, pTagLatitudeRef, pTIFFHeader, bLittleEndian, false, 2, m_pApp1, nApp1Size);
 
 	uint8* pTagLatitude = FindTag(pGPSIFD, pLastGPS, 0x2, bLittleEndian);
 	m_pLatitude = ReadGPSCoordinate(pTIFFHeader, pTagLatitude, latitudeRef, bLittleEndian);
@@ -508,7 +574,7 @@ void CEXIFReader::ReadGPSData(uint8* pTIFFHeader, uint8* pTagGPSIFD, int nApp1Si
 	if (pTagLongitudeRef == NULL)
 		return;
 	CString longitudeRef;
-	ReadStringTag(longitudeRef, pTagLongitudeRef, pTIFFHeader, bLittleEndian, false, 2);
+	ReadStringTag(longitudeRef, pTagLongitudeRef, pTIFFHeader, bLittleEndian, false, 2, m_pApp1, nApp1Size);
 
 	uint8* pTagLongitude = FindTag(pGPSIFD, pLastGPS, 0x4, bLittleEndian);
 	m_pLongitude = ReadGPSCoordinate(pTIFFHeader, pTagLongitude, longitudeRef, bLittleEndian);

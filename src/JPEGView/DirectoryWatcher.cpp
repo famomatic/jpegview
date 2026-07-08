@@ -10,7 +10,10 @@
 static BOOL GetLastModificationTime(LPCTSTR fileName, FILETIME & lastModificationTime)
 {
 	HANDLE hFile = ::CreateFile(fileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-	if (hFile != NULL) {
+	// CreateFile returns INVALID_HANDLE_VALUE (-1) on failure, not NULL.
+	// Checking against NULL leaks the invalid handle and calls
+	// GetFileTime/CloseHandle on a bogus handle.
+	if (hFile != NULL && hFile != INVALID_HANDLE_VALUE) {
 		BOOL bSuccess;
 		bSuccess = ::GetFileTime(hFile, NULL, NULL, &lastModificationTime);
 		::CloseHandle(hFile);
@@ -102,7 +105,13 @@ void CDirectoryWatcher::ThreadFunc(void* arg) {
 	do {
 		waitHandles[0] = thisPtr->m_terminateEvent;
 		waitHandles[1] = thisPtr->m_newDirectoryEvent;
-		int numHandles = bSetupNewDirectory ? 2 : 4;
+		// Start each iteration with only the two control handles active. The
+		// change-notification handles are added below only when successfully
+		// created; this avoids passing NULL/stale handles to
+		// WaitForMultipleObjects (which is undefined behaviour).
+		waitHandles[2] = NULL;
+		waitHandles[3] = NULL;
+		int numHandles = 2;
 
 		::EnterCriticalSection(&thisPtr->m_lock);
 		if (bSetupNewDirectory && !thisPtr->m_sCurrentDirectory.IsEmpty()) {
@@ -113,6 +122,15 @@ void CDirectoryWatcher::ThreadFunc(void* arg) {
 				waitHandles[3] = ::FindFirstChangeNotification(thisPtr->m_sCurrentDirectory, FALSE, FILE_NOTIFY_CHANGE_LAST_WRITE);
 				if (waitHandles[3] != NULL && waitHandles[3] != INVALID_HANDLE_VALUE) {
 					numHandles++;
+				} else {
+					// Could not create the second notification handle; close
+					// the first so we don't leak it and don't wait on NULL.
+					if (waitHandles[3] == INVALID_HANDLE_VALUE) {
+						// INVALID_HANDLE_VALUE is not a real handle to close,
+						// but FindFirstChangeNotification can return it on
+						// failure; just reset to NULL.
+					}
+					waitHandles[3] = NULL;
 				}
 			}
 		}

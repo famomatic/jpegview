@@ -1,5 +1,7 @@
 #pragma once
 
+#include <windows.h>
+
 class CJPEGImage;
 class CImageLoadThread;
 class CFileList;
@@ -114,6 +116,15 @@ private:
 	int m_nCurrentTimeStamp;
 	EReadAheadDirection m_eOldDirection;
 
+	// Guards m_requestList and all per-request mutable state (Ready, Image,
+	// InUse, Deleted, IsActive, AccessTimeStamp, HandlingThread). The provider
+	// is touched from the UI thread (RequestImage/NotifyNotUsed/ClearRequest)
+	// and from the load-completed message handler (OnImageLoadCompleted), which
+	// can run on a worker-thread context via PostMessage dispatch. Without this
+	// lock the std::list iteration/erase and the CImageRequest field reads are a
+	// data race.
+	CRITICAL_SECTION m_csRequestList;
+
 	bool WaitForAsyncRequest(int nHandle, int nMessage);
 	void GetLoadedImageFromWorkThread(CImageRequest* pRequest);
 	CImageLoadThread* SearchThreadForNewRequest(void);
@@ -126,4 +137,15 @@ private:
 	void DeleteElementAt(std::list<CImageRequest*>::iterator iteratorAt); // also deletes the request and the image in the request
 	void DeleteElement(CImageRequest* pRequest);
 	bool IsDestructivelyProcessed(CJPEGImage* pImage);
+
+	// "*Locked" variants assume the caller already holds m_csRequestList.
+	// Public entry points acquire the lock and delegate to these.
+	bool FreeAllPossibleMemoryLocked();
+	bool ClearRequestLocked(CJPEGImage* pImage, bool releaseLockedFile);
+	void RemoveUnusedImagesLocked(bool bRemoveAlsoReadAhead);
+
+private:
+	// Non-copyable: owns a CRITICAL_SECTION and thread handles.
+	CJPEGProvider(const CJPEGProvider&);
+	CJPEGProvider& operator=(const CJPEGProvider&);
 };

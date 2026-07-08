@@ -101,10 +101,24 @@ CJPEGImage::CJPEGImage(int nWidth, int nHeight, void* pPixels, void* pEXIFData, 
 	// EXIF reader: parse the APP1 block for auto-rotation / metadata.
 	if (pEXIFData != NULL) {
 		unsigned char* pEXIF = (unsigned char*)pEXIFData;
-		m_nEXIFSize = pEXIF[2] * 256 + pEXIF[3] + 2;
-		m_pEXIFData = new char[m_nEXIFSize];
-		memcpy(m_pEXIFData, pEXIFData, m_nEXIFSize);
-		m_pEXIFReader = new CEXIFReader(m_pEXIFData, eImageFormat);
+		// EXIF APP1 segment: marker (2) + length (2, includes the length
+		// field itself) + payload. The length field is attacker-controlled
+		// (read straight from the file), so cap it at the JPEG APP segment
+		// maximum (65535 incl. the length field => 65537 incl. marker) and
+		// reject anything smaller than the minimum valid header.
+		int nDeclaredSize = pEXIF[2] * 256 + pEXIF[3] + 2;
+		if (nDeclaredSize < 4 || nDeclaredSize > 65535 + 2) {
+			// Corrupt/oversized EXIF block - ignore it rather than allocate
+			// a huge buffer and memcpy past the source.
+			m_nEXIFSize = 0;
+			m_pEXIFData = NULL;
+			m_pEXIFReader = NULL;
+		} else {
+			m_nEXIFSize = nDeclaredSize;
+			m_pEXIFData = new char[m_nEXIFSize];
+			memcpy(m_pEXIFData, pEXIFData, m_nEXIFSize);
+			m_pEXIFReader = new CEXIFReader(m_pEXIFData, eImageFormat);
+		}
 	} else {
 		m_nEXIFSize = 0;
 		m_pEXIFData = NULL;
@@ -1316,6 +1330,30 @@ bool CJPEGImage::ConvertSrcTo4Channels() {
 			m_pSourceData->Release();
 			delete m_pSourceData;
 			m_pSourceData = NULL;
+		} else {
+			// Lazy source (e.g. CTiffLazySource): there is no full buffer to
+			// detach. Force a full decode of the whole image into a new
+			// m_pOrigPixels so the destructive transform can operate in place.
+			// This is expensive but correct, and only happens when the user
+			// explicitly rotates/mirrors/crops a partially-loaded image.
+			int nBytes = m_nOrigWidth * m_nOrigHeight * 4;
+			uint8* pFullDecode = new(std::nothrow) uint8[nBytes];
+			if (pFullDecode == NULL) {
+				return false;
+			}
+			CRect fullRect(0, 0, m_nOrigWidth, m_nOrigHeight);
+			bool bOk = m_pSourceData->DecodeRegion(fullRect, 0, pFullDecode, CSize(m_nOrigWidth, m_nOrigHeight));
+			if (!bOk) {
+				delete[] pFullDecode;
+				return false;
+			}
+			m_pOrigPixels = pFullDecode;
+			m_nOriginalChannels = 4; // DecodeRegion always emits 32bpp BGRA
+			m_pSourceData->Release();
+			delete m_pSourceData;
+			m_pSourceData = NULL;
+			// Already 4 channels from DecodeRegion, skip the conversion below.
+			return true;
 		}
 	}
 	if (m_nOriginalChannels == 3) {

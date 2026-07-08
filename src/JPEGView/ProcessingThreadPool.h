@@ -1,6 +1,7 @@
 #pragma once
 
 #include "WorkThread.h"
+#include "Helpers.h"
 
 class CProcessingThread;
 
@@ -16,7 +17,7 @@ public:
 		FullTargetOffset = fullTargetOffset;
 		ClippedTargetSize = clippedTargetSize;
 		StripPadding = 8;
-		Success = true;
+		Success = 1;
 	}
 
 	// Process one strip of the image, starting at row offsetY and having the specified y-size
@@ -32,8 +33,11 @@ public:
 	CSize ClippedTargetSize;
 	int StripPadding; // Height of strip is padded to multiple of this
 
-	// Processing thread can signal failure by setting this flag to false. Must not be set to true by processing threads!
-	bool Success;
+	// Processing thread can signal failure by setting this flag to 0. Must not
+	// be set to true/1 by processing threads! Stored as a volatile LONG with
+	// interlocked writes so the main thread's read after WaitForSingleObject
+	// sees a consistent value (plain bool has no memory barrier).
+	volatile LONG Success;
 };
 
 // Thread pool for executing processing requests on multiple threads in parallel, processing a strip
@@ -60,4 +64,3 @@ private:
 
 	CProcessingThreadPool(void);
 };
-

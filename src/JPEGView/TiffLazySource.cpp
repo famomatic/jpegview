@@ -162,10 +162,13 @@ bool CTiffLazySource::OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex)
 	}
 
 	// 프레임 수 계산.
-	m_nFrameCount = 1;
-	TIFFSetDirectory(m_tif, 0);
-	while (TIFFReadDirectory(m_tif))
-		m_nFrameCount++;
+	// Use TIFFNumberOfDirectories() instead of manually iterating every IFD.
+	// Manual iteration reads each directory header, which is O(n) disk I/O
+	// and stalls opening multi-page scan documents (hundreds of pages) for
+	// seconds. TIFFNumberOfDirectories() uses the IFD offset chain in libtiff
+	// 4.x without fully reading each directory.
+	tdir_t nDirs = TIFFNumberOfDirectories(m_tif);
+	m_nFrameCount = (nDirs > 0) ? (int)nDirs : 1;
 	TIFFSetDirectory(m_tif, (tdir_t)nFrameIndex);
 
 	// 피라미드 레벨 감지.
@@ -231,6 +234,7 @@ int CTiffLazySource::DetectPyramidLevels()
 
 bool CTiffLazySource::SetPyramidLevel(int level)
 {
+	std::lock_guard<std::mutex> lock(m_tifLock);
 	if (level == m_nCurrentPyramidLevel)
 		return true;
 
@@ -275,6 +279,7 @@ bool CTiffLazySource::SetPyramidLevel(int level)
 
 bool CTiffLazySource::SetFrame(int nFrame)
 {
+	std::lock_guard<std::mutex> lock(m_tifLock);
 	if (nFrame < 0 || nFrame >= m_nFrameCount)
 		return false;
 	if (nFrame == m_nCurrentFrame)
@@ -413,6 +418,7 @@ void CTiffLazySource::ConvertStripToBGRA(const uint8* pSrc, uint8* pDst,
 bool CTiffLazySource::DecodeStrips(int startStrip, int stripCount,
                                     uint8* pDst, int dstStride)
 {
+	std::lock_guard<std::mutex> lock(m_tifLock);
 	if (m_tif == nullptr || m_bReleased)
 		return false;
 
@@ -440,6 +446,7 @@ bool CTiffLazySource::DecodeStrips(int startStrip, int stripCount,
 
 bool CTiffLazySource::DecodeTile(int tileX, int tileY, uint8* pDst)
 {
+	std::lock_guard<std::mutex> lock(m_tifLock);
 	if (m_tif == nullptr || m_bReleased)
 		return false;
 

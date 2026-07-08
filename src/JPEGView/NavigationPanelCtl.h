@@ -54,6 +54,11 @@ private:
 	int m_nBlendInNavPanelCountdown;
 	CDC* m_pMemDCAnimation;
 	HBITMAP m_hOffScreenBitmapAnimation;
+	// Size of the off-screen bitmap last prepared for m_pMemDCAnimation.
+	// When the nav panel rect changes between animation frames (e.g. while
+	// zooming), the cached bitmap must be recreated or BitBlt draws into a
+	// mismatched surface and the panel looks garbled.
+	CSize m_sizeMemDCAnimation;
 
 	void SetMouseInNavPanel(bool value);
 	bool CheckMouseInNavPanel(int nX, int nY);

@@ -11,6 +11,14 @@
 #define NAV_PANEL_HEIGHT 32
 #define NAV_PANEL_BORDER 6
 #define NAV_PANEL_GAP 5
+// Minimum scale the nav panel is allowed to shrink to. Below this the button
+// glyphs become unreadable and m_nHeight - m_nBorder can collapse toward zero
+// (or negative), which breaks layout math and painting. When the window is
+// too narrow to fit even this minimum, the controller hides the panel instead.
+#define NAV_PANEL_MIN_SCALE 0.5f
+// Minimum button size in pixels (at the base DPI scale, before the additional
+// shrink scale). Keeps buttons tappable even when the panel is scaled down.
+#define NAV_PANEL_MIN_BUTTON_PX 16
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 // CNavigationPanel
@@ -133,11 +141,23 @@ void CNavigationPanel::RepositionAll() {
 }
 
 void CNavigationPanel::SetScaledWidth(float fScale) {
+	// Never scale below the minimum: a near-zero m_nHeight makes
+	// nButtonSize = m_nHeight - m_nBorder collapse to <= 0, which produces
+	// negative-size rectangles and garbled painting. The controller hides
+	// the panel instead when the window is too narrow (see AdjustMaximalWidth).
+	if (fScale < NAV_PANEL_MIN_SCALE) fScale = NAV_PANEL_MIN_SCALE;
 	m_fAdditionalScale = fScale;
 	m_nWidth = 0;
 	m_nHeight = (int)(NAV_PANEL_HEIGHT*m_fDPIScale*fScale);
 	m_nBorder = (int)(NAV_PANEL_BORDER*m_fDPIScale*fScale);
 	m_nGap = (int)(NAV_PANEL_GAP*m_fDPIScale*fScale);
+	// Guarantee a positive button size: nButtonSize = m_nHeight - m_nBorder.
+	// At very small DPI/rounding the border could equal the height; clamp so
+	// the button is at least a few pixels.
+	if (m_nHeight - m_nBorder < NAV_PANEL_MIN_BUTTON_PX) {
+		m_nHeight = m_nBorder + NAV_PANEL_MIN_BUTTON_PX;
+	}
+	if (m_nGap < 1) m_nGap = 1;
 }
 
 void CNavigationPanel::PaintHomeBtn(void* pContext, const CRect& rect, CDC& dc) {

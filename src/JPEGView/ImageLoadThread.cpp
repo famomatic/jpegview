@@ -185,19 +185,12 @@ static CJPEGImage* ConvertGDIPlusBitmapToJPEGImage(Gdiplus::Bitmap* pBitmap, int
 	CJPEGImage* pJPEGImage = NULL;
 	Gdiplus::PixelFormat pixelFormat = pBitmap->GetPixelFormat();
 	bool bHasAlphaChannel = (pixelFormat & (PixelFormatAlpha | PixelFormatPAlpha));
-	Gdiplus::Bitmap* pBmTarget = NULL;
-	Gdiplus::Graphics* pBmGraphics = NULL;
-	Gdiplus::Bitmap* pBitmapToUse;
-	if (bHasAlphaChannel) {
-		// Preserve the alpha channel instead of flattening it onto a background color.
-		// The background is composited at render time, allowing live background switching.
-		pBitmapToUse = pBitmap;
-	} else {
-		pBitmapToUse = pBitmap;
-	}
+	// Alpha channel is preserved (not flattened onto a background color); the
+	// background is composited at render time, allowing live background
+	// switching. pBitmapToUse is always pBitmap.
 	Gdiplus::Rect bmRect(0, 0, pBitmap->GetWidth(), pBitmap->GetHeight());
 	Gdiplus::BitmapData bmData;
-	lastStatus = pBitmapToUse->LockBits(&bmRect, Gdiplus::ImageLockModeRead,
+	lastStatus = pBitmap->LockBits(&bmRect, Gdiplus::ImageLockModeRead,
 		bHasAlphaChannel ? PixelFormat32bppARGB : PixelFormat32bppRGB, &bmData);
 	if (lastStatus == Gdiplus::Ok) {
 		// pixel format is now ARGB or RGB depending on alpha channel
@@ -208,14 +201,9 @@ static CJPEGImage* ConvertGDIPlusBitmapToJPEGImage(Gdiplus::Bitmap* pBitmap, int
 			pJPEGImage = new CJPEGImage(bmRect.Width, bmRect.Height, pDIB, pEXIFData, 4, nJPEGHash, eImageFormat,
 				eImageFormat == IF_GIF && nFrameCount > 1, nFrameIndex, nFrameCount, nFrameTimeMs);
 		}
-		pBitmapToUse->UnlockBits(&bmData);
+		pBitmap->UnlockBits(&bmData);
 	} else if (lastStatus == Gdiplus::ValueOverflow) {
 		isOutOfMemory = true;
-	}
-
-	if (pBmGraphics != NULL && pBmTarget != NULL) {
-		delete pBmGraphics;
-		delete pBmTarget;
 	}
 
 	pBitmap->GetLastStatus(); // reset status
@@ -896,7 +884,7 @@ void CImageLoadThread::ProcessReadJXLRequest(CRequest* request) {
 	SetErrorMode(nPrevErrorMode);
 	if (!bUseCachedDecoder) {
 		::CloseHandle(hFile);
-		// delete[] pBuffer;
+		delete[] pBuffer;
 	}
 }
 #endif

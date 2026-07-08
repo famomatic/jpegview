@@ -7,6 +7,7 @@
 #include "MaxImageDef.h"
 #include <stdexcept>
 #include <zlib.h>
+#include <mutex>
 
 // Uncomment to build without APNG support
 //#undef PNG_APNG_SUPPORTED
@@ -73,6 +74,12 @@ struct PngReader::png_cache {
 };
 
 PngReader::png_cache PngReader::cache = { 0 };
+
+// Guards the process-global PngReader::cache. CJPEGProvider runs multiple
+// CImageLoadThread instances, and each of them can reach PngReader::ReadImage
+// concurrently. The cache holds libpng state and pixel buffers that are not
+// safe to touch from more than one thread at a time.
+static std::mutex g_pngCacheMutex;
 
 #ifdef PNG_APNG_SUPPORTED
 void BlendOver(unsigned char** rows_dst, unsigned char** rows_src, unsigned int x, unsigned int y, unsigned int w, unsigned int h)
@@ -302,6 +309,7 @@ void* PngReader::ReadImage(int& width,
 	void* buffer,
 	size_t sizebytes)
 {
+	std::lock_guard<std::mutex> lock(g_pngCacheMutex);
 	exif_chunk = NULL;
 	if (!cache.buffer) {
 		if (sizebytes < 8)
@@ -352,7 +360,7 @@ void* PngReader::ReadImage(int& width,
 		
 	}
 	if (!has_animation)
-		DeleteCache();
+		DeleteCacheInternal(true);
 	return pixels;
 }
 
@@ -377,6 +385,7 @@ void PngReader::DeleteCacheInternal(bool free_buffer)
 }
 
 void PngReader::DeleteCache() {
+	std::lock_guard<std::mutex> lock(g_pngCacheMutex);
 	DeleteCacheInternal(true);
 }
 

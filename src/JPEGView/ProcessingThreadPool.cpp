@@ -107,7 +107,7 @@ bool CProcessingThreadPool::Process(CProcessingRequest* pRequest) {
 			delete [] pAllWrappedRequests;
 		}
 	}
-	return pRequest->Success;
+	return pRequest->Success != 0;
 }
 
 CProcessingThreadPool::CProcessingThreadPool(void) {
@@ -139,7 +139,9 @@ void CProcessingThread::DoProcess(CProcessingRequest* pRequest, int nOffsetY, in
 	while (nSizeProcessed < nSizeY) {
 		int nCurrentOffsetY = nOffsetY + nSizeProcessed;
 		if (!pRequest->ProcessStrip(nCurrentOffsetY, nCurrentSizeY)) {
-			pRequest->Success = false;
+			// InterlockedExchange provides a release barrier so the main
+			// thread sees the partial output before observing the failure.
+			::InterlockedExchange(&pRequest->Success, 0);
 			break;
 		}
 		nSizeProcessed += nCurrentSizeY;
@@ -151,4 +153,3 @@ void CProcessingThread::ProcessRequest(CRequestBase& request) {
 	CWrappedRequest* pWrappedRequest = (CWrappedRequest*)&request;
 	DoProcess(pWrappedRequest->InnerRequest, pWrappedRequest->Offset, pWrappedRequest->SizeY);
 }
-

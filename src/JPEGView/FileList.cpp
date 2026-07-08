@@ -1,5 +1,6 @@
 #include "StdAfx.h"
 #include "FileList.h"
+#include <new>
 #include "SettingsProvider.h"
 #include "Helpers.h"
 #include "DirectoryWatcher.h"
@@ -315,10 +316,18 @@ bool CFileList::DriveHasRecycleBin(LPCTSTR filePath) {
 
 bool CFileList::DeleteFile(LPCTSTR fileNameWithPath) const {
 	if (fileNameWithPath != NULL) {
-		// append a double null character
-		TCHAR fileName[MAX_PATH + 1];
-		_tcscpy(fileName, fileNameWithPath);
-		fileName[_tcslen(fileName) + 1] = 0;
+		// SHFileOperation needs a double-null-terminated list. Use a heap
+		// buffer sized to the actual path so paths longer than MAX_PATH don't
+		// overflow a stack buffer, and bail out cleanly on allocation failure.
+		size_t nPathLen = _tcslen(fileNameWithPath);
+		size_t nBufLen = nPathLen + 2; // path + two trailing nulls
+		TCHAR* fileName = new (std::nothrow) TCHAR[nBufLen];
+		if (fileName == NULL) {
+			return false;
+		}
+		memcpy(fileName, fileNameWithPath, nPathLen * sizeof(TCHAR));
+		fileName[nPathLen] = 0;
+		fileName[nPathLen + 1] = 0;
 
 		SHFILEOPSTRUCT fileOp{ 0 };
 		fileOp.hwnd = NULL;
@@ -327,7 +336,9 @@ bool CFileList::DeleteFile(LPCTSTR fileNameWithPath) const {
 		fileOp.pTo = NULL;
 		fileOp.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION;
 		fileOp.hNameMappings = NULL;
-		if (::SHFileOperation(&fileOp) == 0 && !fileOp.fAnyOperationsAborted) {
+		bool bSuccess = (::SHFileOperation(&fileOp) == 0 && !fileOp.fAnyOperationsAborted);
+		delete[] fileName;
+		if (bSuccess) {
 			return true;
 		}
 	}
