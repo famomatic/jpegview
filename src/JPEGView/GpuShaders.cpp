@@ -48,6 +48,54 @@ void main(uint3 dtid : SV_DispatchThreadID) {
 }
 )";
 
+// ApplySaturationAnd3ChannelLUT32bpp compute shader.
+//
+// Mirrors CBasicProcessing::ApplySaturationAnd3ChannelLUT32bpp bit-for-bit:
+//   cnScaler = 1<<16, cnMax = 255<<16
+//   nRed   = Sat[r]      + Sat[256+g] + Sat[512+b]
+//   nGreen = Sat[768+r]  + Sat[1024+g]+ Sat[512+b]
+//   nBlue  = Sat[768+r]  + Sat[256+g] + Sat[1280+b]
+//   out = LUT[clamp(nBlue)>>16] + LUT[256+(clamp(nGreen)>>16)]<<8 +
+//         LUT[512+(clamp(nRed)>>16)]<<16 + 0xFF<<24
+// Input/output are R8G8B8A8_UINT (raw 0..255 byte values, byte-exact).
+const char* kApplySaturationAnd3ChannelLUT_CS = R"(
+struct Constants {
+    uint width;
+    uint height;
+    uint _pad0;
+    uint _pad1;
+};
+
+cbuffer CB0 : register(b0) { Constants g; };
+
+Texture2D<uint4>   gInput : register(t0);
+Buffer<uint>      gLUT   : register(t1);
+StructuredBuffer<int> gSat : register(t2);
+RWTexture2D<uint4> gOutput : register(u0);
+
+int clampMax(int v, int cnMax) { return max(0, min(cnMax, v)); }
+
+[numthreads(8, 8, 1)]
+void main(uint3 dtid : SV_DispatchThreadID) {
+    if (dtid.x >= g.width || dtid.y >= g.height) return;
+    uint4 bgra = gInput[dtid.xy];
+    int sb = int(bgra.x & 0xFF);
+    int sg = int(bgra.y & 0xFF);
+    int sr = int(bgra.z & 0xFF);
+
+    int cnMax = 255 << 16;
+    int nRed   = gSat[sr]      + gSat[256 + sg] + gSat[512 + sb];
+    int nGreen = gSat[768 + sr] + gSat[1024 + sg] + gSat[512 + sb];
+    int nBlue  = gSat[768 + sr] + gSat[256 + sg] + gSat[1280 + sb];
+
+    uint nb = gLUT[clampMax(nBlue, cnMax) >> 16];
+    uint ng = gLUT[(clampMax(nGreen, cnMax) >> 16) + 256];
+    uint nr = gLUT[(clampMax(nRed, cnMax) >> 16) + 512];
+
+    gOutput[dtid.xy] = uint4(nb, ng, nr, 0xFFu);
+}
+)";
+
 // ApplyLDC32bpp (non-saturation path). Mirrors ApplyLDC32bpp_Core in
 // BasicProcessing.cpp for the pSatLUTs == NULL case, bit-for-bit in 16.16
 // fixed point: LUT lookup, then maskValue * pMulLUT[lutValue] >> 14 added.
@@ -296,12 +344,17 @@ RWStructuredBuffer<int> gOut  : register(u0);
 void main(uint3 dtid : SV_DispatchThreadID) {
     if (dtid.x >= g.nRunX) return;
     if (dtid.y >= (uint)f.rowCount) return;
-    // CPU: pSourcePixelLine = pSource + nStartX + nSourceWidth*(j+nStartY);
-    //      pSourcePixel = pSourcePixelLine + i - kOffset;
-    int kOffset = gKDesc[dtid.x * 3 + 0];
-    int kLength = gKDesc[dtid.x * 3 + 1];
-    int kValueBase = gKDesc[dtid.x * 3 + 2];
-    int tapStart = ((int)g.startX + (int)dtid.x) - kOffset;
+    // startX is the kernel-index offset (CPU's nStartX): the kernel for target
+    // column i lives at index (i + startX). The host pre-extracts the rect so
+    // the source already starts at column 0; the source tap is therefore
+    // (i - kOffset + n), NOT (i + startX - kOffset + n). This matches
+    // ApplyFilter1C16bpp, which reads filter.Indices[i + nStartX] but sources
+    // from pSource + nStartX + ... + i (nStartX cancels in the source coord).
+    int kIndex = (int)dtid.x + (int)g.startX;
+    int kOffset = gKDesc[kIndex * 3 + 0];
+    int kLength = gKDesc[kIndex * 3 + 1];
+    int kValueBase = gKDesc[kIndex * 3 + 2];
+    int tapStart = (int)dtid.x - kOffset;
     int sum = 0;
     [loop]
     for (int n = 0; n < kLength; n++) {
@@ -334,10 +387,12 @@ RWStructuredBuffer<int> gOut  : register(u0);
 void main(uint3 dtid : SV_DispatchThreadID) {
     if (dtid.x >= g.nRunX) return;
     if (dtid.y >= (uint)f.rowCount) return;
-    int kOffset = gKDesc[dtid.x * 3 + 0];
-    int kLength = gKDesc[dtid.x * 3 + 1];
-    int kValueBase = gKDesc[dtid.x * 3 + 2];
-    int tapStart = ((int)g.startX + (int)dtid.x) - kOffset;
+    // Same kernel-index convention as the X pass (see kGaussFilter1C16_CS).
+    int kIndex = (int)dtid.x + (int)g.startX;
+    int kOffset = gKDesc[kIndex * 3 + 0];
+    int kLength = gKDesc[kIndex * 3 + 1];
+    int kValueBase = gKDesc[kIndex * 3 + 2];
+    int tapStart = (int)dtid.x - kOffset;
     int sum = 0;
     [loop]
     for (int n = 0; n < kLength; n++) {

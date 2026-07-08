@@ -1,11 +1,18 @@
 #include "StdAfx.h"
 #include "GpuRenderTarget.h"
 #include "GpuDevice.h"
+#include "SettingsProvider.h"
 #include <d2d1.h>
 #include <cstdio>
 
 namespace {
-bool IsD2DRequestedByEnv() {
+// The D2D output path is gated by the same EnableGPUImageProcessing INI
+// setting that selects the compute backend, so the compute and output
+// backends stay consistent: enabling GPU processing enables both the compute
+// shaders and the D2D screen blit. The legacy JPEGVIEW_ENABLE_GPU_D2D env var
+// is still honored as an override for quick A/B testing.
+bool IsD2DRequested() {
+    if (CSettingsProvider::This().EnableGPUImageProcessing()) return true;
     char buf[8] = {0};
     DWORD n = GetEnvironmentVariableA("JPEGVIEW_ENABLE_GPU_D2D", buf, sizeof(buf));
     return n > 0 && buf[0] != '0';
@@ -24,7 +31,7 @@ CGpuRenderTarget::CGpuRenderTarget()
     , m_pSurface(nullptr)
     , m_lastW(0)
     , m_lastH(0) {
-    if (IsD2DRequestedByEnv()) {
+    if (IsD2DRequested()) {
         Init();
     }
 }

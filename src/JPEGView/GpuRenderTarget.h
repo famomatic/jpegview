@@ -10,8 +10,11 @@
 // caller falls back to the existing GDI BitBlt/AlphaBlend in PaintMemDCMgr.
 //
 // This class only owns the D2D device/context and a single staging bitmap.
-// Integration into MainDlg::OnPaint is opt-in via JPEGVIEW_ENABLE_GPU_D2D;
-// the default remains the GDI path so shipping behavior is unchanged.
+// Integration into PaintMemDCMgr is gated by the EnableGPUImageProcessing INI
+// setting (the same one that selects the compute backend), so enabling GPU
+// processing enables both the compute shaders and the D2D screen blit. The
+// legacy JPEGVIEW_ENABLE_GPU_D2D env var remains as an override for testing.
+// The default (EnableGPUImageProcessing=false) keeps the GDI path.
 // ===========================================================================
 
 #include <d2d1_1.h>

@@ -75,6 +75,7 @@ GpuImageProcessor::GpuImageProcessor()
     m_pApply3ChannelLUT_CS = nullptr;
     m_pApplyLDC32bpp_CS = nullptr;
     m_pApplyLDC32bppSat_CS = nullptr;
+    m_pApplySaturationAnd3ChannelLUT_CS = nullptr;
     m_pResampleX_CS = nullptr;
     m_pUnsharpMask_CS = nullptr;
     m_pGaussFilter1C16_CS = nullptr;
@@ -85,6 +86,7 @@ GpuImageProcessor::~GpuImageProcessor() {
     if (m_pApply3ChannelLUT_CS) { m_pApply3ChannelLUT_CS->Release(); m_pApply3ChannelLUT_CS = nullptr; }
     if (m_pApplyLDC32bpp_CS) { m_pApplyLDC32bpp_CS->Release(); m_pApplyLDC32bpp_CS = nullptr; }
     if (m_pApplyLDC32bppSat_CS) { m_pApplyLDC32bppSat_CS->Release(); m_pApplyLDC32bppSat_CS = nullptr; }
+    if (m_pApplySaturationAnd3ChannelLUT_CS) { m_pApplySaturationAnd3ChannelLUT_CS->Release(); m_pApplySaturationAnd3ChannelLUT_CS = nullptr; }
     if (m_pResampleX_CS) { m_pResampleX_CS->Release(); m_pResampleX_CS = nullptr; }
     if (m_pUnsharpMask_CS) { m_pUnsharpMask_CS->Release(); m_pUnsharpMask_CS = nullptr; }
     if (m_pGaussFilter1C16_CS) { m_pGaussFilter1C16_CS->Release(); m_pGaussFilter1C16_CS = nullptr; }
@@ -123,6 +125,14 @@ ID3D11ComputeShader* GpuImageProcessor::GetApplyLDC32bppSatShader() {
     m_pApplyLDC32bppSat_CS = gpu_shaders::CompileComputeShader(
         CGpuDevice::Instance().Device(), gpu_shaders::kApplyLDC32bppSat_CS, "main", "cs_5_0");
     return m_pApplyLDC32bppSat_CS;
+}
+
+ID3D11ComputeShader* GpuImageProcessor::GetApplySaturationAnd3ChannelLUTShader() {
+    if (m_pApplySaturationAnd3ChannelLUT_CS != nullptr) return m_pApplySaturationAnd3ChannelLUT_CS;
+    if (!m_deviceAvailable) return nullptr;
+    m_pApplySaturationAnd3ChannelLUT_CS = gpu_shaders::CompileComputeShader(
+        CGpuDevice::Instance().Device(), gpu_shaders::kApplySaturationAnd3ChannelLUT_CS, "main", "cs_5_0");
+    return m_pApplySaturationAnd3ChannelLUT_CS;
 }
 
 ID3D11ComputeShader* GpuImageProcessor::GetResampleXShader() {
@@ -639,25 +649,84 @@ void* GpuImageProcessor::UnsharpMask(CSize fullSize, CPoint offset, CSize rect,
 
 int16* GpuImageProcessor::GaussFilter16bpp1Channel(CSize fullSize, CPoint offset,
     CSize rect, double dRadius, const int16* pPixels) {
-    // GaussFilter stays on CPU: the GPU 2-pass separable path requires
-    // careful transposed-output handling (X writes transposed, Y inverts it)
-    // that needs a dedicated accuracy test before it can replace the CPU path
-    // without quality regression. The compute shader (kGaussFilter1C16_CS) is
-    // implemented and the host plumbing is in place behind
-    // JPEGVIEW_ENABLE_GAUSS_GPU for experimentation, but the default stays
-    // CPU so the smoothed-gray fed to UnsharpMask stays bit-exact.
-    char gaussEnv[8] = {0};
-    bool gaussGpu = GetEnvironmentVariableA("JPEGVIEW_ENABLE_GAUSS_GPU", gaussEnv, sizeof(gaussEnv)) > 0 && gaussEnv[0] != "0"[0];
-    if (!gaussGpu) {
+    // GPU Gauss: separable 2-pass FIR on a single-channel int16 image.
+    // Both passes reuse ApplyFilter1C16bpp's transposed-output convention
+    // (column i -> nTargetWidth*i + row j), so two passes restore orientation,
+    // exactly like the CPU path. Falls back to CPU if the shader/device is
+    // unavailable or any GPU pass fails, so the smoothed-gray fed to
+    // UnsharpMask stays bit-exact.
+    ID3D11ComputeShader* csX = GetGaussFilter1C16Shader();
+    ID3D11ComputeShader* csY = GetGaussFilter1C16YShader();
+    if (csX == nullptr || csY == nullptr || !m_deviceAvailable) {
         return CBasicProcessing::GaussFilter16bpp1Channel(fullSize, offset, rect, dRadius, pPixels);
     }
-    // GPU path (experimental, not yet accuracy-verified).
-    ID3D11ComputeShader* cs = GetGaussFilter1C16Shader();
-    if (cs == nullptr || !m_deviceAvailable) {
+    if (pPixels == nullptr || rect.cx <= 0 || rect.cy <= 0) {
         return CBasicProcessing::GaussFilter16bpp1Channel(fullSize, offset, rect, dRadius, pPixels);
     }
-    // Fall back to CPU for now - the transposed output mapping needs work.
-    return CBasicProcessing::GaussFilter16bpp1Channel(fullSize, offset, rect, dRadius, pPixels);
+
+    ID3D11Device* device = CGpuDevice::Instance().Device();
+    ID3D11DeviceContext* ctx = CGpuDevice::Instance().ImmediateContext();
+    if (device == nullptr || ctx == nullptr) {
+        return CBasicProcessing::GaussFilter16bpp1Channel(fullSize, offset, rect, dRadius, pPixels);
+    }
+
+    // Kernel sets mirror the CPU path exactly:
+    //   X: CGaussFilter(fullSize.cx, dRadius), kernels indexed [i + offset.x]
+    //      (the CPU's ApplyFilter1C16bpp uses Indices[i + nStartX]).
+    //   Y: CGaussFilter(rect.cy, dRadius), source is the transposed X result
+    //      whose "width" is rect.cy, so kernels indexed [i].
+    CGaussFilter filterX(fullSize.cx, dRadius);
+    CGaussFilter filterY(rect.cy, dRadius);
+
+    // Extract the source rect into a contiguous int16 buffer. The source
+    // image is fullSize.cx wide; the rect starts at (offset.x, offset.y).
+    const int srcW = fullSize.cx;
+    const int xCount = rect.cx * rect.cy;
+    std::vector<int> srcRect((size_t)xCount);
+    for (int j = 0; j < rect.cy; ++j) {
+        const int16_t* sRow = pPixels + offset.x + (offset.y + j) * srcW;
+        for (int i = 0; i < rect.cx; ++i) {
+            srcRect[(size_t)j * rect.cx + i] = sRow[i];
+        }
+    }
+
+    // X pass: ApplyFilter1C16bpp(nSourceWidth=rect.cx, nTargetWidth=rect.cy,
+    //   nStartX=offset.x, nStartY=0, nRunX=rect.cx, nRunY=rect.cy, filterX).
+    //   The host pre-extracts the rect so the source starts at column 0;
+    //   startX=offset.x is the KERNEL-INDEX offset (CPU's nStartX) that selects
+    //   filter.Indices[i + offset.x]. srcLen=rect.cx (clamp taps to [0, rect.cx));
+    //   srcStride=rect.cx. Output is transposed: inter[i*rect.cy + j],
+    //   i in [0,rect.cx), j in [0,rect.cy).
+    int* inter = RunGaussPass(ctx, device, csX, srcRect.data(), rect.cx, rect.cx,
+        rect.cx, rect.cy, rect.cy, offset.x, filterX.GetFilterKernels());
+    if (inter == nullptr) {
+        return CBasicProcessing::GaussFilter16bpp1Channel(fullSize, offset, rect, dRadius, pPixels);
+    }
+
+    // Y pass: ApplyFilter1C16bpp(nSourceWidth=rect.cy, nTargetWidth=rect.cx,
+    //   nStartX=0, nStartY=0, nRunX=rect.cy, nRunY=rect.cx, filterY). Source
+    //   is the transposed X result treated as (rect.cy rows x rect.cx
+    //   stride); its width is rect.cy so srcLen=rect.cy, srcStride=rect.cy.
+    //   Output: out[i*rect.cx + j], i in [0,rect.cy)=orig row,
+    //   j in [0,rect.cx)=orig col -> original orientation restored.
+    int* out = RunGaussPass(ctx, device, csY, inter, rect.cy, rect.cy,
+        rect.cy, rect.cx, rect.cx, 0, filterY.GetFilterKernels());
+    delete[] inter;
+    if (out == nullptr) {
+        return CBasicProcessing::GaussFilter16bpp1Channel(fullSize, offset, rect, dRadius, pPixels);
+    }
+
+    // Narrow int -> int16 for the caller. The caller owns the result.
+    int16_t* pResult = new(std::nothrow) int16_t[xCount];
+    if (pResult == nullptr) {
+        delete[] out;
+        return CBasicProcessing::GaussFilter16bpp1Channel(fullSize, offset, rect, dRadius, pPixels);
+    }
+    for (int i = 0; i < xCount; ++i) {
+        pResult[i] = (int16_t)out[i];
+    }
+    delete[] out;
+    return pResult;
 }
 
 void* GpuImageProcessor::ApplyLDC32bpp(CSize fullTargetSize, CPoint fullTargetOffset,
@@ -845,8 +914,157 @@ void* GpuImageProcessor::ApplyLDC32bpp(CSize fullTargetSize, CPoint fullTargetOf
 
 void* GpuImageProcessor::ApplySaturationAnd3ChannelLUT32bpp(int nWidth, int nHeight,
     const void* pDIBPixels, const int32* pSatLUTs, const uint8* pLUT) {
-    return CBasicProcessing::ApplySaturationAnd3ChannelLUT32bpp(nWidth, nHeight,
-        pDIBPixels, pSatLUTs, pLUT);
+    // GPU saturation + 3-channel LUT pass. Mirrors the CPU path bit-for-bit
+    // (cnScaler = 1<<16, cnMax = 255<<16, clamp then >>16 to index the LUT).
+    // Falls back to CPU if the shader/device is unavailable or readback fails.
+    ID3D11ComputeShader* cs = GetApplySaturationAnd3ChannelLUTShader();
+    if (cs == nullptr) {
+        return CBasicProcessing::ApplySaturationAnd3ChannelLUT32bpp(nWidth, nHeight,
+            pDIBPixels, pSatLUTs, pLUT);
+    }
+    if (nWidth <= 0 || nHeight <= 0 || pDIBPixels == nullptr ||
+        pSatLUTs == nullptr || pLUT == nullptr) {
+        return CBasicProcessing::ApplySaturationAnd3ChannelLUT32bpp(nWidth, nHeight,
+            pDIBPixels, pSatLUTs, pLUT);
+    }
+
+    ID3D11Device* device = CGpuDevice::Instance().Device();
+    ID3D11DeviceContext* ctx = CGpuDevice::Instance().ImmediateContext();
+    if (device == nullptr || ctx == nullptr) {
+        return CBasicProcessing::ApplySaturationAnd3ChannelLUT32bpp(nWidth, nHeight,
+            pDIBPixels, pSatLUTs, pLUT);
+    }
+
+    // GPU textures: input SRV, output UAV, both R8G8B8A8_UINT so the shader
+    // reads/writes raw 0..255 byte values (byte-exact match to the CPU path).
+    ID3D11Texture2D* texIn = gpu_tex::CreateTextureFmt(device, nWidth, nHeight,
+        D3D11_BIND_SHADER_RESOURCE, false, (D3D11_CPU_ACCESS_FLAG)0, DXGI_FORMAT_R8G8B8A8_UINT);
+    ID3D11Texture2D* texOut = gpu_tex::CreateTextureFmt(device, nWidth, nHeight,
+        D3D11_BIND_UNORDERED_ACCESS, false, (D3D11_CPU_ACCESS_FLAG)0, DXGI_FORMAT_R8G8B8A8_UINT);
+    if (texIn == nullptr || texOut == nullptr) {
+        if (texIn) texIn->Release();
+        if (texOut) texOut->Release();
+        return CBasicProcessing::ApplySaturationAnd3ChannelLUT32bpp(nWidth, nHeight,
+            pDIBPixels, pSatLUTs, pLUT);
+    }
+
+    if (!gpu_tex::UploadBGRA(ctx, texIn, nWidth, nHeight, pDIBPixels)) {
+        texIn->Release();
+        texOut->Release();
+        return CBasicProcessing::ApplySaturationAnd3ChannelLUT32bpp(nWidth, nHeight,
+            pDIBPixels, pSatLUTs, pLUT);
+    }
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UINT;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+    ID3D11ShaderResourceView* srvIn = nullptr;
+    device->CreateShaderResourceView(texIn, &srvDesc, &srvIn);
+
+    D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
+    uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UINT;
+    uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+    uavDesc.Texture2D.MipSlice = 0;
+    ID3D11UnorderedAccessView* uavOut = nullptr;
+    device->CreateUnorderedAccessView(texOut, &uavDesc, &uavOut);
+
+    // LUT as a Buffer<uint> (3*256 uints: 256 B, then 256 G, then 256 R).
+    UINT lutExpanded[3 * 256];
+    for (int i = 0; i < 3 * 256; ++i) {
+        lutExpanded[i] = pLUT[i];
+    }
+    D3D11_BUFFER_DESC lutDesc{};
+    lutDesc.ByteWidth = 3 * 256 * sizeof(UINT);
+    lutDesc.Usage = D3D11_USAGE_DEFAULT;
+    lutDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    lutDesc.StructureByteStride = sizeof(UINT);
+    lutDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    D3D11_SUBRESOURCE_DATA lutInit{};
+    lutInit.pSysMem = lutExpanded;
+    ID3D11Buffer* lutBuf = nullptr;
+    device->CreateBuffer(&lutDesc, &lutInit, &lutBuf);
+    D3D11_SHADER_RESOURCE_VIEW_DESC lutSrvDesc{};
+    lutSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+    lutSrvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+    lutSrvDesc.Buffer.FirstElement = 0;
+    lutSrvDesc.Buffer.NumElements = 3 * 256;
+    ID3D11ShaderResourceView* lutSrv = nullptr;
+    device->CreateShaderResourceView(lutBuf, &lutSrvDesc, &lutSrv);
+
+    // Saturation LUTs (1536 int32) as a structured buffer.
+    D3D11_BUFFER_DESC satDesc{};
+    satDesc.ByteWidth = 1536 * sizeof(int32_t);
+    satDesc.Usage = D3D11_USAGE_DEFAULT;
+    satDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    satDesc.StructureByteStride = sizeof(int32_t);
+    satDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    D3D11_SUBRESOURCE_DATA satInit{};
+    satInit.pSysMem = pSatLUTs;
+    ID3D11Buffer* satBuf = nullptr;
+    device->CreateBuffer(&satDesc, &satInit, &satBuf);
+    D3D11_SHADER_RESOURCE_VIEW_DESC satSrvDesc{};
+    satSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+    satSrvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+    satSrvDesc.Buffer.FirstElement = 0;
+    satSrvDesc.Buffer.NumElements = 1536;
+    ID3D11ShaderResourceView* satSrv = nullptr;
+    device->CreateShaderResourceView(satBuf, &satSrvDesc, &satSrv);
+
+    // Constant buffer: width, height.
+    struct { UINT width; UINT height; UINT pad0; UINT pad1; } cb = { (UINT)nWidth, (UINT)nHeight, 0, 0 };
+    D3D11_BUFFER_DESC cbDesc{};
+    cbDesc.ByteWidth = sizeof(cb);
+    cbDesc.Usage = D3D11_USAGE_DEFAULT;
+    cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    ID3D11Buffer* cbBuf = nullptr;
+    D3D11_SUBRESOURCE_DATA cbInit{};
+    cbInit.pSysMem = &cb;
+    device->CreateBuffer(&cbDesc, &cbInit, &cbBuf);
+
+    bool ok = false;
+    if (srvIn && uavOut && lutSrv && lutBuf && satSrv && satBuf && cbBuf) {
+        ID3D11ShaderResourceView* srvs[3] = { srvIn, lutSrv, satSrv };
+        ctx->CSSetShaderResources(0, 3, srvs);
+        ctx->CSSetUnorderedAccessViews(0, 1, &uavOut, nullptr);
+        ctx->CSSetConstantBuffers(0, 1, &cbBuf);
+        ctx->CSSetShader(cs, nullptr, 0);
+        UINT gx = (nWidth + 7) / 8;
+        UINT gy = (nHeight + 7) / 8;
+        ctx->Dispatch(gx, gy, 1);
+        ctx->Flush();
+        ok = true;
+    }
+
+    void* result = nullptr;
+    if (ok) {
+        result = gpu_tex::ReadbackBGRA(ctx, texOut, nWidth, nHeight);
+    }
+
+    // Unbind everything to avoid deferred-release issues.
+    ID3D11ShaderResourceView* nullSrvs[3] = { nullptr, nullptr, nullptr };
+    ctx->CSSetShaderResources(0, 3, nullSrvs);
+    ID3D11UnorderedAccessView* nullUav = nullptr;
+    ctx->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
+    ID3D11Buffer* nullCb = nullptr;
+    ctx->CSSetConstantBuffers(0, 1, &nullCb);
+    ctx->CSSetShader(nullptr, nullptr, 0);
+
+    if (srvIn) srvIn->Release();
+    if (uavOut) uavOut->Release();
+    if (lutSrv) lutSrv->Release();
+    if (lutBuf) lutBuf->Release();
+    if (satSrv) satSrv->Release();
+    if (satBuf) satBuf->Release();
+    if (cbBuf) cbBuf->Release();
+    texIn->Release();
+    texOut->Release();
+
+    if (result == nullptr) {
+        return CBasicProcessing::ApplySaturationAnd3ChannelLUT32bpp(nWidth, nHeight,
+            pDIBPixels, pSatLUTs, pLUT);
+    }
+    return result;
 }
 
 void* GpuImageProcessor::Apply3ChannelLUT32bpp(int nWidth, int nHeight,
@@ -985,5 +1203,165 @@ void* GpuImageProcessor::Apply3ChannelLUT32bpp(int nWidth, int nHeight,
         // Readback failed; fall back to CPU for correctness.
         return CBasicProcessing::Apply3ChannelLUT32bpp(nWidth, nHeight, pDIBPixels, pLUT);
     }
+    return result;
+}
+
+// Builds the (descriptor, value) structured buffers for one 1D Gauss pass.
+// The CPU FilterKernelBlock stores per-target-index kernels (each up to
+// MAX_FILTER_LEN int16 taps). We expand to int taps packed contiguously,
+// matching the layout kGaussFilter1C16_CS expects:
+//   gKDesc[i*3 + 0] = FilterOffset, [i*3 + 1] = FilterLen, [i*3 + 2] = valueBase
+//   gKVal[valueBase + n] = Kernel[n] (int, 2.14 fixed point kept as-is).
+static bool BuildGaussKernelBuffers(ID3D11Device* device,
+    const FilterKernelBlock& kernels, int nTargetColumns,
+    ID3D11Buffer** ppDescBuf, ID3D11ShaderResourceView** ppDescSrv,
+    ID3D11Buffer** ppValBuf, ID3D11ShaderResourceView** ppValSrv) {
+    *ppDescBuf = nullptr; *ppDescSrv = nullptr;
+    *ppValBuf = nullptr; *ppValSrv = nullptr;
+
+    std::vector<int> descs((size_t)nTargetColumns * 3);
+    std::vector<int> vals;
+    vals.reserve((size_t)nTargetColumns * 8);
+    int valueBase = 0;
+    for (int i = 0; i < nTargetColumns; ++i) {
+        const FilterKernel* pk = kernels.Indices[i];
+        descs[(size_t)i * 3 + 0] = pk->FilterOffset;
+        descs[(size_t)i * 3 + 1] = pk->FilterLen;
+        descs[(size_t)i * 3 + 2] = valueBase;
+        for (int t = 0; t < pk->FilterLen; ++t) {
+            vals.push_back(pk->Kernel[t]);
+        }
+        valueBase += pk->FilterLen;
+    }
+
+    D3D11_BUFFER_DESC dd{}; dd.ByteWidth = (UINT)(descs.size() * sizeof(int));
+    dd.Usage = D3D11_USAGE_DEFAULT; dd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    dd.StructureByteStride = sizeof(int); dd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    D3D11_SUBRESOURCE_DATA di{}; di.pSysMem = descs.data();
+    device->CreateBuffer(&dd, &di, ppDescBuf);
+    D3D11_SHADER_RESOURCE_VIEW_DESC dsv{}; dsv.Format = DXGI_FORMAT_UNKNOWN;
+    dsv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER; dsv.Buffer.NumElements = (UINT)descs.size();
+    device->CreateShaderResourceView(*ppDescBuf, &dsv, ppDescSrv);
+
+    D3D11_BUFFER_DESC vd{}; vd.ByteWidth = (UINT)(vals.size() * sizeof(int));
+    vd.Usage = D3D11_USAGE_DEFAULT; vd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    vd.StructureByteStride = sizeof(int); vd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    D3D11_SUBRESOURCE_DATA vi{}; vi.pSysMem = vals.data();
+    device->CreateBuffer(&vd, &vi, ppValBuf);
+    D3D11_SHADER_RESOURCE_VIEW_DESC vsv{}; vsv.Format = DXGI_FORMAT_UNKNOWN;
+    vsv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER; vsv.Buffer.NumElements = (UINT)vals.size();
+    device->CreateShaderResourceView(*ppValBuf, &vsv, ppValSrv);
+
+    return (*ppDescBuf && *ppValBuf && *ppDescSrv && *ppValSrv);
+}
+
+int* GpuImageProcessor::RunGaussPass(ID3D11DeviceContext* ctx, ID3D11Device* device,
+    ID3D11ComputeShader* cs, const int* pSrc, int srcLen, int srcStride,
+    int nRunX, int nTargetWidth, int rowCount, int startX,
+    const FilterKernelBlock& kernels) {
+    if (cs == nullptr || device == nullptr || ctx == nullptr || pSrc == nullptr) {
+        return nullptr;
+    }
+
+    const int outCount = nRunX * nTargetWidth;  // transposed: col*nTargetWidth + row
+
+    // Source structured buffer (int).
+    D3D11_BUFFER_DESC sd{}; sd.ByteWidth = (UINT)(outCount * sizeof(int));
+    sd.Usage = D3D11_USAGE_DEFAULT; sd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    sd.StructureByteStride = sizeof(int); sd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    D3D11_SUBRESOURCE_DATA si{}; si.pSysMem = pSrc;
+    ID3D11Buffer* srcBuf = nullptr; device->CreateBuffer(&sd, &si, &srcBuf);
+    D3D11_SHADER_RESOURCE_VIEW_DESC ssv{}; ssv.Format = DXGI_FORMAT_UNKNOWN;
+    ssv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER; ssv.Buffer.NumElements = (UINT)outCount;
+    ID3D11ShaderResourceView* srcSrv = nullptr; device->CreateShaderResourceView(srcBuf, &ssv, &srcSrv);
+
+    // Output structured buffer (RWStructuredBuffer<int>).
+    D3D11_BUFFER_DESC od{}; od.ByteWidth = (UINT)(outCount * sizeof(int));
+    od.Usage = D3D11_USAGE_DEFAULT;
+    od.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+    od.StructureByteStride = sizeof(int); od.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    ID3D11Buffer* outBuf = nullptr; device->CreateBuffer(&od, nullptr, &outBuf);
+    D3D11_UNORDERED_ACCESS_VIEW_DESC ouv{}; ouv.Format = DXGI_FORMAT_UNKNOWN;
+    ouv.ViewDimension = D3D11_UAV_DIMENSION_BUFFER; ouv.Buffer.NumElements = (UINT)outCount;
+    ID3D11UnorderedAccessView* outUav = nullptr; device->CreateUnorderedAccessView(outBuf, &ouv, &outUav);
+
+    // Kernel descriptor + value buffers.
+    ID3D11Buffer* descBuf = nullptr, * valBuf = nullptr;
+    ID3D11ShaderResourceView* descSrv = nullptr, * valSrv = nullptr;
+    if (!BuildGaussKernelBuffers(device, kernels, nRunX, &descBuf, &descSrv, &valBuf, &valSrv)) {
+        if (srcBuf) srcBuf->Release();
+        if (srcSrv) srcSrv->Release();
+        if (outBuf) outBuf->Release();
+        if (outUav) outUav->Release();
+        if (descBuf) descBuf->Release();
+        if (valBuf) valBuf->Release();
+        if (descSrv) descSrv->Release();
+        if (valSrv) valSrv->Release();
+        return nullptr;
+    }
+
+    // CB0: srcLen, nRunX, srcStride, startX, nTargetWidth (5 x uint).
+    struct { UINT a, b, c, d, e; } cb0 = { (UINT)srcLen, (UINT)nRunX, (UINT)srcStride, (UINT)startX, (UINT)nTargetWidth };
+    UINT cb0Aligned = (sizeof(cb0) + 15u) & ~15u;
+    std::vector<UINT> cb0Pad(cb0Aligned / 4, 0);
+    memcpy(cb0Pad.data(), &cb0, sizeof(cb0));
+    D3D11_BUFFER_DESC c0d{}; c0d.ByteWidth = cb0Aligned; c0d.Usage = D3D11_USAGE_DEFAULT; c0d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_SUBRESOURCE_DATA c0i{}; c0i.pSysMem = cb0Pad.data();
+    ID3D11Buffer* cb0Buf = nullptr; device->CreateBuffer(&c0d, &c0i, &cb0Buf);
+
+    // CB1: incX(ignored), rowCount, startY=0, _p1.
+    struct { uint32_t a; int b; uint32_t c, d; } cb1 = { 65536, rowCount, 0, 0 };
+    UINT cb1Aligned = (sizeof(cb1) + 15u) & ~15u;
+    std::vector<UINT> cb1Pad(cb1Aligned / 4, 0);
+    memcpy(cb1Pad.data(), &cb1, sizeof(cb1));
+    D3D11_BUFFER_DESC c1d{}; c1d.ByteWidth = cb1Aligned; c1d.Usage = D3D11_USAGE_DEFAULT; c1d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_SUBRESOURCE_DATA c1i{}; c1i.pSysMem = cb1Pad.data();
+    ID3D11Buffer* cb1Buf = nullptr; device->CreateBuffer(&c1d, &c1i, &cb1Buf);
+
+    int* result = nullptr;
+    if (srcSrv && outUav && descSrv && valSrv && cb0Buf && cb1Buf) {
+        ID3D11ShaderResourceView* srvs[3] = { srcSrv, descSrv, valSrv };
+        ctx->CSSetShaderResources(0, 3, srvs);
+        ctx->CSSetUnorderedAccessViews(0, 1, &outUav, nullptr);
+        ID3D11Buffer* cbs[2] = { cb0Buf, cb1Buf };
+        ctx->CSSetConstantBuffers(0, 2, cbs);
+        ctx->CSSetShader(cs, nullptr, 0);
+        ctx->Dispatch((nRunX + 7) / 8, (rowCount + 7) / 8, 1);
+        ctx->Flush();
+
+        // Read back the transposed result.
+        D3D11_BUFFER_DESC rd{}; rd.ByteWidth = (UINT)(outCount * sizeof(int));
+        rd.Usage = D3D11_USAGE_STAGING; rd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        ID3D11Buffer* staging = nullptr; device->CreateBuffer(&rd, nullptr, &staging);
+        if (staging) {
+            ctx->CopyResource(staging, outBuf);
+            D3D11_MAPPED_SUBRESOURCE m{};
+            if (SUCCEEDED(ctx->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
+                result = new(std::nothrow) int[outCount];
+                if (result) {
+                    memcpy(result, m.pData, (size_t)outCount * sizeof(int));
+                }
+                ctx->Unmap(staging, 0);
+            }
+            staging->Release();
+        }
+    }
+
+    ID3D11ShaderResourceView* ns[3] = {}; ctx->CSSetShaderResources(0, 3, ns);
+    ID3D11UnorderedAccessView* nu = nullptr; ctx->CSSetUnorderedAccessViews(0, 1, &nu, nullptr);
+    ID3D11Buffer* ncbs[2] = {}; ctx->CSSetConstantBuffers(0, 2, ncbs);
+    ctx->CSSetShader(nullptr, nullptr, 0);
+
+    if (srcSrv) srcSrv->Release();
+    if (outUav) outUav->Release();
+    if (descSrv) descSrv->Release();
+    if (valSrv) valSrv->Release();
+    if (srcBuf) srcBuf->Release();
+    if (outBuf) outBuf->Release();
+    if (descBuf) descBuf->Release();
+    if (valBuf) valBuf->Release();
+    if (cb0Buf) cb0Buf->Release();
+    if (cb1Buf) cb1Buf->Release();
+
     return result;
 }

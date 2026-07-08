@@ -61,54 +61,60 @@ CJPEGImage::CJPEGImage(int nWidth, int nHeight, void* pPixels, void* pEXIFData, 
 	: m_rotationParams{ 0 },
 	m_fColorCorrectionFactorsNull{ 0 }
 {
-	// 기존 생성자: 전체 버퍼를 CFullBufferSource로 감싸서 프로바이더 경로를 탄다.
-	// 이렇게 하면 모든 포맷이 IImageSourceData 인터페이스를 통해 일관되게 동작한다.
+	// Full-buffer constructor (PNG/JPG/BMP/WebP/etc). Owns the pixel buffer
+	// directly via m_pOrigPixels; does NOT use CFullBufferSource, because the
+	// existing Resample/Rotate/Mirror/Crop paths all read m_pOrigPixels in place
+	// and were not migrated to OriginalPixels(). Wrapping in CFullBufferSource
+	// left m_pOrigPixels NULL and broke every sampling path that reads it
+	// directly (downsampling, NoResize point-sample, unsharp, rotate, etc),
+	// producing white images and AVX2 OOB-read crashes.
 	m_pSourceData = nullptr;
 	m_pPyramid = nullptr;
 
-	// 픽셀 채널 정규화: 1채널은 4채널로 변환.
-	uint8* pFinalPixels = (uint8*)pPixels;
-	int nFinalChannels = nChannels;
-	bool bHasAlpha = false;
+	// Channel normalization: 1->4, 3->4; 4-channel stays as-is.
+	m_pOrigPixels = pPixels;
+	m_nOriginalChannels = nChannels;
+	m_bHasAlpha = false;
 	if (nChannels == 1) {
-		pFinalPixels = (uint8*)CBasicProcessing::Convert1To4Channels(nWidth, nHeight, pPixels);
+		m_pOrigPixels = CBasicProcessing::Convert1To4Channels(nWidth, nHeight, pPixels);
 		delete[] (uint8*)pPixels;
-		nFinalChannels = 4;
+		m_nOriginalChannels = 4;
+	} else if (nChannels == 3) {
+		m_pOrigPixels = CBasicProcessing::Convert3To4Channels(nWidth, nHeight, pPixels);
+		delete[] (uint8*)pPixels;
+		m_nOriginalChannels = 4;
 	} else if (nChannels == 4 && pPixels != NULL) {
 		const uint32* pPix = (const uint32*)pPixels;
 		int nCount = nWidth * nHeight;
 		for (int i = 0; i < nCount; i++) {
 			if ((pPix[i] & 0xFF000000) != 0xFF000000) {
-				bHasAlpha = true;
+				m_bHasAlpha = true;
 				break;
 			}
 		}
-	} else if (nChannels != 3) {
+	} else if (nChannels != 4) {
 		assert(false);
-		pFinalPixels = NULL;
-		nFinalChannels = 0;
+		m_pOrigPixels = NULL;
+		m_nOriginalChannels = 0;
 	}
 
-	// EXIF 데이터 준비 (CFullBufferSource가 소유).
-	uint8* pEXIFCopy = NULL;
-	int nEXIFSize = 0;
+	// EXIF reader: parse the APP1 block for auto-rotation / metadata.
 	if (pEXIFData != NULL) {
 		unsigned char* pEXIF = (unsigned char*)pEXIFData;
-		nEXIFSize = pEXIF[2] * 256 + pEXIF[3] + 2;
-		pEXIFCopy = new (std::nothrow) uint8[nEXIFSize];
-		if (pEXIFCopy != NULL)
-			memcpy(pEXIFCopy, pEXIFData, nEXIFSize);
+		m_nEXIFSize = pEXIF[2] * 256 + pEXIF[3] + 2;
+		m_pEXIFData = new char[m_nEXIFSize];
+		memcpy(m_pEXIFData, pEXIFData, m_nEXIFSize);
+		m_pEXIFReader = new CEXIFReader(m_pEXIFData, eImageFormat);
+	} else {
+		m_nEXIFSize = 0;
+		m_pEXIFData = NULL;
+		m_pEXIFReader = NULL;
 	}
+	// RAW metadata ownership transfers to CJPEGImage (destructor frees it).
+	m_pRawMetadata = pRawMetadata;
 
-	// CFullBufferSource로 감싸서 모든 포맷을 프로바이더 경로로 통일.
-	m_pSourceData = new CFullBufferSource(nWidth, nHeight, nFinalChannels, 8,
-		pFinalPixels, bHasAlpha, pEXIFCopy, nEXIFSize,
-		nullptr, 0, pRawMetadata, nNumberOfFrames);
-	// m_pOrigPixels는 더 이상 직접 소유하지 않는다 (소스가 소유).
-	// OriginalPixels()는 소스에서 가져온다.
-	m_pOrigPixels = NULL;
-	m_nOriginalChannels = nFinalChannels;
-	m_bHasAlpha = bHasAlpha;
+	m_nOrigWidth = m_nInitOrigWidth = nWidth;
+	m_nOrigHeight = m_nInitOrigHeight = nHeight;
 
 	InitCommon(eImageFormat, bIsAnimation, nFrameIndex, nNumberOfFrames, nFrameTimeMs,
 		pLDC, bIsThumbnailImage, pRawMetadata, nJPEGHash);
@@ -368,7 +374,7 @@ bool CJPEGImage::ApplyUnsharpMaskToOriginalPixels(const CUnsharpMaskParams & uns
 	double dStartTime = Helpers::GetExactTickCount();
 
 	bool bSuccess = false;
-	int16* pGray = CBasicProcessing::Create1Channel16bppGrayscaleImage(m_nOrigWidth, m_nOrigHeight, m_pOrigPixels, m_nOriginalChannels);
+	int16* pGray = CBasicProcessing::Create1Channel16bppGrayscaleImage(m_nOrigWidth, m_nOrigHeight, OriginalPixels(), m_nOriginalChannels);
 	if (pGray != NULL) {
 		int16* pSmoothed = CImageProcessorFactory::Get().GaussFilter16bpp1Channel(CSize(m_nOrigWidth, m_nOrigHeight), CPoint(0, 0),
 			CSize(m_nOrigWidth, m_nOrigHeight), unsharpMaskParams.Radius, pGray);
@@ -643,7 +649,7 @@ if (fullTargetSize.cx > MAX_IMAGE_DIMENSION || fullTargetSize.cy > MAX_IMAGE_DIM
 if (GetProcessingFlag(eProcFlags, PFLAG_HighQualityResampling) && 
     !(eResizeType == NoResize && (filter == Filter_Downsampling_Best_Quality || filter == Filter_Downsampling_No_Aliasing))) {
         void* pResult = CImageProcessorFactory::Get().ResampleHQ(fullTargetSize, targetOffset, clippingSize,
-            CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels, dSharpen, filter,
+            CSize(m_nOrigWidth, m_nOrigHeight), OriginalPixels(), m_nOriginalChannels, dSharpen, filter,
             eResizeType == UpSample);
         // High-quality SIMD resampling now filters the alpha plane together with RGB
         // (the CXMMImage stores 4 planes for BGRA sources), so no alpha restore is needed.
@@ -653,17 +659,17 @@ if (GetProcessingFlag(eProcFlags, PFLAG_HighQualityResampling) &&
 		void* pResult;
 		if (bHasRotation) {
 			pResult = CBasicProcessing::PointSampleWithRotation(fullTargetSize, targetOffset, clippingSize,
-				CSize(m_nOrigWidth, m_nOrigHeight), dRotation, m_pOrigPixels, m_nOriginalChannels, CSettingsProvider::This().ColorBackground());
+				CSize(m_nOrigWidth, m_nOrigHeight), dRotation, OriginalPixels(), m_nOriginalChannels, CSettingsProvider::This().ColorBackground());
 			// Rotation fills outside-source areas with the back color and forces alpha to 0xFF. For images
 			// with transparency, clear those areas to fully transparent so the background shows through.
 			if (pResult != NULL && m_bHasAlpha && m_nOriginalChannels == 4) {
 				CBasicProcessing::RestoreAlphaChannel(fullTargetSize, targetOffset, clippingSize,
-					CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, pResult);
+					CSize(m_nOrigWidth, m_nOrigHeight), OriginalPixels(), pResult);
 			}
 		} else {
 			// PointSample preserves alpha for 4-channel input, so no restoration is needed.
 			pResult = CBasicProcessing::PointSample(fullTargetSize, targetOffset, clippingSize,
-				CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels);
+				CSize(m_nOrigWidth, m_nOrigHeight), OriginalPixels(), m_nOriginalChannels);
 		}
 		return pResult;
 	}
@@ -1041,8 +1047,8 @@ void* CJPEGImage::GetDIBInternal(CSize fullTargetSize, CSize clippingSize, CPoin
 			if (pTrapezoid == NULL) {
 				m_pDIBPixels = Resample(fullTargetSize, clippingSize, targetOffset, eProcFlags, imageProcParams.Sharpen, dRotation, eResizeType);
 			} else {
-				m_pDIBPixels = CBasicProcessing::PointSampleTrapezoid(fullTargetSize, *pTrapezoid, targetOffset, clippingSize, 
-					CSize(m_nOrigWidth, m_nOrigHeight), m_pOrigPixels, m_nOriginalChannels, CSettingsProvider::This().ColorBackground());
+			m_pDIBPixels = CBasicProcessing::PointSampleTrapezoid(fullTargetSize, *pTrapezoid, targetOffset, clippingSize, 
+				CSize(m_nOrigWidth, m_nOrigHeight), OriginalPixels(), m_nOriginalChannels, CSettingsProvider::This().ColorBackground());
 			}
 		}
 
@@ -1296,6 +1302,22 @@ void* CJPEGImage::ApplyCorrectionLUTandLDC(const CImageProcessingParams & imageP
 }
 
 bool CJPEGImage::ConvertSrcTo4Channels() {
+	// Destructive transforms (Rotate/Mirror/Crop) operate on m_pOrigPixels in
+	// place. When pixels are owned by m_pSourceData (CFullBufferSource), pull
+	// the buffer out of the source and into m_pOrigPixels first, then release
+	// the source so subsequent reads go through m_pOrigPixels. The constructor
+	// already converted to 4 channels, so only the ownership transfer is needed.
+	if (m_pSourceData != NULL) {
+		CFullBufferSource* pFull = dynamic_cast<CFullBufferSource*>(m_pSourceData);
+		if (pFull != NULL) {
+			// Take ownership of the pixel buffer so destructive transforms
+			// (Rotate/Mirror/Crop) can operate on it in place via m_pOrigPixels.
+			m_pOrigPixels = pFull->DetachPixels();
+			m_pSourceData->Release();
+			delete m_pSourceData;
+			m_pSourceData = NULL;
+		}
+	}
 	if (m_nOriginalChannels == 3) {
 		void* pNewOriginalPixels = CBasicProcessing::Convert3To4Channels(m_nOrigWidth, m_nOrigHeight, m_pOrigPixels);
 		if (pNewOriginalPixels != NULL) {
@@ -1556,11 +1578,11 @@ CJPEGImage* CJPEGImage::CreateThumbnailImage() {
 		nWidth = m_nOrigWidth;
 		nHeight = m_nOrigHeight;
 		if (m_nOriginalChannels == 3) {
-			pPixels = CBasicProcessing::Convert3To4Channels(m_nOrigWidth, m_nOrigHeight, m_pOrigPixels);
+			pPixels = CBasicProcessing::Convert3To4Channels(m_nOrigWidth, m_nOrigHeight, OriginalPixels());
 		} else {
 			int nSizeBytes = m_nOrigWidth*m_nOrigHeight*4;
 			pPixels = new uint8[nSizeBytes];
-			memcpy(pPixels, m_pOrigPixels, nSizeBytes);
+			memcpy(pPixels, OriginalPixels(), nSizeBytes);
 		}
 	} else {
 		// take the small image from the LDC

@@ -871,8 +871,8 @@ void* CBasicProcessing::PointSample(CSize fullTargetSize, CPoint fullTargetOffse
 	uintfp nIncrementX, nIncrementY;
 	if (fullTargetSize.cx <= sourceSize.cx) {
 		// Downsampling
-		nIncrementX = (uintfp)sourceSize.cx << 16 / fullTargetSize.cx + 1;
-		nIncrementY = (uintfp)sourceSize.cy << 16 / fullTargetSize.cy + 1;
+		nIncrementX = ((uintfp)sourceSize.cx << 16) / fullTargetSize.cx + 1;
+		nIncrementY = ((uintfp)sourceSize.cy << 16) / fullTargetSize.cy + 1;
 	} else {
 		// Upsampling
 		nIncrementX = (fullTargetSize.cx == 1) ? 0 : (uintfp)((65536*(uintfp)(sourceSize.cx - 1) + 65535)/(fullTargetSize.cx - 1));
@@ -2011,8 +2011,8 @@ void* SampleHQ_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clipped
 		CAutoXMMFilter filterX(sourceSize.cx, fullTargetSize.cx, dSharpen, eFilter);
 		const XMMFilterKernelBlock& kernelsX = filterX.Kernels();
 
-		uintfp nIncrementX = (uintfp)sourceSize.cx << 16 / fullTargetSize.cx + 1;
-		uintfp nIncrementY = (uintfp)sourceSize.cy << 16 / fullTargetSize.cy + 1;
+		uintfp nIncrementX = ((uintfp)sourceSize.cx << 16) / fullTargetSize.cx + 1;
+		uintfp nIncrementY = ((uintfp)sourceSize.cy << 16) / fullTargetSize.cy + 1;
 
 		intfp nIncOffsetX = (intfp)((nIncrementX - 65536) >> 1);
 		intfp nIncOffsetY = (intfp)((nIncrementY - 65536) >> 1);

@@ -62,6 +62,7 @@ private:
     ID3D11ComputeShader* m_pApply3ChannelLUT_CS;
     ID3D11ComputeShader* m_pApplyLDC32bpp_CS;
     ID3D11ComputeShader* m_pApplyLDC32bppSat_CS;
+    ID3D11ComputeShader* m_pApplySaturationAnd3ChannelLUT_CS;
     ID3D11ComputeShader* m_pResampleX_CS;
     ID3D11ComputeShader* m_pUnsharpMask_CS;
     ID3D11ComputeShader* m_pGaussFilter1C16_CS;
@@ -70,6 +71,7 @@ private:
     ID3D11ComputeShader* GetApply3ChannelLUTShader();
     ID3D11ComputeShader* GetApplyLDC32bppShader();
     ID3D11ComputeShader* GetApplyLDC32bppSatShader();
+    ID3D11ComputeShader* GetApplySaturationAnd3ChannelLUTShader();
     ID3D11ComputeShader* GetResampleXShader();
     ID3D11ComputeShader* GetUnsharpMaskShader();
     ID3D11ComputeShader* GetGaussFilter1C16Shader();
@@ -86,4 +88,21 @@ private:
         ID3D11ComputeShader* cs, ID3D11Texture2D* texSrc, ID3D11Texture2D* texOut,
         const FilterKernelBlock& kernels, int tgtW, int tgtH,
         int srcW, int srcH, uintfp startX_FP, uintfp incX_FP);
+
+    // Runs one separable Gauss 1D pass on a single-channel int image via
+    // StructuredBuffer<int> source and RWStructuredBuffer<int> output. The
+    // output is written transposed (column i -> nTargetWidth*i + row j),
+    // exactly like ApplyFilter1C16bpp, so two passes restore orientation.
+    // On success returns a heap int[] of size nTargetWidth*nRunXCount holding
+    // the transposed result; on failure returns nullptr (caller falls back).
+    //   srcLen   - source width for tap clamping (== nSourceWidth)
+    //   srcStride- source row pitch (elements per row)
+    //   nRunX    - number of target columns filtered (== kernel count)
+    //   nTargetWidth - transposed output pitch
+    //   rowCount - number of source rows processed
+    //   startX   - first target column index into the kernel block
+    int* RunGaussPass(ID3D11DeviceContext* ctx, ID3D11Device* device,
+        ID3D11ComputeShader* cs, const int* pSrc, int srcLen, int srcStride,
+        int nRunX, int nTargetWidth, int rowCount, int startX,
+        const FilterKernelBlock& kernels);
 };

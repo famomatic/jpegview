@@ -229,7 +229,12 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     # Verify D3D11 device creation without launching the full WTL UI.
     add_gpu_test(GpuDeviceTest SOURCES GpuDeviceTest.cpp GpuDevice.cpp LIBS d3d11 dxgi REGISTER_TEST)
     # ShaderDiag prints D3DCompile errors for debugging. Dev-only, not a test.
-    add_gpu_test(ShaderDiag SOURCES ShaderDiag.cpp GpuDevice.cpp GpuShaders.cpp LIBS ${_gpu_libs})
+    # Off by default so it never appears in release output trees; enable
+    # explicitly during development with -DJPEGVIEW_BUILD_SHADER_DIAG=ON.
+    option(JPEGVIEW_BUILD_SHADER_DIAG "Build the ShaderDiag dev tool (Debug-only)" OFF)
+    if(JPEGVIEW_BUILD_SHADER_DIAG)
+        add_gpu_test(ShaderDiag SOURCES ShaderDiag.cpp GpuDevice.cpp GpuShaders.cpp LIBS ${_gpu_libs})
+    endif()
 
     # CPU algorithm unit tests (no D3D dependency - run on any CI runner).
     add_executable(CpuImageProcTest CpuImageProcTest.cpp)

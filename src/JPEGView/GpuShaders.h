@@ -20,6 +20,18 @@ namespace gpu_shaders {
 // CB0: nWidth, nHeight (uint row pitch is derived from texture width).
 extern const char* kApply3ChannelLUT_CS;
 
+// ApplySaturationAnd3ChannelLUT32bpp: applies the 6x1536-int32 saturation
+// matrix and then a 3-channel LUT (768 uints: 256 B/G/R) to a 32 bpp BGRA
+// image. This is the standalone saturation path (no LDC). Mirrors
+// CBasicProcessing::ApplySaturationAnd3ChannelLUT32bpp bit-for-bit in fixed
+// point: cnScaler = 1<<16, cnMax = 255<<16, clamp then >>16 to index the LUT.
+//   t0: input R8G8B8A8_UINT texture
+//   t1: pLUT (3*256 uints)
+//   t2: pSatLUTs structured buffer (1536 int32)
+//   u0: output R8G8B8A8_UINT texture
+//   CB0: width, height
+extern const char* kApplySaturationAnd3ChannelLUT_CS;
+
 // ApplyLDC32bpp (non-saturation path): applies a 3-channel LUT (768 uints:
 // 256 B/G/R) and then a local-density-correction offset computed from a
 // bilinearly interpolated mask and a per-luminance multiplier LUT.

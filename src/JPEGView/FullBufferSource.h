@@ -73,6 +73,11 @@ public:
 	const void* GetFullBuffer() const { return m_pPixels; }
 	int GetStride() const { return m_nStride; }
 
+	// Relinquishes ownership of the pixel buffer: returns m_pPixels and sets it
+	// to null so the destructor/Release() will not free it. Used when a
+	// destructive transform (Rotate/Mirror/Crop) needs to take over the buffer.
+	uint8* DetachPixels() { uint8* p = m_pPixels; m_pPixels = nullptr; return p; }
+
 private:
 	int  m_nWidth;
 	int  m_nHeight;

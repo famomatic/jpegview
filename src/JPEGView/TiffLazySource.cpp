@@ -5,6 +5,18 @@
 #include <algorithm>
 #include <cstring>
 
+// TIFFGetFieldDefaulted forwards its va_list to TIFFVGetFieldDefaulted, which
+// crashes in Release when libtiff is linked statically with a mismatched CRT.
+// TIFFGetField only reads the out-arg when the tag is present, so it never
+// touches va_list state for missing tags. Wrap it to provide defaults safely.
+namespace {
+template <typename T>
+inline void TiffGetOrDefault(TIFF* tif, uint32 tag, T& out, const T& defVal) {
+    if (TIFFGetField(tif, tag, &out) != 1)
+        out = defVal;
+}
+}
+
 CTiffLazySource::CTiffLazySource()
 	: m_tif(nullptr)
 	, m_nFrameIndex(0)
@@ -86,14 +98,14 @@ bool CTiffLazySource::OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex)
 	// 메타데이터 읽기.
 	uint32 width = 0, height = 0;
 	uint16 bitsPerSample = 1, samplesPerPixel = 1;
-	TIFFGetFieldDefaulted(m_tif, TIFFTAG_IMAGEWIDTH, &width);
-	TIFFGetFieldDefaulted(m_tif, TIFFTAG_IMAGELENGTH, &height);
-	TIFFGetFieldDefaulted(m_tif, TIFFTAG_BITSPERSAMPLE, &bitsPerSample);
-	TIFFGetFieldDefaulted(m_tif, TIFFTAG_SAMPLESPERPIXEL, &samplesPerPixel);
-	TIFFGetFieldDefaulted(m_tif, TIFFTAG_PHOTOMETRIC, &m_photometric);
-	TIFFGetFieldDefaulted(m_tif, TIFFTAG_PLANARCONFIG, &m_planarConfig);
-	TIFFGetFieldDefaulted(m_tif, TIFFTAG_SAMPLEFORMAT, &m_sampleFormat);
-	TIFFGetFieldDefaulted(m_tif, TIFFTAG_COMPRESSION, &m_compression);
+	TiffGetOrDefault(m_tif, TIFFTAG_IMAGEWIDTH,    width,          (uint32)0);
+	TiffGetOrDefault(m_tif, TIFFTAG_IMAGELENGTH,   height,         (uint32)0);
+	TiffGetOrDefault(m_tif, TIFFTAG_BITSPERSAMPLE, bitsPerSample,  (uint16)1);
+	TiffGetOrDefault(m_tif, TIFFTAG_SAMPLESPERPIXEL, samplesPerPixel, (uint16)1);
+	TiffGetOrDefault(m_tif, TIFFTAG_PHOTOMETRIC,   m_photometric,  (uint16)0);
+	TiffGetOrDefault(m_tif, TIFFTAG_PLANARCONFIG,  m_planarConfig,  (uint16)PLANARCONFIG_CONTIG);
+	TiffGetOrDefault(m_tif, TIFFTAG_SAMPLEFORMAT,  m_sampleFormat,  (uint16)SAMPLEFORMAT_UINT);
+	TiffGetOrDefault(m_tif, TIFFTAG_COMPRESSION,   m_compression,   (uint16)COMPRESSION_NONE);
 
 	m_nWidth = (int)width;
 	m_nHeight = (int)height;
@@ -115,7 +127,7 @@ bool CTiffLazySource::OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex)
 	{
 		m_bTiled = false;
 		uint32 rowsPerStrip = 0;
-		TIFFGetFieldDefaulted(m_tif, TIFFTAG_ROWSPERSTRIP, &rowsPerStrip);
+		TiffGetOrDefault(m_tif, TIFFTAG_ROWSPERSTRIP, rowsPerStrip, (uint32)0);
 		if (rowsPerStrip == 0)
 			rowsPerStrip = m_nHeight; // 단일 스트립
 		m_nRowsPerStrip = (int)rowsPerStrip;
@@ -124,7 +136,9 @@ bool CTiffLazySource::OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex)
 
 	// 알파 채널 감지.
 	uint16 extraSamples = 0;
-	TIFFGetFieldDefaulted(m_tif, TIFFTAG_EXTRASAMPLES, &extraSamples, nullptr);
+	// EXTRASAMPLES is a count+array tag; read just the count (1 arg).
+	if (TIFFGetField(m_tif, TIFFTAG_EXTRASAMPLES, &extraSamples) != 1)
+		extraSamples = 0;
 	m_bHasAlpha = (extraSamples > 0);
 
 	// RGBA fast path 사용 여부 (8비트 팔레트/YCbCr/MINISWHITE 등).
@@ -175,8 +189,8 @@ int CTiffLazySource::DetectPyramidLevels()
 	// 첫 번째 IFD의 크기.
 	TIFFSetDirectory(m_tif, 0);
 	uint32 w0 = 0, h0 = 0;
-	TIFFGetFieldDefaulted(m_tif, TIFFTAG_IMAGEWIDTH, &w0);
-	TIFFGetFieldDefaulted(m_tif, TIFFTAG_IMAGELENGTH, &h0);
+	TiffGetOrDefault(m_tif, TIFFTAG_IMAGEWIDTH,  w0, (uint32)0);
+	TiffGetOrDefault(m_tif, TIFFTAG_IMAGELENGTH, h0, (uint32)0);
 
 	uint32 prevW = w0, prevH = h0;
 	m_pyramidIFDs.clear();
@@ -186,8 +200,8 @@ int CTiffLazySource::DetectPyramidLevels()
 	while (TIFFSetDirectory(m_tif, dir) == 1)
 	{
 		uint32 w = 0, h = 0;
-		TIFFGetFieldDefaulted(m_tif, TIFFTAG_IMAGEWIDTH, &w);
-		TIFFGetFieldDefaulted(m_tif, TIFFTAG_IMAGELENGTH, &h);
+		TiffGetOrDefault(m_tif, TIFFTAG_IMAGEWIDTH,  w, (uint32)0);
+		TiffGetOrDefault(m_tif, TIFFTAG_IMAGELENGTH, h, (uint32)0);
 
 		// 이전 레벨의 약 1/2 크기인지 확인 (10% 오차 허용).
 		if (w > 0 && h > 0 &&
@@ -232,8 +246,8 @@ bool CTiffLazySource::SetPyramidLevel(int level)
 
 	// 레벨 전환 후 메타데이터 갱신.
 	uint32 width = 0, height = 0;
-	TIFFGetFieldDefaulted(m_tif, TIFFTAG_IMAGEWIDTH, &width);
-	TIFFGetFieldDefaulted(m_tif, TIFFTAG_IMAGELENGTH, &height);
+	TiffGetOrDefault(m_tif, TIFFTAG_IMAGEWIDTH,  width,  (uint32)0);
+	TiffGetOrDefault(m_tif, TIFFTAG_IMAGELENGTH, height, (uint32)0);
 	m_nWidth = (int)width;
 	m_nHeight = (int)height;
 
@@ -249,7 +263,7 @@ bool CTiffLazySource::SetPyramidLevel(int level)
 	else
 	{
 		uint32 rps = 0;
-		TIFFGetFieldDefaulted(m_tif, TIFFTAG_ROWSPERSTRIP, &rps);
+		TiffGetOrDefault(m_tif, TIFFTAG_ROWSPERSTRIP, rps, (uint32)0);
 		if (rps == 0) rps = m_nHeight;
 		m_nRowsPerStrip = (int)rps;
 		m_nStripsPerImage = TIFFNumberOfStrips(m_tif);
