@@ -21,7 +21,12 @@
     "libavif",
     "openjpeg",
     "openexr",
-    "jxrlib"
+    "jxrlib",
+    {
+      "name": "tiff",
+      "default-features": true,
+      "features": ["jpeg"]
+    }
   ],
   "builtin-baseline": "d87340acc46bdeda386037b38aca30136e667e47"
 }

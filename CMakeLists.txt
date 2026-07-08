@@ -64,6 +64,7 @@ find_package(libavif CONFIG REQUIRED)
 find_package(OpenJPEG CONFIG REQUIRED)
 find_package(OpenEXR CONFIG REQUIRED)
 find_package(JXR REQUIRED)
+find_package(TIFF REQUIRED)
 # AOM is a transitive dependency of libheif/libavif; its config is AOMConfig.cmake
 # and the heif target references AOM::aom, so it must be found explicitly.
 find_package(AOM CONFIG REQUIRED)
@@ -168,6 +169,7 @@ set(JPEGVIEW_DEP_TARGETS
     JpegXL::jxl_threads
     openjp2
     OpenEXR::OpenEXR
+    TIFF::TIFF
 )
 
 add_subdirectory(src/WICLoader)

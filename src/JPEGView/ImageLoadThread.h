@@ -126,6 +126,7 @@ private:
 	void ProcessReadEXRRequest(CRequest* request);
 	void ProcessReadHDRRequest(CRequest* request);
 	void ProcessReadJXRRequest(CRequest* request);
+	void ProcessReadTIFFRequest(CRequest* request);
 
 	static void SetFileDependentProcessParams(CRequest * request);
 	static bool ProcessImageAfterLoad(CRequest * request);

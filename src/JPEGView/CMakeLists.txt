@@ -78,6 +78,7 @@ add_executable(JPEGView WIN32
     stdafx.cpp
     TiltCorrectionPanel.cpp
     TiltCorrectionPanelCtl.cpp
+    TIFFWrapper.cpp
     TJPEGWrapper.cpp
     Tooltip.cpp
     TransformPanel.cpp

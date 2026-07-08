@@ -29,6 +29,7 @@
 #include "EXRWrapper.h"
 #include "HDRWrapper.h"
 #include "JXRWrapper.h"
+#include "TIFFWrapper.h"
 
 
 using namespace Gdiplus;
@@ -101,6 +102,13 @@ static EImageFormat GetImageFormat(LPCTSTR sFileName) {
 		// A few RAW image formats use TIFF as the container
 		// ex: CR2 - http://lclevy.free.fr/cr2/#key_info
 		// ex: DNG - https://www.adobe.com/creativecloud/file-types/image/raw/dng-file.html#dng
+		return IF_TIFF;
+	}
+	// BigTIFF (TIFF version 43) uses 8-byte offsets and supports files > 4 GB.
+	// GDI+/WIC cannot decode these, so the libtiff-backed reader is required.
+	// Magic: little-endian "II+\0" or big-endian "MM\0+".
+	if ((header[0]=='I' && header[1]=='I' && header[2]=='+' && header[3]==0) ||
+		(header[0]=='M' && header[1]=='M' && header[2]==0 && header[3]=='+')) {
 		return IF_TIFF;
 	}
 	return IF_Unknown;
@@ -370,6 +378,14 @@ void CImageLoadThread::ProcessRequest(CRequestBase& request) {
 			ProcessReadRAWRequest(&rq);
 			break;
 #endif
+		case IF_TIFF:
+			DeleteCachedGDIBitmap();
+			DeleteCachedWebpDecoder();
+			DeleteCachedPngDecoder();
+			DeleteCachedJxlDecoder();
+			DeleteCachedAvifDecoder();
+			ProcessReadTIFFRequest(&rq);
+			break;
 		case IF_QOI:
 			DeleteCachedGDIBitmap();
 			DeleteCachedWebpDecoder();
@@ -493,6 +509,7 @@ void CImageLoadThread::DeleteCachedGDIBitmap() {
 	}
 	m_pLastBitmap = NULL;
 	m_sLastFileName.Empty();
+	TiffReader::ReleaseCache();
 }
 
 void CImageLoadThread::DeleteCachedWebpDecoder() {
@@ -1295,6 +1312,13 @@ void CImageLoadThread::ProcessReadJXRRequest(CRequest* request) {
 	}
 	::CloseHandle(hFile);
 	delete[] pBuffer;
+}
+
+
+void CImageLoadThread::ProcessReadTIFFRequest(CRequest* request) {
+	bool bOutOfMemory = false;
+	request->Image = TiffReader::ReadImage(request->FileName, request->FrameIndex, bOutOfMemory);
+	request->OutOfMemory = bOutOfMemory;
 }
 
 bool CImageLoadThread::ProcessImageAfterLoad(CRequest * request) {
