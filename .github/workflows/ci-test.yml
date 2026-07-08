@@ -37,7 +37,8 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
             -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
             -DVCPKG_OVERLAY_PORTS=%CD%/vcpkg-triplets ^
-            -DVCPKG_OVERLAY_TRIPLETS=%CD%/vcpkg-triplets
+            -DVCPKG_OVERLAY_TRIPLETS=%CD%/vcpkg-triplets ^
+            -DJPEGVIEW_BUILD_TESTS=ON
 
       - name: Build
         shell: cmd

@@ -183,72 +183,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         legacy_stdio_definitions
         legacy_stdio_wide_specifiers)
 
-    target_link_options(JPEGView PRIVATE /SUBSYSTEM:WINDOWS)
-    # -----------------------------------------------------------------------
-    # add_gpu_test: builds a standalone console exe for a GPU compute-pass
-    # test. All tests share the same source set (GpuDevice.cpp + the shader/
-    # texture helpers) and the same MSVC/link settings, so this keeps the
-    # per-test boilerplate to one line. Register the test with CTest unless
-    # REGISTER_TEST is OFF (used for diagnostic tools that have no pass/fail).
-    # -----------------------------------------------------------------------
-    function(add_gpu_test name)
-        cmake_parse_arguments(ARG "REGISTER_TEST" "" "SOURCES;LIBS" ${ARGN})
-        set(_srcs ${ARG_SOURCES})
-        add_executable(${name} ${_srcs})
-        set_source_files_properties(${_srcs} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
-        target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-        set_target_properties(${name} PROPERTIES OUTPUT_NAME "${name}" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tests")
-        set_property(TARGET ${name} PROPERTY MSVC_RUNTIME_LIBRARY
-            "$<$<CONFIG:Debug>:MultiThreadedDebug>$<$<NOT:$<CONFIG:Debug>>:MultiThreaded>")
-        target_compile_options(${name} PRIVATE
-            /utf-8 /Zc:wchar_t /Zc:__cplusplus /permissive- /Zc:preprocessor /EHsc)
-        target_link_libraries(${name} PRIVATE ${ARG_LIBS})
-        target_link_options(${name} PRIVATE /SUBSYSTEM:CONSOLE)
-        if(ARG_REGISTER_TEST)
-            add_test(NAME ${name} COMMAND ${name})
-            set_tests_properties(${name} PROPERTIES SKIP_RETURN_CODE 77)
-        endif()
-    endfunction()
-
-    set(_gpu_common GpuDevice.cpp GpuShaders.cpp GpuTextureHelpers.cpp)
-    set(_gpu_libs d3d11 dxgi d3dcompiler)
-
-    # Verify the Apply3ChannelLUT32bpp compute pass against a CPU reference.
-    add_gpu_test(GpuLutTest SOURCES GpuLutTest.cpp ${_gpu_common} LIBS ${_gpu_libs} REGISTER_TEST)
-    # Verify the ApplyLDC32bpp (non-saturation) compute pass against a CPU reference.
-    add_gpu_test(GpuLdcTest SOURCES GpuLdcTest.cpp ${_gpu_common} LIBS ${_gpu_libs} REGISTER_TEST)
-    # Verify the LDC saturation compute pass against a CPU reference.
-    add_gpu_test(GpuLdcSatTest SOURCES GpuLdcSatTest.cpp ${_gpu_common} LIBS ${_gpu_libs} REGISTER_TEST)
-    # Verify the ResampleX compute pass kernel plumbing.
-    add_gpu_test(GpuResampleTest SOURCES GpuResampleTest.cpp ${_gpu_common} LIBS ${_gpu_libs} REGISTER_TEST)
-    # Verify the UnsharpMask compute pass against a CPU reference.
-    add_gpu_test(GpuUnsharpTest SOURCES GpuUnsharpTest.cpp ${_gpu_common} LIBS ${_gpu_libs} REGISTER_TEST)
-    # Verify the separable Gauss compute shader (X+Y passes) against a
-    # transposed-output CPU reference.
-    add_gpu_test(GpuGaussTest SOURCES GpuGaussTest.cpp ${_gpu_common} LIBS ${_gpu_libs} REGISTER_TEST)
-    # Verify D3D11 device creation without launching the full WTL UI.
-    add_gpu_test(GpuDeviceTest SOURCES GpuDeviceTest.cpp GpuDevice.cpp LIBS d3d11 dxgi REGISTER_TEST)
-    # ShaderDiag prints D3DCompile errors for debugging. Dev-only, not a test.
-    # Off by default so it never appears in release output trees; enable
-    # explicitly during development with -DJPEGVIEW_BUILD_SHADER_DIAG=ON.
-    option(JPEGVIEW_BUILD_SHADER_DIAG "Build the ShaderDiag dev tool (Debug-only)" OFF)
-    if(JPEGVIEW_BUILD_SHADER_DIAG)
-        add_gpu_test(ShaderDiag SOURCES ShaderDiag.cpp GpuDevice.cpp GpuShaders.cpp LIBS ${_gpu_libs})
-    endif()
-
-    # CPU algorithm unit tests (no D3D dependency - run on any CI runner).
-    add_executable(CpuImageProcTest CpuImageProcTest.cpp)
-    set_source_files_properties(CpuImageProcTest.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
-    target_include_directories(CpuImageProcTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    set_target_properties(CpuImageProcTest PROPERTIES
-        OUTPUT_NAME "CpuImageProcTest"
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tests")
-    set_property(TARGET CpuImageProcTest PROPERTY MSVC_RUNTIME_LIBRARY
-        "$<$<CONFIG:Debug>:MultiThreadedDebug>$<$<NOT:$<CONFIG:Debug>>:MultiThreaded>")
-    target_compile_options(CpuImageProcTest PRIVATE
-        /utf-8 /Zc:wchar_t /Zc:__cplusplus /permissive- /Zc:preprocessor /EHsc)
-    target_link_options(CpuImageProcTest PRIVATE /SUBSYSTEM:CONSOLE)
-    add_test(NAME CpuImageProcTest COMMAND CpuImageProcTest)
+   target_link_options(JPEGView PRIVATE /SUBSYSTEM:WINDOWS)
     endif()
 
 
@@ -273,4 +208,3 @@ add_custom_command(TARGET JPEGView POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/../../LICENSE.txt" "${_out_dir}"
     VERBATIM)
-

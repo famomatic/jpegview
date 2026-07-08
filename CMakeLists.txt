@@ -22,6 +22,11 @@ endif()
 
 option(JPEGVIEW_BUILD_SETUP "Build the WiX MSI installer (requires WiX Toolset v3.11+)" OFF)
 
+# Tests are off by default so Release builds never emit *Test.exe. The Debug
+# CMake presets and CI enable it explicitly; run `ctest` against a Debug build
+# tree configured with -DJPEGVIEW_BUILD_TESTS=ON.
+option(JPEGVIEW_BUILD_TESTS "Build the GPU/CPU test targets and register them with CTest" OFF)
+
 # Visual Studio 2022 (v143 toolset) is the only supported toolchain.  If CMake
 # selects a BuildTools instance that lacks ATL (JPEGView requires it), pin the
 # full VS instance with -DCMAKE_GENERATOR_INSTANCE="C:/path/to/VS/2022/Community".
@@ -177,4 +182,8 @@ add_subdirectory(src/JPEGView)
 
 if(JPEGVIEW_BUILD_SETUP)
     add_subdirectory(src/JPEGView.Setup)
+endif()
+
+if(JPEGVIEW_BUILD_TESTS)
+    add_subdirectory(tests)
 endif()
