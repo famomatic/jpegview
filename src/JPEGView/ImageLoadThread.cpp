@@ -30,6 +30,8 @@
 #include "HDRWrapper.h"
 #include "JXRWrapper.h"
 #include "TIFFWrapper.h"
+#include "TiffLazySource.h"
+#include "FullBufferSource.h"
 
 
 using namespace Gdiplus;
@@ -1317,7 +1319,15 @@ void CImageLoadThread::ProcessReadJXRRequest(CRequest* request) {
 
 void CImageLoadThread::ProcessReadTIFFRequest(CRequest* request) {
 	bool bOutOfMemory = false;
-	request->Image = TiffReader::ReadImage(request->FileName, request->FrameIndex, bOutOfMemory);
+	// 부분 로딩: CTiffLazySource로 메타데이터만 로드하고 픽셀은 뷰포트 요청 시 디코드.
+	// 전체 디코드(TiffReader::ReadImage) 대신 지연 디코드 경로를 사용한다.
+	CTiffLazySource* pSource = CTiffLazySource::Create(request->FileName, request->FrameIndex, bOutOfMemory);
+	if (pSource != nullptr) {
+		request->Image = new CJPEGImage(pSource, IF_TIFF, request->FrameIndex, pSource->FrameCount());
+	} else {
+		// 지연 디코드 실패 시 기존 전체 디코드 경로로 폴백.
+		request->Image = TiffReader::ReadImage(request->FileName, request->FrameIndex, bOutOfMemory);
+	}
 	request->OutOfMemory = bOutOfMemory;
 }
 
@@ -1357,8 +1367,8 @@ bool CImageLoadThread::ProcessImageAfterLoad(CRequest * request) {
 		newSize = CSize((int)(nWidth*dZoom + 0.5), (int)(nHeight*dZoom + 0.5));
 	}
 
-	newSize.cx = max(1, min(65535, newSize.cx));
-	newSize.cy = max(1, min(65535, newSize.cy)); // max size must not be bigger than this after zoom
+	newSize.cx = max(1, min(MAX_IMAGE_DIMENSION, newSize.cx));
+	newSize.cy = max(1, min(MAX_IMAGE_DIMENSION, newSize.cy)); // max size must not be bigger than this after zoom
 
 	// clip to target rectangle
 	CSize clippedSize(min(request->ProcessParams.TargetWidth, newSize.cx), 

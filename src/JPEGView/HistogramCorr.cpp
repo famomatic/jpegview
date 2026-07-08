@@ -2,6 +2,7 @@
 #include "HistogramCorr.h"
 #include "JPEGImage.h"
 #include "Helpers.h"
+#include "ImageSourceData.h"
 #include <math.h>
 
 float CHistogramCorr::sm_ContrastCorrectionStrength = 0.5f;
@@ -40,6 +41,10 @@ CHistogram::CHistogram(const CJPEGImage & image, bool bUseOrigPixels)
 		nHeight = image.OrigHeight();
 		nChannels = image.OriginalChannels();
 		pSourcePixels = (const uint8*)image.OriginalPixels();
+		// 부분 로딩: OriginalPixels()가 NULL이면 SamplePoint 경로 사용 플래그
+		if (pSourcePixels == NULL && image.GetSourceData() != NULL) {
+			pSourcePixels = (const uint8*)-1;
+		}
 	} else {
 		nWidth = image.DIBWidth();
 		nHeight = image.DIBHeight();
@@ -52,23 +57,43 @@ CHistogram::CHistogram(const CJPEGImage & image, bool bUseOrigPixels)
 	int nPixPerLine = max(1, nWidth / nGrid);
 	int nLines = max(1, nHeight / nGrid);
 	int nLineSize = Helpers::DoPadding(nWidth * nChannels, 4);
-	for (int j = 0; j < nLines; j++) {
-		const uint8* pSrc = pSourcePixels + nLineSize*j*nGrid;
-		if (nChannels == 3) {
+	if (pSourcePixels == (const uint8*)-1) {
+		// 부분 로딩: SamplePoint로 개별 픽셀 읽기
+		IImageSourceData* pSourceData = const_cast<IImageSourceData*>(image.GetSourceData());
+		for (int j = 0; j < nLines; j++) {
 			for (int i = 0; i < nPixPerLine; i++) {
-				m_ChannelB[pSrc[0]]++; m_nBMean += pSrc[0];
-				m_ChannelG[pSrc[1]]++; m_nGMean += pSrc[1];
-				m_ChannelR[pSrc[2]]++; m_nRMean += pSrc[2];
-				m_ChannelGrey[(pSrc[0]*128 + pSrc[1]*640 + pSrc[2]*256) >> 10]++;
-				pSrc += nGrid*3;
+				int x = i * nGrid;
+				int y = j * nGrid;
+				if (x >= nWidth) x = nWidth - 1;
+				if (y >= nHeight) y = nHeight - 1;
+				uint8 px[4];
+				if (pSourceData->SamplePoint(x, y, 0, px)) {
+					m_ChannelB[px[0]]++; m_nBMean += px[0];
+					m_ChannelG[px[1]]++; m_nGMean += px[1];
+					m_ChannelR[px[2]]++; m_nRMean += px[2];
+					m_ChannelGrey[(px[0]*128 + px[1]*640 + px[2]*256) >> 10]++;
+				}
 			}
-		} else {
-			for (int i = 0; i < nPixPerLine; i++) {
-				m_ChannelB[pSrc[0]]++; m_nBMean += pSrc[0];
-				m_ChannelG[pSrc[1]]++; m_nGMean += pSrc[1];
-				m_ChannelR[pSrc[2]]++; m_nRMean += pSrc[2];
-				m_ChannelGrey[(pSrc[0]*128 + pSrc[1]*640 + pSrc[2]*256) >> 10]++;
-				pSrc += nGrid*4;
+		}
+	} else {
+		for (int j = 0; j < nLines; j++) {
+			const uint8* pSrc = pSourcePixels + nLineSize*j*nGrid;
+			if (nChannels == 3) {
+				for (int i = 0; i < nPixPerLine; i++) {
+					m_ChannelB[pSrc[0]]++; m_nBMean += pSrc[0];
+					m_ChannelG[pSrc[1]]++; m_nGMean += pSrc[1];
+					m_ChannelR[pSrc[2]]++; m_nRMean += pSrc[2];
+					m_ChannelGrey[(pSrc[0]*128 + pSrc[1]*640 + pSrc[2]*256) >> 10]++;
+					pSrc += nGrid*3;
+				}
+			} else {
+				for (int i = 0; i < nPixPerLine; i++) {
+					m_ChannelB[pSrc[0]]++; m_nBMean += pSrc[0];
+					m_ChannelG[pSrc[1]]++; m_nGMean += pSrc[1];
+					m_ChannelR[pSrc[2]]++; m_nRMean += pSrc[2];
+					m_ChannelGrey[(pSrc[0]*128 + pSrc[1]*640 + pSrc[2]*256) >> 10]++;
+					pSrc += nGrid*4;
+				}
 			}
 		}
 	}

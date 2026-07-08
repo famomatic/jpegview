@@ -1,11 +1,13 @@
 #pragma once
 
 #include "ProcessParams.h"
+#include "ImageSourceData.h"
 
 class CHistogram;
 class CLocalDensityCorr;
 class CEXIFReader;
 class CRawMetadata;
+class CImagePyramid;
 enum TJSAMP;
 
 // Represents a rectangle to dim out in the image
@@ -34,8 +36,18 @@ public:
 	// If RAW metadata is specified, ownership of this memory is transferred to this class.
 	CJPEGImage(int nWidth, int nHeight, void* pPixels, void* pEXIFData, int nChannels, 
 		__int64 nJPEGHash, EImageFormat eImageFormat, bool bIsAnimation, int nFrameIndex, int nNumberOfFrames, int nFrameTimeMs,
-		CLocalDensityCorr* pLDC = NULL, bool bIsThumbnailImage = false, CRawMetadata* pRawMetadata = NULL);
+	CLocalDensityCorr* pLDC = NULL, bool bIsThumbnailImage = false, CRawMetadata* pRawMetadata = NULL);
 	~CJPEGImage(void);
+
+	// 새 생성자: IImageSourceData 프로바이더를 직접 받는다.
+	// 소스의 소유권이 클래스로 이전된다. 부분 로딩(TIFF)은 이 생성자를 쓴다.
+	CJPEGImage(IImageSourceData* pSourceData, EImageFormat eImageFormat,
+		int nFrameIndex, int nNumberOfFrames, int nFrameTimeMs = 0,
+		CLocalDensityCorr* pLDC = NULL, bool bIsThumbnailImage = false);
+
+	// 소스 데이터 접근자 (LDC/히스토그램용).
+	IImageSourceData* GetSourceData() { return m_pSourceData; }
+	const IImageSourceData* GetSourceData() const { return m_pSourceData; }
 
 	// Gets resampled and processed 32 bpp DIB image (up or downsampled).
 	// Parameters:
@@ -198,8 +210,8 @@ public:
 	bool IsProcessedNoParamDB() { return m_bIsProcessedNoParamDB; }
 
 	// raw access to original pixels - do not delete or store the returned pointer
-	void* OriginalPixels() { return  m_pOrigPixels; }
-	const void* OriginalPixels() const { return m_pOrigPixels; }
+	void* OriginalPixels();
+	const void* OriginalPixels() const;
 	// remove original pixels from class - OriginalPixels() will return NULL afterwards
 	void DetachOriginalPixels() { m_pOrigPixels = NULL; }
 
@@ -359,6 +371,11 @@ private:
 	// Original pixel data - only rotations and crop are done directly on this data because this is non-destructive
 	// The data is not modified in all other cases
 	void* m_pOrigPixels;
+	// 픽셀 소스 프로바이더. m_pOrigPixels이 NULL일 때(부분 로딩) 사용된다.
+	// 기존 생성자로 만들어진 이미지는 NULL이고, 새 생성자로 만들어진 이미지만 유효.
+	IImageSourceData* m_pSourceData;
+	// 피라미드 관리자. m_pSourceData가 있을 때 지연 생성된다.
+	CImagePyramid* m_pPyramid;
 	void* m_pEXIFData;
 	CRawMetadata* m_pRawMetadata;
 	int m_nEXIFSize;
@@ -520,6 +537,11 @@ private:
 
 	// Called when the original pixels have changed (rotate, crop, unsharp mask), all cached pixel data gets invalid
 	void InvalidateAllCachedPixelData();
+
+	// 공통 초기화: 두 생성자(기존/새)가 모두 거치는 멤버 채우기.
+	void InitCommon(EImageFormat eImageFormat, bool bIsAnimation, int nFrameIndex,
+		int nNumberOfFrames, int nFrameTimeMs, CLocalDensityCorr* pLDC,
+		bool bIsThumbnailImage, CRawMetadata* pRawMetadata, __int64 nJPEGHash);
 
 	// Create a thumbnail image of this image
 	CJPEGImage* CreateThumbnailImage();

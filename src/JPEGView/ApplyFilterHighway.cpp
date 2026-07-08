@@ -32,7 +32,7 @@ namespace HWY_NAMESPACE {
 static const int16 FP_ONE_MINUS_ROUND = 16383 - 42;
 
 CXMMImage* ApplyFilterKernel(int /*nSourceHeight*/, int nTargetHeight, int nWidth,
-	int nStartY_FP, int nStartX, int nIncrementY_FP,
+	int nStartY_FP, int nStartX, intfp nIncrementY_FP,
 	const XMMFilterKernelBlock& filter,
 	int nFilterOffset, const CXMMImage* pSourceImg) {
 
@@ -65,7 +65,7 @@ CXMMImage* ApplyFilterKernel(int /*nSourceHeight*/, int nTargetHeight, int nWidt
 	int16* pDest = (int16*)tempImage->AlignedPtr();
 
 	for (int y = 0; y < nTargetHeight; y++) {
-		uint32 nCurYInt = (uint32)nCurY >> 16;
+		uint32 nCurYInt = (uint32)(nCurY >> 16);
 		int filterIndex = y + nFilterOffset;
 		XMMFilterKernel* pKernel = pKernelIndexStart[filterIndex];
 		int filterLen = pKernel->FilterLen;
@@ -161,7 +161,7 @@ HWY_EXPORT(ApplyFilterKernel);
 // Runtime-dispatched entry point. Lives in the same namespace as the HWY_EXPORT
 // table so the unqualified dispatch-table reference resolves.
 CXMMImage* ApplyFilter_Highway(int nSourceHeight, int nTargetHeight, int nWidth,
-	int nStartY_FP, int nStartX, int nIncrementY_FP,
+	int nStartY_FP, int nStartX, intfp nIncrementY_FP,
 	const XMMFilterKernelBlock& filter,
 	int nFilterOffset, const CXMMImage* pSourceImg) {
 	return HWY_DYNAMIC_DISPATCH(ApplyFilterKernel)(

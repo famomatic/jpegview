@@ -2766,13 +2766,13 @@ bool CMainDlg::PerformZoom(double dValue, bool bExponent, bool bZoomToMouse, boo
 		}
 	}
 
-	// Never create images more than 65535 pixels wide or high - the basic processing cannot handle it
+	// Never create images larger than MAX_IMAGE_DIMENSION - the basic processing cannot handle it
 	int nOldXSize = (int)(m_pCurrentImage->OrigWidth() * dOldZoom + 0.5);
 	int nOldYSize = (int)(m_pCurrentImage->OrigHeight() * dOldZoom + 0.5);
 	int nNewXSize = (int)(m_pCurrentImage->OrigWidth() * m_dZoom + 0.5);
 	int nNewYSize = (int)(m_pCurrentImage->OrigHeight() * m_dZoom + 0.5);
-	if (nNewXSize > 65535 || nNewYSize > 65535) {
-		double dFac = 65535.0/max(nNewXSize, nNewYSize);
+	if (nNewXSize > MAX_IMAGE_DIMENSION || nNewYSize > MAX_IMAGE_DIMENSION) {
+		double dFac = (double)MAX_IMAGE_DIMENSION/max(nNewXSize, nNewYSize);
 		m_dZoom = m_dZoom*dFac;
 		nNewXSize = (int)(m_pCurrentImage->OrigWidth() * m_dZoom + 0.5);
 		nNewYSize = (int)(m_pCurrentImage->OrigHeight() * m_dZoom + 0.5);

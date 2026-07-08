@@ -16,6 +16,8 @@
 
 #include "ImageProcessor.h"
 #include <d3d11.h>
+
+// uintfp: 플랫폼별 고정소수점 타입 (ImageProcessingTypes.h, x64=64비트/x86=32비트)
 struct FilterKernelBlock;
 
 class GpuImageProcessor : public IImageProcessor {
@@ -78,10 +80,10 @@ private:
     bool RunResamplePass(ID3D11DeviceContext* ctx, ID3D11Device* device,
         ID3D11ComputeShader* cs, ID3D11Texture2D* texSrc, ID3D11Texture2D* texOut,
         const FilterKernelBlock& kernels, int tgtW, int tgtH,
-        int srcW, int srcH, uint32_t startX_FP, uint32_t incX_FP);
+        int srcW, int srcH, uintfp startX_FP, uintfp incX_FP);
     // Y pass: filters along the "row" dimension. Reads texX as transposed.
     bool RunResamplePassY(ID3D11DeviceContext* ctx, ID3D11Device* device,
         ID3D11ComputeShader* cs, ID3D11Texture2D* texSrc, ID3D11Texture2D* texOut,
         const FilterKernelBlock& kernels, int tgtW, int tgtH,
-        int srcW, int srcH, uint32_t startX_FP, uint32_t incX_FP);
+        int srcW, int srcH, uintfp startX_FP, uintfp incX_FP);
 };

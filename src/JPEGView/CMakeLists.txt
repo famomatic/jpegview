@@ -101,6 +101,10 @@ add_executable(JPEGView WIN32
     JXRWrapper.cpp
     ThumbnailCache.cpp
     CrtDbgStub.cpp
+    FullBufferSource.cpp
+    ImagePyramid.cpp
+    LazySource.cpp
+    TiffLazySource.cpp
     res/JPEGView.ico)
 
 target_precompile_headers(JPEGView PRIVATE stdafx.h)

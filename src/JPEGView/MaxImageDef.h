@@ -88,13 +88,15 @@ const unsigned int MAX_JXR_FILE_SIZE = 1024 * 1024 * 50;
 
 // this may be an artificial limitation and might make configurable, or ignore custom setting only for win32
 #ifdef _WIN64
-const unsigned int MAX_IMAGE_PIXELS = 65535 * 65535;
+const unsigned long long MAX_IMAGE_PIXELS = 1000000ULL * 1000000ULL;
 #else
 const unsigned int MAX_IMAGE_PIXELS = 1024 * 1024 * 100;
 #endif
 
-// That must not be bigger than 65535 due to internal limitations
-//
-// unbounding (>65535) this causes crashes if HighQualityResampling=true
-// but if it's false, some images load (so far png tested was corrupted)
+// x64 빌드에서는 리샘플러 고정소수점이 uintfp(64비트)로 동작하므로 65535 제한이 해제된다.
+// 부분 로딩으로 전체 디코드가 발생하지 않으므로 RAM 가드는 MAX_IMAGE_PIXELS로 충분하다.
+#ifdef _WIN64
+const unsigned int MAX_IMAGE_DIMENSION = 1000000;
+#else
 const unsigned int MAX_IMAGE_DIMENSION = 65535;
+#endif

@@ -3,6 +3,7 @@
 #include "HistogramCorr.h"
 #include "JPEGImage.h"
 #include "Helpers.h"
+#include "ImageSourceData.h"
 #include <math.h>
 #include <assert.h>
 
@@ -81,26 +82,39 @@ CLocalDensityCorr::CLocalDensityCorr(const CJPEGImage & image, bool bFullConstru
 	int nWidth = image.OrigWidth();
 	int nHeight = image.OrigHeight();
 	int nChannels = image.OriginalChannels();
-	const uint8* pSourcePixels = (const uint8*)image.OriginalPixels();
 
 	double dFactor = (double)nWidth/nHeight;
 	m_nPSIWidth  = Helpers::DoPadding((int)(dFactor*sqrt(NUM_VALUES/dFactor)), 4);
 	m_nPSIHeight = Helpers::DoPadding((int)(m_nPSIWidth/dFactor), 4);
 
-	uint32 nY = 0;
-	uint32 nIncX = (uint32)nWidth*65536/m_nPSIWidth;
-	uint32 nIncY = (uint32)nHeight*65536/m_nPSIHeight;
-	int nLineSize = Helpers::DoPadding(nWidth * nChannels, 4);
+	uintfp nY = 0;
+	uintfp nIncX = (uintfp)nWidth*65536/m_nPSIWidth;
+	uintfp nIncY = (uintfp)nHeight*65536/m_nPSIHeight;
+	// 부분 로딩: 전체 버퍼 대신 SamplePoint로 개별 픽셀을 읽는다.
+	// 전체 버퍼가 있는 경우(기존 경로)는 OriginalPixels()를 직접 쓰고,
+	// 부분 로딩인 경우 SamplePoint를 쓴다.
+	const uint8* pSourcePixels = (const uint8*)image.OriginalPixels();
+	IImageSourceData* pSourceData = const_cast<IImageSourceData*>(image.GetSourceData());
 
 	// The subsampled image has 16 bits per channel and three line interleaved channels B, G, R
 	m_pPointSampledImage = new uint16[m_nPSIWidth*m_nPSIHeight*3];
 
 	for (int j = 0; j < m_nPSIHeight; j++) {
-		uint32 nX = 0;
-		const uint8* pSrcStart = pSourcePixels + nLineSize*(nY >> 16);
+		uintfp nX = 0;
 		uint16* pSubSampImage = m_pPointSampledImage + j*m_nPSIWidth*3;
 		for (int i = 0; i < m_nPSIWidth; i++) {
-			const uint8* pSrc = (nChannels == 3) ? pSrcStart + (nX >> 16)*3 : pSrcStart + (nX >> 16)*4;
+			uint8 px[4] = {0, 0, 0, 0xFF};
+			if (pSourceData != NULL) {
+				// 부분 로딩: SamplePoint로 읽기
+				pSourceData->SamplePoint((int)(nX >> 16), (int)(nY >> 16), 0, px);
+			} else if (pSourcePixels != NULL) {
+				// 기존 경로: 전체 버퍼 직접 접근
+				int nLineSize = Helpers::DoPadding(nWidth * nChannels, 4);
+				const uint8* pSrcStart = pSourcePixels + nLineSize*(nY >> 16);
+				const uint8* pSrc = (nChannels == 3) ? pSrcStart + (nX >> 16)*3 : pSrcStart + (nX >> 16)*4;
+				px[0] = pSrc[0]; px[1] = pSrc[1]; px[2] = pSrc[2];
+			}
+			const uint8* pSrc = px;
 			channelB[pSrc[0]]++;
 			channelG[pSrc[1]]++;
 			channelR[pSrc[2]]++;

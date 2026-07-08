@@ -14,6 +14,7 @@ cmake_install.cmake
 *.vcxproj.user
 compile_commands.json
 .cache/
+vcpkg_installed/
 
 # Compiled Object files
 *.slo
@@ -37,6 +38,7 @@ compile_commands.json
 *.exe
 
 *.user
+docs/
 
 # Visual C++ cache files
 ipch/

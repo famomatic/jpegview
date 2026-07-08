@@ -867,28 +867,29 @@ void* CBasicProcessing::PointSample(CSize fullTargetSize, CPoint fullTargetOffse
 	uint8* pDIB = new(std::nothrow) uint8[clippedTargetSize.cx*4 * clippedTargetSize.cy];
 	if (pDIB == NULL) return NULL;
 
-	uint32 nIncrementX, nIncrementY;
+	// 플랫폼별 고정소수점: x64는 64비트(초고화질 지원), x86은 32비트(65535 제한 유지)
+	uintfp nIncrementX, nIncrementY;
 	if (fullTargetSize.cx <= sourceSize.cx) {
 		// Downsampling
-		nIncrementX = (uint32)(sourceSize.cx << 16)/fullTargetSize.cx + 1;
-		nIncrementY = (uint32)(sourceSize.cy << 16)/fullTargetSize.cy + 1;
+		nIncrementX = (uintfp)sourceSize.cx << 16 / fullTargetSize.cx + 1;
+		nIncrementY = (uintfp)sourceSize.cy << 16 / fullTargetSize.cy + 1;
 	} else {
 		// Upsampling
-		nIncrementX = (fullTargetSize.cx == 1) ? 0 : (uint32)((65536*(uint32)(sourceSize.cx - 1) + 65535)/(fullTargetSize.cx - 1));
-		nIncrementY = (fullTargetSize.cy == 1) ? 0 : (uint32)((65536*(uint32)(sourceSize.cy - 1) + 65535)/(fullTargetSize.cy - 1));
+		nIncrementX = (fullTargetSize.cx == 1) ? 0 : (uintfp)((65536*(uintfp)(sourceSize.cx - 1) + 65535)/(fullTargetSize.cx - 1));
+		nIncrementY = (fullTargetSize.cy == 1) ? 0 : (uintfp)((65536*(uintfp)(sourceSize.cy - 1) + 65535)/(fullTargetSize.cy - 1));
 	}
 
 	int nPaddedSourceWidth = Helpers::DoPadding(sourceSize.cx * nChannels, 4);
 	const uint8* pSrc = NULL;
 	uint8* pDst = pDIB;
-	uint32 nCurY = fullTargetOffset.y*nIncrementY;
-	uint32 nStartX = fullTargetOffset.x*nIncrementX;
+	uintfp nCurY = (uintfp)fullTargetOffset.y*nIncrementY;
+	uintfp nStartX = (uintfp)fullTargetOffset.x*nIncrementX;
 	for (int j = 0; j < clippedTargetSize.cy; j++) {
 		pSrc = (uint8*)pPixels + nPaddedSourceWidth * (nCurY >> 16);
-		uint32 nCurX = nStartX;
+		uintfp nCurX = nStartX;
 		if (nChannels == 3) {
 			for (int i = 0; i < clippedTargetSize.cx; i++) {
-				uint32 sx = nCurX >> 16; 
+				uint32 sx = (uint32)(nCurX >> 16);
 				uint32 s = sx*3;
 				uint32 d = i*4;
 				pDst[d] = pSrc[s];
@@ -899,7 +900,7 @@ void* CBasicProcessing::PointSample(CSize fullTargetSize, CPoint fullTargetOffse
 			}
 		} else {
 			for (int i = 0; i < clippedTargetSize.cx; i++) {
-				uint32 sx = nCurX >> 16; 
+				uint32 sx = (uint32)(nCurX >> 16);
 				((uint32*)pDst)[i] = ((uint32*)pSrc)[sx];
 				nCurX += nIncrementX;
 			}
@@ -921,28 +922,28 @@ bool CBasicProcessing::RestoreAlphaChannel(CSize fullTargetSize, CPoint fullTarg
 		return false;
 	}
 
-	uint32 nIncrementX, nIncrementY;
+	uintfp nIncrementX, nIncrementY;
 	if (fullTargetSize.cx <= sourceSize.cx) {
 		// Downsampling
-		nIncrementX = (uint32)(sourceSize.cx << 16)/fullTargetSize.cx + 1;
-		nIncrementY = (uint32)(sourceSize.cy << 16)/fullTargetSize.cy + 1;
+		nIncrementX = (uintfp)sourceSize.cx << 16 / fullTargetSize.cx + 1;
+		nIncrementY = (uintfp)sourceSize.cy << 16 / fullTargetSize.cy + 1;
 	} else {
 		// Upsampling
-		nIncrementX = (fullTargetSize.cx == 1) ? 0 : (uint32)((65536*(uint32)(sourceSize.cx - 1) + 65535)/(fullTargetSize.cx - 1));
-		nIncrementY = (fullTargetSize.cy == 1) ? 0 : (uint32)((65536*(uint32)(sourceSize.cy - 1) + 65535)/(fullTargetSize.cy - 1));
+		nIncrementX = (fullTargetSize.cx == 1) ? 0 : (uintfp)((65536*(uintfp)(sourceSize.cx - 1) + 65535)/(fullTargetSize.cx - 1));
+		nIncrementY = (fullTargetSize.cy == 1) ? 0 : (uintfp)((65536*(uintfp)(sourceSize.cy - 1) + 65535)/(fullTargetSize.cy - 1));
 	}
 
 	// Source is always 4-channel (32 bpp) ARGB here.
 	int nPaddedSourceWidth = Helpers::DoPadding(sourceSize.cx * 4, 4);
 	const uint8* pSrc = NULL;
 	uint8* pDst = (uint8*)pResampledDIB;
-	uint32 nCurY = fullTargetOffset.y*nIncrementY;
-	uint32 nStartX = fullTargetOffset.x*nIncrementX;
+	uintfp nCurY = (uintfp)fullTargetOffset.y*nIncrementY;
+	uintfp nStartX = (uintfp)fullTargetOffset.x*nIncrementX;
 	for (int j = 0; j < clippedTargetSize.cy; j++) {
 		pSrc = (const uint8*)pSourcePixels + nPaddedSourceWidth * (nCurY >> 16);
-		uint32 nCurX = nStartX;
+		uintfp nCurX = nStartX;
 		for (int i = 0; i < clippedTargetSize.cx; i++) {
-			uint32 sx = nCurX >> 16;
+			uint32 sx = (uint32)(nCurX >> 16);
 			// Keep the RGB bytes, overwrite only the alpha byte (offset 3) from the source.
 			uint8 a = pSrc[sx*4 + 3];
 			pDst[i*4 + 3] = a;
@@ -1522,7 +1523,7 @@ void* CBasicProcessing::TrapezoidHQ(CPoint targetOffset, CSize targetSize, const
 // Returns the filtered image of size(nHeight, nTargetWidth)
 static uint8* ApplyFilter(int nSourceWidth, int nTargetWidth, int nHeight,
 						  int nSourceBytesPerPixel,
-						  int nStartX_FP, int nStartY, int nIncrementX_FP,
+						  intfp nStartX_FP, int nStartY, intfp nIncrementX_FP,
 						  const FilterKernelBlock& filter,
 						  int nFilterOffset,
 						  const uint8* pSource) {
@@ -1541,9 +1542,9 @@ static uint8* ApplyFilter(int nSourceWidth, int nTargetWidth, int nHeight,
 		pSourcePixelLine = ((uint8*) pSource) + nPaddedSourceWidth * (j + nStartY);
 		pTargetPixelLine = pTarget + 4*j;
 		uint8* pTargetPixel = pTargetPixelLine;
-		uint32 nX = nStartX_FP;
+		uintfp nX = (uintfp)nStartX_FP;
 		for (int i = 0; i < nTargetWidth; i++) {
-			uint32 nXSourceInt = nX >> 16;
+			uint32 nXSourceInt = (uint32)(nX >> 16);
 			FilterKernel* pKernel = filter.Indices[i + nFilterOffset];
 			const uint8* pSourcePixel = pSourcePixelLine + nSourceBytesPerPixel*(nXSourceInt - pKernel->FilterOffset);
 			int nPixelValue1 = 0;
@@ -1667,8 +1668,8 @@ void* CBasicProcessing::SampleUp_HQ(CSize fullTargetSize, CPoint fullTargetOffse
 	int nSourceWidth = sourceSize.cx;
 	int nSourceHeight = sourceSize.cy;
 
-	uint32 nIncrementX = (uint32)(65536*(uint32)(nSourceWidth - 1)/(fullTargetSize.cx - 1));
-	uint32 nIncrementY = (uint32)(65536*(uint32)(nSourceHeight - 1)/(fullTargetSize.cy - 1));
+	uintfp nIncrementX = (uintfp)(65536*(uintfp)(nSourceWidth - 1)/(fullTargetSize.cx - 1));
+	uintfp nIncrementY = (uintfp)(65536*(uintfp)(nSourceHeight - 1)/(fullTargetSize.cy - 1));
 
 	// Caution: This code assumes a upsampling filter kernel of length 4, with a filter offset of 1
 	int nFirstY = max(0, int((uint32)(nIncrementY*fullTargetOffset.y) >> 16) - 1);
@@ -1677,8 +1678,8 @@ void* CBasicProcessing::SampleUp_HQ(CSize fullTargetSize, CPoint fullTargetOffse
 	int nTempTargetHeight = nTargetWidth;
 	int nFilterOffsetX = fullTargetOffset.x;
 	int nFilterOffsetY = fullTargetOffset.y;
-	int nStartX = nIncrementX*fullTargetOffset.x;
-	int nStartY = nIncrementY*fullTargetOffset.y - 65536*nFirstY;
+	intfp nStartX = (intfp)(nIncrementX*fullTargetOffset.x);
+	intfp nStartY = (intfp)(nIncrementY*fullTargetOffset.y - 65536*nFirstY);
 
 	CResizeFilter filterX(nSourceWidth, fullTargetSize.cx, 0.0, Filter_Upsampling_Bicubic, FilterSIMDType_None);
 	const FilterKernelBlock& kernelsX = filterX.GetFilterKernels();
@@ -1720,22 +1721,22 @@ void* CBasicProcessing::SampleDown_HQ(CSize fullTargetSize, CPoint fullTargetOff
 	CResizeFilter filterY(sourceSize.cy, fullTargetSize.cy, dSharpen, eFilter, FilterSIMDType_None);
 	const FilterKernelBlock& kernelsY = filterY.GetFilterKernels();
 
-	uint32 nIncrementX = (uint32)(sourceSize.cx << 16)/fullTargetSize.cx + 1;
-	uint32 nIncrementY = (uint32)(sourceSize.cy << 16)/fullTargetSize.cy + 1;
+	uintfp nIncrementX = (uintfp)sourceSize.cx << 16 / fullTargetSize.cx + 1;
+	uintfp nIncrementY = (uintfp)sourceSize.cy << 16 / fullTargetSize.cy + 1;
 
-	int nIncOffsetX = (nIncrementX - 65536) >> 1;
-	int nIncOffsetY = (nIncrementY - 65536) >> 1;
-	int nFirstY = (uint32)(nIncOffsetY + nIncrementY*fullTargetOffset.y) >> 16;
+	intfp nIncOffsetX = (intfp)((nIncrementX - 65536) >> 1);
+	intfp nIncOffsetY = (intfp)((nIncrementY - 65536) >> 1);
+	int nFirstY = (int)((nIncOffsetY + nIncrementY*fullTargetOffset.y) >> 16);
 	nFirstY = max(0, nFirstY - kernelsY.Indices[fullTargetOffset.y]->FilterOffset);
-	int nLastY  = (uint32)(nIncOffsetY + nIncrementY*(fullTargetOffset.y + clippedTargetSize.cy - 1)) >> 16;
+	int nLastY  = (int)((nIncOffsetY + nIncrementY*(fullTargetOffset.y + clippedTargetSize.cy - 1)) >> 16);
 	FilterKernel* pLastYFilter = kernelsY.Indices[fullTargetOffset.y + clippedTargetSize.cy - 1];
 	nLastY  = min(sourceSize.cy - 1, nLastY - pLastYFilter->FilterOffset + pLastYFilter->FilterLen - 1);
 	int nTempTargetWidth = nLastY - nFirstY + 1;
 	int nTempTargetHeight = clippedTargetSize.cx;
 	int nFilterOffsetX = fullTargetOffset.x;
 	int nFilterOffsetY = fullTargetOffset.y;
-	int nStartX = nIncOffsetX + nIncrementX*fullTargetOffset.x;
-	int nStartY = nIncOffsetY + nIncrementY*fullTargetOffset.y - 65536*nFirstY;
+	intfp nStartX = nIncOffsetX + nIncrementX*fullTargetOffset.x;
+	intfp nStartY = nIncOffsetY + nIncrementY*fullTargetOffset.y - 65536*nFirstY;
 
 	uint8* pTemp = ApplyFilter(sourceSize.cx, nTempTargetHeight, nTempTargetWidth,
 		nChannels, nStartX, nFirstY, nIncrementX,
@@ -1978,8 +1979,8 @@ void* SampleHQ_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clipped
 		int nSourceWidth = sourceSize.cx;
 		int nSourceHeight = sourceSize.cy;
 
-		uint32 nIncrementX = (uint32)(65536*(uint32)(nSourceWidth - 1)/(fullTargetSize.cx - 1));
-		uint32 nIncrementY = (uint32)(65536*(uint32)(nSourceHeight - 1)/(fullTargetSize.cy - 1));
+		uintfp nIncrementX = (uintfp)(65536*(uintfp)(nSourceWidth - 1)/(fullTargetSize.cx - 1));
+		uintfp nIncrementY = (uintfp)(65536*(uintfp)(nSourceHeight - 1)/(fullTargetSize.cy - 1));
 
 		int nFirstX = max(0, int((uint32)(nIncrementX*fullTargetOffset.x) >> 16) - 1);
 		int nLastX = min(sourceSize.cx - 1, int(((uint32)(nIncrementX*(fullTargetOffset.x + nTargetWidth - 1)) >> 16) + 2));
@@ -1987,8 +1988,8 @@ void* SampleHQ_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clipped
 		int nLastY = min(sourceSize.cy - 1, int(((uint32)(nIncrementY*(fullTargetOffset.y + nTargetHeight - 1)) >> 16) + 2));
 		int nFilterOffsetX = fullTargetOffset.x;
 		int nFilterOffsetY = fullTargetOffset.y;
-		int nStartX = nIncrementX*fullTargetOffset.x - 65536*nFirstX;
-		int nStartY = nIncrementY*fullTargetOffset.y - 65536*nFirstY;
+		intfp nStartX = (intfp)(nIncrementX*fullTargetOffset.x - 65536*nFirstX);
+		intfp nStartY = (intfp)(nIncrementY*fullTargetOffset.y - 65536*nFirstY);
 
 		CXMMImage* pImage1 = new CXMMImage(nSourceWidth, nSourceHeight, nFirstX, nLastX, nFirstY, nLastY, pPixels, nChannels, nSIMDPixels);
 		if (pImage1->AlignedPtr() == NULL) { delete pImage1; return NULL; }
@@ -2010,25 +2011,25 @@ void* SampleHQ_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clipped
 		CAutoXMMFilter filterX(sourceSize.cx, fullTargetSize.cx, dSharpen, eFilter);
 		const XMMFilterKernelBlock& kernelsX = filterX.Kernels();
 
-		uint32 nIncrementX = (uint32)(sourceSize.cx << 16)/fullTargetSize.cx + 1;
-		uint32 nIncrementY = (uint32)(sourceSize.cy << 16)/fullTargetSize.cy + 1;
+		uintfp nIncrementX = (uintfp)sourceSize.cx << 16 / fullTargetSize.cx + 1;
+		uintfp nIncrementY = (uintfp)sourceSize.cy << 16 / fullTargetSize.cy + 1;
 
-		int nIncOffsetX = (nIncrementX - 65536) >> 1;
-		int nIncOffsetY = (nIncrementY - 65536) >> 1;
-		int nFirstX = (uint32)(nIncOffsetX + nIncrementX*fullTargetOffset.x) >> 16;
+		intfp nIncOffsetX = (intfp)((nIncrementX - 65536) >> 1);
+		intfp nIncOffsetY = (intfp)((nIncrementY - 65536) >> 1);
+		int nFirstX = (int)((nIncOffsetX + nIncrementX*fullTargetOffset.x) >> 16);
 		nFirstX = max(0, nFirstX - kernelsX.Indices[fullTargetOffset.x]->FilterOffset);
-		int nLastX  = (uint32)(nIncOffsetX + nIncrementX*(fullTargetOffset.x + clippedTargetSize.cx - 1)) >> 16;
+		int nLastX  = (int)((nIncOffsetX + nIncrementX*(fullTargetOffset.x + clippedTargetSize.cx - 1)) >> 16);
 		XMMFilterKernel* pLastXFilter = kernelsX.Indices[fullTargetOffset.x + clippedTargetSize.cx - 1];
 		nLastX  = min(sourceSize.cx - 1, nLastX - pLastXFilter->FilterOffset + pLastXFilter->FilterLen - 1);
-		int nFirstY = (uint32)(nIncOffsetY + nIncrementY*fullTargetOffset.y) >> 16;
+		int nFirstY = (int)((nIncOffsetY + nIncrementY*fullTargetOffset.y) >> 16);
 		nFirstY = max(0, nFirstY - kernelsY.Indices[fullTargetOffset.y]->FilterOffset);
-		int nLastY  = (uint32)(nIncOffsetY + nIncrementY*(fullTargetOffset.y + clippedTargetSize.cy - 1)) >> 16;
+		int nLastY  = (int)((nIncOffsetY + nIncrementY*(fullTargetOffset.y + clippedTargetSize.cy - 1)) >> 16);
 		XMMFilterKernel* pLastYFilter = kernelsY.Indices[fullTargetOffset.y + clippedTargetSize.cy - 1];
 		nLastY  = min(sourceSize.cy - 1, nLastY - pLastYFilter->FilterOffset + pLastYFilter->FilterLen - 1);
 		int nFilterOffsetX = fullTargetOffset.x;
 		int nFilterOffsetY = fullTargetOffset.y;
-		int nStartX = nIncOffsetX + nIncrementX*fullTargetOffset.x - 65536*nFirstX;
-		int nStartY = nIncOffsetY + nIncrementY*fullTargetOffset.y - 65536*nFirstY;
+		intfp nStartX = nIncOffsetX + nIncrementX*fullTargetOffset.x - 65536*nFirstX;
+		intfp nStartY = nIncOffsetY + nIncrementY*fullTargetOffset.y - 65536*nFirstY;
 
 		CXMMImage* pImage1 = new CXMMImage(sourceSize.cx, sourceSize.cy, nFirstX, nLastX, nFirstY, nLastY, pPixels, nChannels, nSIMDPixels);
 		if (pImage1->AlignedPtr() == NULL) { delete pImage1; return NULL; }

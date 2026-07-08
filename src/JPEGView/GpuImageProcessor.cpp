@@ -197,13 +197,13 @@ void* GpuImageProcessor::ResampleHQ(CSize fullTargetSize, CPoint fullTargetOffse
 
     // Source X/Y start and increment (16.16 fixed point), matching the CPU
     // SampleUp/Down_HQ derivation.
-    uint32_t incX = (uint32_t)((uint64_t)65536 * (uint32_t)(sourceSize.cx - 1) / (fullTargetSize.cx - 1));
-    uint32_t incY = (uint32_t)((uint64_t)65536 * (uint32_t)(sourceSize.cy - 1) / (fullTargetSize.cy - 1));
-    int firstY = max(0, (int)((uint64_t)incY * fullTargetOffset.y >> 16) - 1);
-    int lastY = min(sourceSize.cy - 1, (int)(((uint64_t)incY * (fullTargetOffset.y + clippedTargetSize.cy - 1)) >> 16) + 2);
+    uintfp incX = (uintfp)((uint64_t)65536 * (uint32_t)(sourceSize.cx - 1) / (fullTargetSize.cx - 1));
+    uintfp incY = (uintfp)((uint64_t)65536 * (uint32_t)(sourceSize.cy - 1) / (fullTargetSize.cy - 1));
+    int firstY = max(0, (int)((uintfp)incY * fullTargetOffset.y >> 16) - 1);
+    int lastY = min(sourceSize.cy - 1, (int)(((uintfp)incY * (fullTargetOffset.y + clippedTargetSize.cy - 1)) >> 16) + 2);
     int tempH = lastY - firstY + 1;   // intermediate height = #source rows filtered
-    uint32_t startX_FP = incX * fullTargetOffset.x;
-    uint32_t startY_FP = incY * fullTargetOffset.y - 65536 * firstY;
+    uintfp startX_FP = incX * fullTargetOffset.x;
+    uintfp startY_FP = incY * fullTargetOffset.y - 65536 * firstY;
 
     // Upload source as a UINT texture. If 3-channel, expand to 4 on the fly
     // (pad alpha 0xFF) via a small staging copy.
@@ -355,7 +355,7 @@ static void ReleaseKernelBuffers(KernelBuffers& kb) {
 bool GpuImageProcessor::RunResamplePass(ID3D11DeviceContext* ctx, ID3D11Device* device,
     ID3D11ComputeShader* cs, ID3D11Texture2D* texSrc, ID3D11Texture2D* texOut,
     const FilterKernelBlock& kernels, int tgtW, int tgtH,
-    int srcW, int srcH, uint32_t startX_FP, uint32_t incX_FP) {
+    int srcW, int srcH, uintfp startX_FP, uintfp incX_FP) {
     // SRV for source, UAV for output.
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{}; srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UINT;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; srvDesc.Texture2D.MipLevels = 1;
@@ -375,7 +375,7 @@ bool GpuImageProcessor::RunResamplePass(ID3D11DeviceContext* ctx, ID3D11Device* 
     struct { UINT srcW, srcH, tgtW, tgtH; } cb0Data = { (UINT)srcW, (UINT)srcH, (UINT)tgtW, (UINT)tgtH };
     D3D11_BUFFER_DESC c0d{}; c0d.ByteWidth = sizeof(cb0Data); c0d.Usage = D3D11_USAGE_DEFAULT; c0d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     D3D11_SUBRESOURCE_DATA c0i{}; c0i.pSysMem = &cb0Data; ID3D11Buffer* cb0Buf = nullptr; device->CreateBuffer(&c0d, &c0i, &cb0Buf);
-    struct { UINT startX, incX, _p0, _p1; } cb1Data = { startX_FP, incX_FP, 0, 0 };
+    struct { UINT startX, incX, _p0, _p1; } cb1Data = { (UINT)startX_FP, (UINT)incX_FP, 0, 0 };
     D3D11_BUFFER_DESC c1d{}; c1d.ByteWidth = sizeof(cb1Data); c1d.Usage = D3D11_USAGE_DEFAULT; c1d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     D3D11_SUBRESOURCE_DATA c1i{}; c1i.pSysMem = &cb1Data; ID3D11Buffer* cb1Buf = nullptr; device->CreateBuffer(&c1d, &c1i, &cb1Buf);
 
@@ -400,7 +400,7 @@ bool GpuImageProcessor::RunResamplePass(ID3D11DeviceContext* ctx, ID3D11Device* 
 bool GpuImageProcessor::RunResamplePassY(ID3D11DeviceContext* ctx, ID3D11Device* device,
     ID3D11ComputeShader* cs, ID3D11Texture2D* texSrc, ID3D11Texture2D* texOut,
     const FilterKernelBlock& kernels, int tgtW, int tgtH,
-    int srcW, int srcH, uint32_t startX_FP, uint32_t incX_FP) {
+    int srcW, int srcH, uintfp startX_FP, uintfp incX_FP) {
     // Y pass: filter along the row dimension of the X result. The X result is
     // (tgtW x srcRows) where srcRows=srcW here (we transposed conceptually).
     // We treat texSrc as having width=srcRows, height=tgtW; each output pixel
@@ -428,7 +428,7 @@ bool GpuImageProcessor::RunResamplePassY(ID3D11DeviceContext* ctx, ID3D11Device*
     struct { UINT srcW, srcH, tgtW, tgtH; } cb0Data = { (UINT)srcW, (UINT)srcH, (UINT)tgtW, (UINT)tgtH };
     D3D11_BUFFER_DESC c0d{}; c0d.ByteWidth = sizeof(cb0Data); c0d.Usage = D3D11_USAGE_DEFAULT; c0d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     D3D11_SUBRESOURCE_DATA c0i{}; c0i.pSysMem = &cb0Data; ID3D11Buffer* cb0Buf = nullptr; device->CreateBuffer(&c0d, &c0i, &cb0Buf);
-    struct { UINT startX, incX, _p0, _p1; } cb1Data = { startX_FP, incX_FP, 0, 0 };
+    struct { UINT startX, incX, _p0, _p1; } cb1Data = { (UINT)startX_FP, (UINT)incX_FP, 0, 0 };
     D3D11_BUFFER_DESC c1d{}; c1d.ByteWidth = sizeof(cb1Data); c1d.Usage = D3D11_USAGE_DEFAULT; c1d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     D3D11_SUBRESOURCE_DATA c1i{}; c1i.pSysMem = &cb1Data; ID3D11Buffer* cb1Buf = nullptr; device->CreateBuffer(&c1d, &c1i, &cb1Buf);
 

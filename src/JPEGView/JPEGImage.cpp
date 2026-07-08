@@ -13,6 +13,7 @@
 #include "MaxImageDef.h"
 #include "turbojpeg.h"
 #include "ThumbnailCache.h"
+#include "FullBufferSource.h"
 #include <math.h>
 #include <assert.h>
 
@@ -23,6 +24,23 @@
 ///////////////////////////////////////////////////////////////////////////////////
 // Static helpers
 ///////////////////////////////////////////////////////////////////////////////////
+
+// OriginalPixels: 소스 프로바이더가 있으면 그것에서, 없으면 m_pOrigPixels에서.
+void* CJPEGImage::OriginalPixels() {
+	if (m_pSourceData != NULL) {
+		CFullBufferSource* pFull = dynamic_cast<CFullBufferSource*>(m_pSourceData);
+		if (pFull != NULL) return const_cast<void*>(pFull->GetFullBuffer());
+	}
+	return m_pOrigPixels;
+}
+
+const void* CJPEGImage::OriginalPixels() const {
+	if (m_pSourceData != NULL) {
+		const CFullBufferSource* pFull = dynamic_cast<const CFullBufferSource*>(m_pSourceData);
+		if (pFull != NULL) return pFull->GetFullBuffer();
+	}
+	return m_pOrigPixels;
+}
 
 static void RotateInplace(const CSize& imageSize, double& dX, double& dY, double dAngle) {
 	dX -= (imageSize.cx - 1) * 0.5;
@@ -43,48 +61,100 @@ CJPEGImage::CJPEGImage(int nWidth, int nHeight, void* pPixels, void* pEXIFData, 
 	: m_rotationParams{ 0 },
 	m_fColorCorrectionFactorsNull{ 0 }
 {
-	if (nChannels == 3 || nChannels == 4) {
-		m_pOrigPixels = pPixels;
-		m_nOriginalChannels = nChannels;
-		// Detect a non-trivial alpha channel: only 4-channel images may carry transparency.
-		m_bHasAlpha = false;
-		if (nChannels == 4 && pPixels != NULL) {
-			const uint32* pPix = (const uint32*)pPixels;
-			int nCount = nWidth * nHeight;
-			for (int i = 0; i < nCount; i++) {
-				if ((pPix[i] & 0xFF000000) != 0xFF000000) {
-					m_bHasAlpha = true;
-					break;
-				}
+	// 기존 생성자: 전체 버퍼를 CFullBufferSource로 감싸서 프로바이더 경로를 탄다.
+	// 이렇게 하면 모든 포맷이 IImageSourceData 인터페이스를 통해 일관되게 동작한다.
+	m_pSourceData = nullptr;
+	m_pPyramid = nullptr;
+
+	// 픽셀 채널 정규화: 1채널은 4채널로 변환.
+	uint8* pFinalPixels = (uint8*)pPixels;
+	int nFinalChannels = nChannels;
+	bool bHasAlpha = false;
+	if (nChannels == 1) {
+		pFinalPixels = (uint8*)CBasicProcessing::Convert1To4Channels(nWidth, nHeight, pPixels);
+		delete[] (uint8*)pPixels;
+		nFinalChannels = 4;
+	} else if (nChannels == 4 && pPixels != NULL) {
+		const uint32* pPix = (const uint32*)pPixels;
+		int nCount = nWidth * nHeight;
+		for (int i = 0; i < nCount; i++) {
+			if ((pPix[i] & 0xFF000000) != 0xFF000000) {
+				bHasAlpha = true;
+				break;
 			}
 		}
-	} else if (nChannels == 1) {
-		m_pOrigPixels = CBasicProcessing::Convert1To4Channels(nWidth, nHeight, pPixels);
-		delete[] pPixels;
-		m_nOriginalChannels = 4;
-		// Single-channel grayscale has no alpha.
-		m_bHasAlpha = false;
-	} else {
+	} else if (nChannels != 3) {
 		assert(false);
-		m_pOrigPixels = NULL;
-		m_nOriginalChannels = 0;
-		m_bHasAlpha = false;
+		pFinalPixels = NULL;
+		nFinalChannels = 0;
 	}
 
+	// EXIF 데이터 준비 (CFullBufferSource가 소유).
+	uint8* pEXIFCopy = NULL;
+	int nEXIFSize = 0;
 	if (pEXIFData != NULL) {
-		unsigned char * pEXIF = (unsigned char *)pEXIFData;
-		m_nEXIFSize = pEXIF[2]*256 + pEXIF[3] + 2;
-		m_pEXIFData = new char[m_nEXIFSize];
-		memcpy(m_pEXIFData, pEXIFData, m_nEXIFSize);
+		unsigned char* pEXIF = (unsigned char*)pEXIFData;
+		nEXIFSize = pEXIF[2] * 256 + pEXIF[3] + 2;
+		pEXIFCopy = new (std::nothrow) uint8[nEXIFSize];
+		if (pEXIFCopy != NULL)
+			memcpy(pEXIFCopy, pEXIFData, nEXIFSize);
+	}
+
+	// CFullBufferSource로 감싸서 모든 포맷을 프로바이더 경로로 통일.
+	m_pSourceData = new CFullBufferSource(nWidth, nHeight, nFinalChannels, 8,
+		pFinalPixels, bHasAlpha, pEXIFCopy, nEXIFSize,
+		nullptr, 0, pRawMetadata, nNumberOfFrames);
+	// m_pOrigPixels는 더 이상 직접 소유하지 않는다 (소스가 소유).
+	// OriginalPixels()는 소스에서 가져온다.
+	m_pOrigPixels = NULL;
+	m_nOriginalChannels = nFinalChannels;
+	m_bHasAlpha = bHasAlpha;
+
+	InitCommon(eImageFormat, bIsAnimation, nFrameIndex, nNumberOfFrames, nFrameTimeMs,
+		pLDC, bIsThumbnailImage, pRawMetadata, nJPEGHash);
+}
+
+// 새 생성자: IImageSourceData 프로바이더 기반.
+// 부분 로딩(TIFF) 이미지가 이 생성자를 사용한다.
+// 소스의 소유권이 클래스로 이전된다.
+CJPEGImage::CJPEGImage(IImageSourceData* pSourceData, EImageFormat eImageFormat,
+	int nFrameIndex, int nNumberOfFrames, int nFrameTimeMs,
+	CLocalDensityCorr* pLDC, bool bIsThumbnailImage)
+	: m_rotationParams{ 0 },
+	m_fColorCorrectionFactorsNull{ 0 }
+{
+	m_pSourceData = pSourceData;
+	m_pPyramid = nullptr;  // 지연 생성
+
+	// 소스에서 메타데이터 읽기.
+	m_nOrigWidth = m_nInitOrigWidth = pSourceData->Width();
+	m_nOrigHeight = m_nInitOrigHeight = pSourceData->Height();
+	m_nOriginalChannels = pSourceData->Channels();
+	m_bHasAlpha = pSourceData->HasAlpha();
+	m_pOrigPixels = NULL;  // 부분 로딩은 전체 버퍼 없음
+
+	// EXIF 데이터 (있으면).
+	int nEXIFSize = 0;
+	void* pEXIF = pSourceData->EXIFData(nEXIFSize);
+	if (pEXIF != NULL) {
+		m_nEXIFSize = nEXIFSize;
+		m_pEXIFData = (char*)pEXIF;
 		m_pEXIFReader = new CEXIFReader(m_pEXIFData, eImageFormat);
 	} else {
 		m_nEXIFSize = 0;
 		m_pEXIFData = NULL;
 		m_pEXIFReader = NULL;
 	}
+	m_pRawMetadata = pSourceData->RawMetadata();
 
-	m_pRawMetadata = pRawMetadata;
+	InitCommon(eImageFormat, false, nFrameIndex, nNumberOfFrames, nFrameTimeMs,
+		pLDC, bIsThumbnailImage, pSourceData->RawMetadata(), 0);
+}
 
+// 공통 초기화: 두 생성자가 공유하는 멤버 채우기.
+void CJPEGImage::InitCommon(EImageFormat eImageFormat, bool bIsAnimation, int nFrameIndex,
+	int nNumberOfFrames, int nFrameTimeMs, CLocalDensityCorr* pLDC,
+	bool bIsThumbnailImage, CRawMetadata* pRawMetadata, __int64 nJPEGHash) {
 	m_nPixelHash = nJPEGHash;
 	m_eImageFormat = eImageFormat;
 	m_bIsAnimation = bIsAnimation;
@@ -93,8 +163,6 @@ CJPEGImage::CJPEGImage(int nWidth, int nHeight, void* pPixels, void* pEXIFData, 
 	m_nFrameTimeMs = nFrameTimeMs;
 	m_eJPEGChromoSampling = TJSAMP_420;
 
-	m_nOrigWidth = m_nInitOrigWidth = nWidth;
-	m_nOrigHeight = m_nInitOrigHeight = nHeight;
 	m_pDIBPixels = NULL;
 	m_pDIBPixelsLUTProcessed = NULL;
 	m_pLastDIB = NULL;
@@ -102,7 +170,6 @@ CJPEGImage::CJPEGImage(int nWidth, int nHeight, void* pPixels, void* pEXIFData, 
 	m_pHistogramThumbnail = NULL;
 	m_pGrayImage = NULL;
 	m_pSmoothGrayImage = NULL;
-	
 	m_pLUTAllChannels = NULL;
 	m_pLUTRGB = NULL;
 	m_pSaturationLUTs = NULL;
@@ -120,12 +187,10 @@ CJPEGImage::CJPEGImage(int nWidth, int nHeight, void* pPixels, void* pEXIFData, 
 	m_bUnsharpMaskParamsValid = false;
 	m_bIsThumbnailImage = bIsThumbnailImage;
 	m_pCachedProcessedHistogram = NULL;
-
 	m_sSourceFile = _T("");
 	m_cacheFileSize = 0;
 	memset(&m_cacheFileModTime, 0, sizeof(FILETIME));
 	m_cacheFileValid = false;
-
 	m_bCropped = false;
 	m_bIsDestructivelyProcessed = false;
 	m_bIsProcessedNoParamDB = false;
@@ -140,20 +205,24 @@ CJPEGImage::CJPEGImage(int nWidth, int nHeight, void* pPixels, void* pEXIFData, 
 	m_dRotationLQ = 0.0;
 	m_bTrapezoidValid = false;
 
-	// Create the LDC object on the image
+	// LDC 생성. SamplePoint 기반이므로 전체 디코드 없이 동작한다.
 	m_pLDC = (pLDC == NULL) ? (new CLocalDensityCorr(*this, true)) : pLDC;
 	m_bLDCOwned = pLDC == NULL;
 	if (nJPEGHash == 0) {
-		// Use the decompressed pixel hash in this case
 		m_nPixelHash = m_pLDC->GetPixelHash();
 	}
 	m_fLightenShadowFactor = (1.0f - m_pLDC->GetHistogram()->IsNightShot())*(1.0f - m_pLDC->IsSunset());
-
-	// Initialize to INI value, may be overriden later by parameter DB
 	memcpy(m_fColorCorrectionFactors, CSettingsProvider::This().ColorCorrectionAmounts(), sizeof(m_fColorCorrectionFactors));
 }
 
 CJPEGImage::~CJPEGImage(void) {
+	delete m_pPyramid;
+	m_pPyramid = NULL;
+	if (m_pSourceData != NULL) {
+		m_pSourceData->Release();
+		delete m_pSourceData;
+		m_pSourceData = NULL;
+	}
 	delete[] m_pOrigPixels;
 	m_pOrigPixels = NULL;
 	delete[] m_pDIBPixels;
@@ -569,7 +638,7 @@ void* CJPEGImage::Resample(CSize fullTargetSize, CSize clippingSize, CPoint targ
 
 EFilterType filter = CSettingsProvider::This().DownsamplingFilter();
 
-if (fullTargetSize.cx > 65535 || fullTargetSize.cy > 65535) return NULL;
+if (fullTargetSize.cx > MAX_IMAGE_DIMENSION || fullTargetSize.cy > MAX_IMAGE_DIMENSION) return NULL;
 
 if (GetProcessingFlag(eProcFlags, PFLAG_HighQualityResampling) && 
     !(eResizeType == NoResize && (filter == Filter_Downsampling_Best_Quality || filter == Filter_Downsampling_No_Aliasing))) {

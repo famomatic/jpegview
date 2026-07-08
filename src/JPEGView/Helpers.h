@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ImageProcessingTypes.h"
+#include "MaxImageDef.h"
 
 class CJPEGImage;
 class CFileList;
@@ -86,8 +87,8 @@ namespace Helpers {
 	const double ZoomMin = DBL_MIN; // unbound the minimum zoom, previously set at 0.1 (10%)
 
 	// this is specified all over the code as the maximum image dimension that one side can be
-	// this particular variable will have limited usage, but is used to reflect that limitation.  DO NOT CHANGE
-	const int MAX_IMAGE_DIMENSION = 65535;
+	// x64 빌드에서는 리샘플러 64비트 고정소수점 + 부분 로딩으로 제한 해제.
+	// MaxImageDef.h에서 정의됨.
 
 	// Round to integer
 	inline int RoundToInt(double d) {

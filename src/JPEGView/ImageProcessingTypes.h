@@ -14,6 +14,18 @@ typedef signed int int32;
 /// unsigned 32 bit integer value
 typedef unsigned int uint32;
 
+// 고정소수점 리샘플링 산술용 정수 타입.
+// x64 빌드에서는 초고화질 이미지(차원 > 65535)를 지원하기 위해 64비트를 쓰고,
+// x86 빌드에서는 MAX_IMAGE_DIMENSION=65535 제한이 유지되므로 32비트로 충분하다.
+// x86에서 uint64 연산은 에뮬레이션으로 느리므로 플랫폼별로 분기한다.
+#ifdef _WIN64
+typedef unsigned long long uintfp;
+typedef long long intfp;
+#else
+typedef unsigned int uintfp;
+typedef int intfp;
+#endif
+
 enum EFilterType {
 	Filter_Downsampling_Best_Quality,  // prefer this filter for sampling down
 	Filter_Downsampling_No_Aliasing, // this is a Lanczos type filter
