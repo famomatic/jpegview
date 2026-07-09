@@ -1,6 +1,123 @@
 JPEGView Changelog
 ******************
 
+[1.5]
+New features:
+- Add on-disk thumbnail cache (CThumbnailCache) so revisiting a file is instant
+  Downsampled preview images are persisted under %TEMP%\JPEGView\thumbcache\.
+  Cache key is derived from file path + size + mtime, so edits auto-invalidate.
+  Original dimensions are stored in PNG text chunks; a format signature guards
+  against stale entries. Size-based LRU eviction keeps the cache within budget.
+  SaveImage invalidates the destination file's cache entry after save.
+  INI settings: ThumbnailCacheEnabled (default true),
+  ThumbnailCacheMaxMB (default 200, range 8-8192).
+- Add processing presets, pixel/color probe, view bookmarks, lossless JPEG
+  optimize, and configurable read-ahead prefetch, wired into a new Tools submenu
+  Presets store named processing-parameter sets (contrast, gamma, sharpen, color
+  balance, LDC, rotation, flags) to an INI file in AppData, distinct from the
+  per-image hash-keyed ParamDB. The pixel probe overlays a live RGB + HSV
+  readout of the pixel under the cursor. View bookmarks store zoom+offset in
+  one of 9 slots. Lossless JPEG optimize re-encodes via the existing transform
+  path (rotate 180 twice = identity re-encode) to shrink file size with no
+  quality loss. ReadAheadBuffers INI setting (default 2, range 1-8) replaces
+  the hardcoded READ_AHEAD_BUFFERS constant.
+- Add live background switching for transparent images (black/white/checkerboard)
+  The alpha channel is now preserved end-to-end instead of being flattened onto
+  a single background color at load time, so the viewer background can be
+  switched live. The B key cycles black -> white -> checkerboard; the context
+  menu gains a Background submenu with radio check. New BackgroundMode INI
+  setting. PNG/WEBP/JXL/AVIF/HEIF/SVG/DDS/JP2/JXR/PSD/TGA all preserve alpha.
+- Add D3D11 GPU image-processing backend (optional, off by default)
+  A compute-shader backend for the hot processing passes (resampling, unsharp
+  mask, LDC, 3-channel LUT, separable Gauss), gated by EnableGPUImageProcessing
+  (default off). Falls back to the CPU path automatically when no FL 11_0
+  adapter is available or a pass fails, so image output is never affected.
+- Add libtiff-backed TIFF reader with BigTIFF support
+  Replaces the GDI+/WIC fallback. Decodes classic TIFF and BigTIFF (> 4 GB),
+  all compression modes (LZW, PackBits, Deflate, JPEG, CCITT), tiled and
+  stripped layouts, 8/16/32-bit per sample, and multi-page documents.
+- Add ultra-high-res image support via lazy partial loading
+  A new IImageSourceData abstraction lets CJPEGImage hold a lazy source instead
+  of always owning the full pixel buffer. For TIFF, only the strips/tiles
+  covering the viewport are decoded, so multi-gigabyte images load in ~47 MB
+  instead of multiple GB. Supports embedded IFD pyramid detection with an
+  on-the-fly downsampling fallback. MAX_IMAGE_DIMENSION is raised to 1,000,000
+  on x64. Tested on 1.7 GB and 3.6 GB TIFFs.
+Changed behavior:
+- Replace the three legacy SIMD resampling implementations (SSE intrinsics,
+  MMX inline _asm, AVX intrinsics) with a single google/highway-backed
+  implementation that runtime-dispatches SSE2/AVX2. The fixed-point arithmetic
+  is preserved bit-for-bit. CXMMImage is extended to a 4-channel (BGRA) planar
+  layout so alpha is filtered with the same high-quality kernel as RGB, instead
+  of being point-sampled separately. The AVX-only kernel format and the MMX
+  _asm path are removed; Highway requires at least SSE2.
+- Replace inline _asm in ProbeCPU with compiler intrinsics (CPUID/__cpuidex/
+  _xgetbv), merging the x86 and x64 implementations into one. Inline _asm is
+  not supported by the MSVC x64 compiler.
+- Uncap the CPU core limit; CPUCoresUsed now allows 1-64 or 0 (auto-detect,
+  uncapped) instead of the legacy hard cap of 4, so modern multi-core machines
+  are fully used.
+- Move test sources into a dedicated tests/ directory, gated behind a new
+  JPEGVIEW_BUILD_TESTS CMake option (default OFF). Release builds no longer
+  emit any *Test.exe; Debug presets and CI enable the option so tests still
+  build and run under ctest.
+- Gate ShaderDiag behind a new JPEGVIEW_BUILD_SHADER_DIAG option (default OFF)
+  so it never appears in release output trees.
+- Switch the fixed-point resampling arithmetic to platform-typed uintfp/intfp
+  so x64 uses 64-bit fixed point (needed for dimensions > 65535) while x86
+  keeps 32-bit at no perf cost.
+Bugs fixed:
+- Fix 4-channel (BGRA) HQ resampling: tempImage used a 4-arg ctor that silently
+  coerced the channel count to bool (alpha plane write ran off the buffer);
+  planar padding granularity bumped to 16 for AVX2 bounds; RotateBlockToDIB's
+  per-pixel dest advance was hard-coded for 3 channels, corrupting the next
+  column's B/G/R on 4-channel sources.
+- Fix crashes, race conditions, and logic bugs across thumbnail cache,
+  presets, and CPU probe: guard ProcessImageAfterLoad against NULL image,
+  serialize ProbeCPU with std::call_once, add mutexes to CThumbnailCache and
+  CProcessingPresets, replace DialogBox(NULL,...) with a reentrant
+  DialogBoxIndirectParam dialog, unify bookmark slot array with
+  NUM_BOOKMARKSLOTS, and make OptimizeLosslessJPEG back up the original
+  before replace.
+- Fix ctest SKIP_RETURN_CODE: it was being passed as an add_test() argument
+  and recorded as part of the test command, so exit 77 was treated as a
+  failure instead of a skip. Moved to set_tests_properties().
+- Fix image-open/render crashes: uninitialized CJPEGImage members
+  (m_pEXIFReader, m_pRawMetadata, m_nOrigWidth/Height) caused GetRotationFromEXIF
+  to read garbage; CTiffLazySource's TIFFGetFieldDefaulted crashed in Release
+  via va_list forwarding; SampleHQ_Core downsampling increment had an
+  operator-precedence bug ('a << 16 / b + 1') causing AVX2 OOB reads.
+- Fix NavBar diagonal shearing in Release (/O2): GDI AlphaBlend() mis-reads the
+  source bitmap stride under /O2, producing a diagonal band over the nav panel.
+  Replaced with a manual 32bpp BGRA constant-alpha blend in both the static
+  paint and fade-animation paths.
+- Fix GPU blit diagonal shearing: BlitImageToMemDC passed the visible sub-rect
+  width as both source size and source stride to DrawBGRA, but the real source
+  stride is the full DIB row width. Added a srcStride parameter (default 0 =
+  tightly packed for back-compat) and pass bitmapSize.cx*4 from the caller.
+- Fix JPEGProvider race: guard the request list with a critical section,
+  duplicate the wait event handle so a concurrent ClearRequest can't close it
+  under a blocked waiter, and run StartNewRequestBundle/
+  StartRequestAndWaitUntilReady outside the provider lock to avoid deadlock.
+- Fix x86 build: the Win32 preset was missing VCPKG_OVERLAY_PORTS so vcpkg used
+  the upstream openjph port whose AVX2 encoder hits an MSVC ICE on 32-bit.
+  Also pin CMAKE_GENERATOR_INSTANCE to the VS 2022 Community install so the
+  ATL workload (atlbase.h) is found.
+Other changes:
+- Added vcpkg dependency: tiff (with jpeg feature)
+- google/highway linked directly via hwy::hwy (already a transitive vcpkg
+  dependency of libjxl, so only a link line is added)
+- New modules: TIFFWrapper, CThumbnailCache, CProcessingPresets,
+  IImageProcessor abstraction (CpuImageProcessor/GpuImageProcessor),
+  CGpuDevice, GpuShaders, GpuTextureHelpers, CGpuRenderTarget,
+  IImageSourceData, CFullBufferSource, CTiffLazySource, CImagePyramid
+- CI: new .github/workflows/ci-test.yml running ctest on every push/PR; GPU
+  tests skip cleanly (exit 77) on headless runners
+- New INI settings: ThumbnailCacheEnabled, ThumbnailCacheMaxMB,
+  ReadAheadBuffers, BackgroundMode, EnableGPUImageProcessing; new build
+  options JPEGVIEW_BUILD_TESTS, JPEGVIEW_BUILD_SHADER_DIAG
+- KeyMap/symbols updated (B key cycles background mode)
+
 [1.4]
 New features:
 - Add support for SVG and SVGZ (vector format, rasterized via NanoSVG)
@@ -929,6 +1046,5 @@ Other changes:
 
 [1.0.12] 2007-05-08
 First release to public
-
 
 
