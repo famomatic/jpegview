@@ -7,6 +7,7 @@
 #include "ProcessParams.h"
 #include "Helpers.h"
 #include "CropCtl.h"
+#include <list>
 
 class CFileList;
 class CJPEGProvider;
@@ -294,6 +295,12 @@ private:
 	static const int NUM_BOOKMARKSLOTS = 9;
 	ViewBookmark m_bookmarks[NUM_BOOKMARKSLOTS];
 	bool m_bShowFileName;
+
+	// Zoom/pan history stack — push on navigation/zoom, pop on IDM_ZOOM_HISTORY_BACK.
+	struct ZoomHistoryEntry { double zoom; CPoint offset; };
+	std::list<ZoomHistoryEntry> m_zoomHistory;
+	void PushZoomHistory();
+	void PopZoomHistory();
 	bool m_bFullScreenMode;
 	bool m_bAutoFitWndToImage;
 	bool m_bLockPaint;
@@ -347,6 +354,10 @@ private:
 	bool SaveImage(bool bFullSize);
 	bool SaveImageNoPrompt(LPCTSTR sFileName, bool bFullSize);
 	void BatchCopy();
+	void BatchConvert();
+	void EditEXIF();
+	void SmartCrop();
+	void ShowFavoriteFolders();
 	void SetAsDefaultViewer();
 	void HandleUserCommands(uint32 virtualKeyCode);
 	void ExecuteUserCommand(CUserCommand* pUserCommand);

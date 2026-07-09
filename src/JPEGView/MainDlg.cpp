@@ -25,6 +25,8 @@
 #include "TimerEventIDs.h"
 #include "FileOpenDialog.h"
 #include "BatchCopyDlg.h"
+#include "BatchConvertDlg.h"
+#include "EXIFEditDlg.h"
 #include "FileExtensionsDlg.h"
 #include "FileExtensionsRegistry.h"
 #include "ManageOpenWithDlg.h"
@@ -1476,6 +1478,14 @@ void CMainDlg::ExecuteCommand(int nCommand) {
 				CClipboard::CopyPathToClipboard(this->m_hWnd, m_pCurrentImage, m_pFileList->Current());
 			}
 			break;
+		case IDM_COPY_EXIF_INFO:
+			if (m_pCurrentImage != NULL) {
+				CString sEXIFInfo = m_pCurrentImage->GetEXIFInfoText();
+				if (!sEXIFInfo.IsEmpty()) {
+					CClipboard::CopyTextToClipboard(this->m_hWnd, sEXIFInfo);
+				}
+			}
+			break;
 		case IDM_PASTE:
 			if (::IsClipboardFormatAvailable(CF_DIB)) {
 				GotoImage(POS_Clipboard);
@@ -1485,6 +1495,27 @@ void CMainDlg::ExecuteCommand(int nCommand) {
 			if (m_pCurrentImage != NULL) {
 				BatchCopy();
 			}
+			break;
+		case IDM_BATCH_CONVERT:
+			if (m_pCurrentImage != NULL) {
+				BatchConvert();
+			}
+			break;
+		case IDM_EXIF_EDIT:
+			if (m_pCurrentImage != NULL) {
+				EditEXIF();
+			}
+			break;
+		case IDM_ZOOM_HISTORY_BACK:
+			PopZoomHistory();
+			break;
+		case IDM_SMART_CROP:
+			if (m_pCurrentImage != NULL) {
+				SmartCrop();
+			}
+			break;
+		case IDM_FAV_FOLDERS:
+			ShowFavoriteFolders();
 			break;
 		case IDM_RENAME:
 			m_pImageProcPanelCtl->EnterRenameCurrentFile();
@@ -2267,6 +2298,9 @@ bool CMainDlg::OpenFileWithDialog(bool bFullScreen, bool bAfterStartup) {
 void CMainDlg::OpenFile(LPCTSTR sFileName, bool bAfterStartup) {
 	StopMovieMode();
 	StopAnimation();
+	if (m_pCurrentImage != NULL) {
+		PushZoomHistory();
+	}
 	// recreate file list based on image opened
 	Helpers::ESorting eOldSorting = m_pFileList->GetSorting();
 	bool oOldAscending = m_pFileList->IsSortedAscending();
@@ -2376,6 +2410,203 @@ void CMainDlg::BatchCopy() {
 	CBatchCopyDlg dlgBatchCopy(*m_pFileList);
 	dlgBatchCopy.DoModal();
 	this->Invalidate(FALSE);
+}
+
+void CMainDlg::BatchConvert() {
+	if (m_bMovieMode) {
+		return;
+	}
+	MouseOn();
+
+	CBatchConvertDlg dlgBatchConvert(*m_pFileList);
+	dlgBatchConvert.DoModal();
+	this->Invalidate(FALSE);
+}
+
+void CMainDlg::EditEXIF() {
+	if (m_bMovieMode) return;
+	if (m_pCurrentImage == NULL || m_pCurrentImage->IsClipboardImage()) return;
+	MouseOn();
+
+	LPCTSTR sFileName = CurrentFileName(false);
+	if (sFileName == NULL) return;
+
+	// Only JPEG files have editable EXIF
+	EImageFormat eFmt = Helpers::GetImageFormat(sFileName);
+	if (eFmt != IF_JPEG && eFmt != IF_JPEG_Embedded) {
+		::MessageBox(m_hWnd, CNLS::GetString(_T("EXIF editing is only supported for JPEG files.")),
+			CNLS::GetString(_T("EXIF Edit")), MB_OK | MB_ICONINFORMATION);
+		return;
+	}
+
+	CEXIFEditDlg dlgEdit(sFileName);
+	if (dlgEdit.DoModal() == IDOK) {
+		// Reload the image to reflect changes
+		ReloadImage(false);
+	}
+}
+
+void CMainDlg::PushZoomHistory() {
+	int nMax = CSettingsProvider::This().MaxZoomHistory();
+	if (nMax <= 0) return;
+	while ((int)m_zoomHistory.size() >= nMax) {
+		m_zoomHistory.pop_front();
+	}
+	m_zoomHistory.push_back(ZoomHistoryEntry{ m_dZoom, m_offsets });
+}
+
+void CMainDlg::PopZoomHistory() {
+	if (m_zoomHistory.empty()) return;
+	ZoomHistoryEntry entry = m_zoomHistory.back();
+	m_zoomHistory.pop_back();
+	m_dZoom = entry.zoom;
+	m_offsets = entry.offset;
+	m_dRealizedZoom = m_dZoom;
+	this->Invalidate(FALSE);
+}
+
+void CMainDlg::SmartCrop() {
+	if (m_bMovieMode || m_pCurrentImage == NULL) return;
+	MouseOn();
+
+	// Get the original pixels to detect borders
+	const void* pPixels = m_pCurrentImage->OriginalPixels();
+	if (pPixels == NULL) return;
+
+	int nW = m_pCurrentImage->OrigWidth();
+	int nH = m_pCurrentImage->OrigHeight();
+	int nChannels = m_pCurrentImage->OriginalChannels();
+	int nRowPadded = Helpers::DoPadding(nW * nChannels, 4);
+	const uint8* pSrc = (const uint8*)pPixels;
+
+	// Sample corner pixels to determine background color
+	uint8 bg[3] = { 0 };
+	int nSamples = 0;
+	int nMargin = min(min(nW, nH) / 20, 10);
+	for (int y = 0; y < nMargin; y++) {
+		for (int x = 0; x < nMargin; x++) {
+			const uint8* p = pSrc + y * nRowPadded + x * nChannels;
+			bg[0] += p[0]; bg[1] += p[1]; bg[2] += p[2]; nSamples++;
+		}
+	}
+	if (nSamples == 0) return;
+	bg[0] /= nSamples; bg[1] /= nSamples; bg[2] /= nSamples;
+
+	// Tolerance for "close to background"
+	const int nTolerance = 16;
+
+	// Find top border
+	int nTop = 0;
+	for (int y = 0; y < nH; y++) {
+		bool bRowIsBg = true;
+		for (int x = 0; x < nW; x += max(1, nW / 100)) {
+			const uint8* p = pSrc + y * nRowPadded + x * nChannels;
+			if (abs((int)p[0] - bg[0]) > nTolerance || abs((int)p[1] - bg[1]) > nTolerance || abs((int)p[2] - bg[2]) > nTolerance) {
+				bRowIsBg = false;
+				break;
+			}
+		}
+		if (!bRowIsBg) { nTop = y; break; }
+	}
+
+	// Find bottom border
+	int nBottom = nH - 1;
+	for (int y = nH - 1; y >= 0; y--) {
+		bool bRowIsBg = true;
+		for (int x = 0; x < nW; x += max(1, nW / 100)) {
+			const uint8* p = pSrc + y * nRowPadded + x * nChannels;
+			if (abs((int)p[0] - bg[0]) > nTolerance || abs((int)p[1] - bg[1]) > nTolerance || abs((int)p[2] - bg[2]) > nTolerance) {
+				bRowIsBg = false;
+				break;
+			}
+		}
+		if (!bRowIsBg) { nBottom = y; break; }
+	}
+
+	// Find left border
+	int nLeft = 0;
+	for (int x = 0; x < nW; x++) {
+		bool bColIsBg = true;
+		for (int y = 0; y < nH; y += max(1, nH / 100)) {
+			const uint8* p = pSrc + y * nRowPadded + x * nChannels;
+			if (abs((int)p[0] - bg[0]) > nTolerance || abs((int)p[1] - bg[1]) > nTolerance || abs((int)p[2] - bg[2]) > nTolerance) {
+				bColIsBg = false;
+				break;
+			}
+		}
+		if (!bColIsBg) { nLeft = x; break; }
+	}
+
+	// Find right border
+	int nRight = nW - 1;
+	for (int x = nW - 1; x >= 0; x--) {
+		bool bColIsBg = true;
+		for (int y = 0; y < nH; y += max(1, nH / 100)) {
+			const uint8* p = pSrc + y * nRowPadded + x * nChannels;
+			if (abs((int)p[0] - bg[0]) > nTolerance || abs((int)p[1] - bg[1]) > nTolerance || abs((int)p[2] - bg[2]) > nTolerance) {
+				bColIsBg = false;
+				break;
+			}
+		}
+		if (!bColIsBg) { nRight = x; break; }
+	}
+
+	// Check if there's anything to crop
+	if (nTop <= 0 && nBottom >= nH - 1 && nLeft <= 0 && nRight >= nW - 1) {
+		::MessageBox(m_hWnd, CNLS::GetString(_T("No borders detected to crop.")),
+			CNLS::GetString(_T("Smart Crop")), MB_OK | MB_ICONINFORMATION);
+		return;
+	}
+
+	// Set crop rectangle and enter crop mode
+	CRect cropRect(nLeft, nTop, nRight + 1, nBottom + 1);
+	m_pCropCtl->SetCropMode(CCropCtl::CM_Free);
+	m_pCropCtl->SetCropRectImageCoords(cropRect);
+	this->Invalidate(FALSE);
+}
+
+void CMainDlg::ShowFavoriteFolders() {
+	if (m_bMovieMode) return;
+	MouseOn();
+
+	// Simple approach: show a file open dialog to pick a folder
+	BROWSEINFO bi;
+	memset(&bi, 0, sizeof(bi));
+	bi.hwndOwner = m_hWnd;
+	bi.lpszTitle = CNLS::GetString(_T("Select a folder to open"));
+	bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_USENEWUI;
+	LPITEMIDLIST pidl = SHBrowseForFolder(&bi);
+	if (pidl != NULL) {
+		TCHAR szPath[MAX_PATH];
+		if (SHGetPathFromIDList(pidl, szPath)) {
+			// Open the first image in the selected folder
+			CString sFileToOpen = szPath;
+			if (sFileToOpen.Right(1) != _T("\\")) sFileToOpen += _T("\\");
+			// Find first image file
+			CString sPattern = sFileToOpen + _T("*.*");
+			WIN32_FIND_DATA fd;
+			HANDLE hFind = ::FindFirstFile(sPattern, &fd);
+			bool bFound = false;
+			if (hFind != INVALID_HANDLE_VALUE) {
+				do {
+					if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+						CString sName = fd.cFileName;
+						EImageFormat eFmt = Helpers::GetImageFormat(sName);
+						if (eFmt != IF_Unknown && eFmt != IF_CLIPBOARD) {
+							sFileToOpen += sName;
+							bFound = true;
+							break;
+						}
+					}
+				} while (::FindNextFile(hFind, &fd));
+				::FindClose(hFind);
+			}
+			if (bFound) {
+				OpenFile(sFileToOpen, false);
+			}
+		}
+		CoTaskMemFree(pidl);
+	}
 }
 
 void CMainDlg::SetAsDefaultViewer() {
@@ -2536,6 +2767,11 @@ void CMainDlg::GotoImage(EImagePosition ePos, int nFlags) {
 	} else if (ePos != POS_NextAnimation) {
 		StopMovieMode();
 		StopAnimation();
+	}
+
+	// Save current zoom/pan state for zoom history before navigating
+	if (m_pCurrentImage != NULL) {
+		PushZoomHistory();
 	}
 
 	m_pCropCtl->CancelCropping(); // cancel any running crop

@@ -306,6 +306,9 @@ public:
 	// Gets the EXIF reader for this image if the image contains EXIF data, NULL if not.
 	CEXIFReader* GetEXIFReader() { return m_pEXIFReader; }
 
+	// Returns a multi-line text summary of EXIF metadata (for clipboard copy).
+	CString GetEXIFInfoText();
+
 	// Gets the image format this image has originally
 	EImageFormat GetImageFormat() const { return m_eImageFormat; }
 

@@ -42,6 +42,10 @@ public:
 	void SetCropMode(CropMode eMode) { m_eCropMode = eMode; }
 	//CropMode GetCropMode() { return m_eCropMode; }
 
+	// Set the crop rectangle directly (in image coordinates). Enables smart-crop
+	// to place a crop rectangle without requiring a mouse drag.
+	void SetCropRectImageCoords(const CRect& rect);
+
 	void OnPaint(CPaintDC& dc); // paints cropping rectangle when in cropping
 	bool OnTimer(int nTimerId);
 

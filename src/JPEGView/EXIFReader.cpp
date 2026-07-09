@@ -523,6 +523,20 @@ void CEXIFReader::DeleteThumbnail() {
 	}
 }
 
+bool CEXIFReader::RemoveGPSData() {
+	// Zero the GPS IFD offset tag (0x8825) in IFD0 so the GPS sub-IFD becomes
+	// unreachable. The APP1 block size stays the same; the GPS bytes remain in
+	// the file but no reader will follow the pointer.
+	if (m_pApp1 == NULL || m_pLastIFD0 == NULL) return false;
+	uint8* pTIFFHeader = m_pApp1 + 10;
+	uint8* pIFD0 = pTIFFHeader + ReadUInt(pTIFFHeader + 4, m_bLittleEndian);
+	uint8* pTagGPSIFD = FindTag(pIFD0, m_pLastIFD0, 0x8825, m_bLittleEndian);
+	if (pTagGPSIFD == NULL) return false;
+	// The tag value is a LONG offset at bytes 8..11 of the 12-byte IFD entry.
+	WriteLongTag(pTagGPSIFD, 0, m_bLittleEndian);
+	return true;
+}
+
 void CEXIFReader::UpdateJPEGThumbnail(unsigned char* pJPEGStream, int nStreamLen, int nEXIFBlockLenCorrection, CSize sizeThumb) {
 	if (!m_bHasJPEGCompressedThumbnail) {
 		return;

@@ -5,6 +5,8 @@ add_executable(JPEGView WIN32
     AVIFWrapper.cpp
     BasicProcessing.cpp
     BatchCopyDlg.cpp
+    BatchConvertDlg.cpp
+    EXIFEditDlg.cpp
     Clipboard.cpp
     CropCtl.cpp
     CropSizeDlg.cpp

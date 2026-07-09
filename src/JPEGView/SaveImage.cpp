@@ -9,6 +9,9 @@
 #include "TJPEGWrapper.h"
 #include "WEBPWrapper.h"
 #include "QOIWrapper.h"
+#include "JXLWrapper.h"
+#include "AVIFWrapper.h"
+#include "HEIFWrapper.h"
 #include "ThumbnailCache.h"
 #include <gdiplus.h>
 
@@ -323,6 +326,63 @@ static bool SaveTGA(LPCTSTR sFileName, void* pData, int nWidth, int nHeight) {
 	return true;
 }
 
+// pData must point to 24 bit BGR DIB
+static bool SaveJXL(LPCTSTR sFileName, void* pData, int nWidth, int nHeight) {
+	FILE* fptr = _tfopen(sFileName, _T("wb"));
+	if (fptr == NULL) return false;
+	bool bSuccess = false;
+	try {
+		size_t nSize;
+		int nQuality = CSettingsProvider::This().JXLSaveQuality();
+		void* pOutput = JxlReader::Compress(pData, nWidth, nHeight, nSize, nQuality);
+		if (pOutput) {
+			bSuccess = fwrite(pOutput, 1, nSize, fptr) == nSize;
+			free(pOutput);
+		}
+	} catch (...) {}
+	fclose(fptr);
+	if (!bSuccess) { _tunlink(sFileName); return false; }
+	return true;
+}
+
+// pData must point to 24 bit BGR DIB
+static bool SaveAVIF(LPCTSTR sFileName, void* pData, int nWidth, int nHeight) {
+	FILE* fptr = _tfopen(sFileName, _T("wb"));
+	if (fptr == NULL) return false;
+	bool bSuccess = false;
+	try {
+		size_t nSize;
+		int nQuality = CSettingsProvider::This().AVIFSaveQuality();
+		void* pOutput = AvifReader::Compress(pData, nWidth, nHeight, nSize, nQuality);
+		if (pOutput) {
+			bSuccess = fwrite(pOutput, 1, nSize, fptr) == nSize;
+			free(pOutput);
+		}
+	} catch (...) {}
+	fclose(fptr);
+	if (!bSuccess) { _tunlink(sFileName); return false; }
+	return true;
+}
+
+// pData must point to 24 bit BGR DIB
+static bool SaveHEIF(LPCTSTR sFileName, void* pData, int nWidth, int nHeight) {
+	FILE* fptr = _tfopen(sFileName, _T("wb"));
+	if (fptr == NULL) return false;
+	bool bSuccess = false;
+	try {
+		size_t nSize;
+		int nQuality = CSettingsProvider::This().HEIFSaveQuality();
+		void* pOutput = HeifReader::Compress(pData, nWidth, nHeight, nSize, nQuality);
+		if (pOutput) {
+			bSuccess = fwrite(pOutput, 1, nSize, fptr) == nSize;
+			free(pOutput);
+		}
+	} catch (...) {}
+	fclose(fptr);
+	if (!bSuccess) { _tunlink(sFileName); return false; }
+	return true;
+}
+
 // Copied from MS sample
 static int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
    UINT  num = 0;          // number of image encoders
@@ -445,6 +505,12 @@ bool CSaveImage::SaveImage(LPCTSTR sFileName, CJPEGImage * pImage, const CImageP
 			bSuccess = SaveQOI(sFileName, pDIB24bpp, imageSize.cx, imageSize.cy);
 		} else if (eFileFormat == IF_TGA) {
 			bSuccess = SaveTGA(sFileName, pDIB24bpp, imageSize.cx, imageSize.cy);
+		} else if (eFileFormat == IF_JXL) {
+			bSuccess = SaveJXL(sFileName, pDIB24bpp, imageSize.cx, imageSize.cy);
+		} else if (eFileFormat == IF_AVIF) {
+			bSuccess = SaveAVIF(sFileName, pDIB24bpp, imageSize.cx, imageSize.cy);
+		} else if (eFileFormat == IF_HEIF) {
+			bSuccess = SaveHEIF(sFileName, pDIB24bpp, imageSize.cx, imageSize.cy);
 		} else {
 			bSuccess = SaveGDIPlus(sFileName, eFileFormat, pDIB24bpp, imageSize.cx, imageSize.cy);
 		}

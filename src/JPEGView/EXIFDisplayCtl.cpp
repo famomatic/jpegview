@@ -117,6 +117,17 @@ void CEXIFDisplayCtl::FillEXIFDataDisplay() {
 	m_pEXIFDisplay->AddTitle(sFileTitle);
 	m_pEXIFDisplay->AddLine(CNLS::GetString(_T("Image width:")), CurrentImage()->OrigWidth());
 	m_pEXIFDisplay->AddLine(CNLS::GetString(_T("Image height:")), CurrentImage()->OrigHeight());
+	if (CSettingsProvider::This().ShowMemoryUsage()) {
+		// Show estimated memory: full image in BGRA vs decoded region
+		__int64 nFullBytes = (__int64)CurrentImage()->OrigWidth() * CurrentImage()->OrigHeight() * 4;
+		CString sMem;
+		if (nFullBytes < 1024 * 1024) {
+			sMem.Format(_T("%.0f KB"), nFullBytes / 1024.0);
+		} else {
+			sMem.Format(_T("%.1f MB"), nFullBytes / (1024.0 * 1024.0));
+		}
+		m_pEXIFDisplay->AddLine(CNLS::GetString(_T("Full image memory:")), sMem);
+	}
 	if (!CurrentImage()->IsClipboardImage()) {
 		CEXIFReader* pEXIFReader = CurrentImage()->GetEXIFReader();
 		CRawMetadata* pRawMetaData = CurrentImage()->GetRawMetadata();

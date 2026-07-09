@@ -146,6 +146,16 @@ public:
 	bool WindowBorderlessOnStartup() { return m_bWindowBorderlessOnStartup; }
 	bool WindowAlwaysOnTopOnStartup() { return m_bWindowAlwaysOnTopOnStartup; }
 
+	// --- New feature accessors ---
+	bool ShowMemoryUsage() { return m_bShowMemoryUsage; }
+	bool ExplorerThumbnailProvider() { return m_bExplorerThumbnailProvider; }
+	int  JXLSaveQuality() { return m_nJXLSaveQuality; }
+	int  AVIFSaveQuality() { return m_nAVIFSaveQuality; }
+	int  HEIFSaveQuality() { return m_nHEIFSaveQuality; }
+	int  BatchConvertQuality() { return m_nBatchConvertQuality; }
+	bool ShowPixelProbeByDefault() { return m_bShowPixelProbeByDefault; }
+	int  MaxZoomHistory() { return m_nMaxZoomHistory; }
+
 	double ZoomPauseFactor() { return m_zoomPauseFactor; }  // while internally this is represented in doubles, using a whole number percent simplifies it for the user... configuring doubles is not user friendly at all
 
 	// Returns if a user INI file exists
@@ -321,6 +331,16 @@ private:
 	int m_zoomPauseFactor;
 	bool m_bWindowBorderlessOnStartup;
 	bool m_bWindowAlwaysOnTopOnStartup;
+
+	// --- New feature settings ---
+	bool m_bShowMemoryUsage;        // show decoded/total memory in file info panel
+	bool m_bExplorerThumbnailProvider; // register as Windows thumbnail provider
+	int  m_nJXLSaveQuality;         // quality for JXL save (0-100, -1=lossless)
+	int  m_nAVIFSaveQuality;        // quality for AVIF save (0-100)
+	int  m_nHEIFSaveQuality;        // quality for HEIF save (0-100)
+	int  m_nBatchConvertQuality;    // default quality for batch convert
+	bool m_bShowPixelProbeByDefault; // show pixel probe on startup
+	int  m_nMaxZoomHistory;         // max zoom/pan history entries (0=disable)
 
 	std::list<CUserCommand*> m_userCommands;
 	std::list<CUserCommand*> m_openWithCommands;

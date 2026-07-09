@@ -35,6 +35,50 @@
 #define IDC_SELECTNONE 1014
 #define IDC_RESULT 1015
 
+// Batch Convert dialog
+#define IDD_BATCHCONVERT 1100
+#define IDC_BC_LIST 1101
+#define IDC_BC_FORMAT 1102
+#define IDC_BC_QUALITY 1103
+#define IDC_BC_QUALITY_LBL 1104
+#define IDC_BC_DEST 1105
+#define IDC_BC_DEST_LBL 1106
+#define IDC_BC_BROWSE 1107
+#define IDC_BC_CONVERT 1108
+#define IDC_BC_CANCEL 1109
+#define IDC_BC_SELECTALL 1110
+#define IDC_BC_SELECTNONE 1111
+#define IDC_BC_PROGRESS 1112
+#define IDC_BC_STATUS 1113
+#define IDC_BC_KEEP_ORIG 1114
+#define IDC_BC_RESIZE 1115
+#define IDC_BC_RESIZE_LBL 1116
+#define IDC_BC_MAXWIDTH 1117
+#define IDC_BC_MAXHEIGHT 1118
+
+// EXIF Edit dialog
+#define IDD_EXIFEDIT 1200
+#define IDC_EE_DATE 1201
+#define IDC_EE_DATE_LBL 1202
+#define IDC_EE_TIME 1203
+#define IDC_EE_TIME_LBL 1204
+#define IDC_EE_GPS 1205
+#define IDC_EE_ORIENTATION 1206
+#define IDC_EE_ORIENTATION_LBL 1207
+#define IDC_EE_APPLY 1208
+#define IDC_EE_CANCEL 1209
+
+// Compare dialog
+#define IDD_COMPARE 1300
+
+// Favorite folders dialog
+#define IDD_FAVFOLDERS 1400
+#define IDC_FF_LIST 1401
+#define IDC_FF_ADD 1402
+#define IDC_FF_REMOVE 1403
+#define IDC_FF_OPEN 1404
+#define IDC_FF_CANCEL 1405
+
 #define IDD_SETFILEEXTENSIONS 1500
 #define IDC_FILEEXTENSIONS 1001
 #define IDC_HINT_FILE_EXT 1002
@@ -357,9 +401,18 @@
  #define IDM_TOGGLE_BACKGROUND     17350  // :KeyMap: cycle image background black -> white -> checkerboard
  #define IDM_BACKGROUND_BLACK      17351
  #define IDM_BACKGROUND_WHITE      17352
- #define IDM_BACKGROUND_CHECKERBOARD 17353
+#define IDM_BACKGROUND_CHECKERBOARD 17353
 
- // Next default values for new objects
+// New feature command IDs
+#define IDM_BATCH_CONVERT          17400  // :KeyMap: batch convert images in folder
+#define IDM_EXIF_EDIT              17450  // :KeyMap: edit EXIF metadata (date, GPS, orientation)
+#define IDM_COMPARE_TOGGLE         17500  // :KeyMap: toggle A/B image compare mode
+#define IDM_ZOOM_HISTORY_BACK      17550  // :KeyMap: go back to previous zoom/pan position
+#define IDM_SMART_CROP             17600  // :KeyMap: auto-detect and crop image borders
+#define IDM_FAV_FOLDERS            17650  // :KeyMap: open favorite/recent folders dialog
+#define IDM_COPY_EXIF_INFO         17700  // :KeyMap: copy EXIF info text to clipboard
+
+// Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS

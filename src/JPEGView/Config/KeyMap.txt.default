@@ -82,3 +82,9 @@ T                       IDM_ROTATE_270_LOSSLESS_CONFIRM
 W                       IDM_EXPLORE
 B                       IDM_TOGGLE_BACKGROUND
 Shift+F12               IDM_ALWAYS_ON_TOP
+Ctrl+Shift+B            IDM_BATCH_CONVERT
+Ctrl+E                  IDM_EXIF_EDIT
+Ctrl+Shift+V            IDM_COPY_EXIF_INFO
+Alt+Z                   IDM_ZOOM_HISTORY_BACK
+Ctrl+Shift+A            IDM_SMART_CROP
+Ctrl+Shift+O            IDM_FAV_FOLDERS

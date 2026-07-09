@@ -171,3 +171,28 @@ void CClipboard::DoCopyFileNameText(HWND hWnd, LPCTSTR fileName) {
 
 	::CloseClipboard();
 }
+
+void CClipboard::CopyTextToClipboard(HWND hWnd, LPCTSTR sText) {
+	if (sText == NULL || sText[0] == 0) return;
+	if (!::OpenClipboard(hWnd)) return;
+	::EmptyClipboard();
+
+	// Copy as Unicode text
+	int nLen = (int)_tcslen(sText);
+	HGLOBAL hMem = ::GlobalAlloc(GMEM_MOVEABLE, (nLen + 1) * sizeof(TCHAR));
+	if (hMem != NULL) {
+		TCHAR* pMem = (TCHAR*)::GlobalLock(hMem);
+		if (pMem != NULL) {
+			_tcscpy(pMem, sText);
+			::GlobalUnlock(hMem);
+#ifdef _UNICODE
+			::SetClipboardData(CF_UNICODETEXT, hMem);
+#else
+			::SetClipboardData(CF_TEXT, hMem);
+#endif
+		} else {
+			::GlobalFree(hMem);
+		}
+	}
+	::CloseClipboard();
+}

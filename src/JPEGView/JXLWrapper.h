@@ -20,6 +20,10 @@ public:
 
 	static void DeleteCache();
 
+	// Compress 24-bit BGR DIB (padded to 4-byte boundary) into a JPEG XL stream.
+	// quality: 0-100 for lossy, -1 for lossless. Returns malloc'd buffer (caller frees with free()).
+	static void* Compress(const void* pBGRData, int nWidth, int nHeight, size_t& nSize, int nQuality);
+
 private:
 	struct jxl_cache;
 	static jxl_cache cache;

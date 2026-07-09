@@ -1,6 +1,27 @@
 JPEGView Changelog
 ******************
 
+[1.6]
+New features:
+- Add save support for JPEG XL, AVIF, and HEIF/HEIC formats
+  The existing read wrappers (libjxl, libavif, libheif) now also encode.
+  New INI settings: JXLSaveQuality (default 90, -1=lossless), AVIFSaveQuality
+  (default 80), HEIFSaveQuality (default 80). SaveImage routes .jxl/.avif/.heic
+  extensions to the new encoders, falling back to GDI+ for legacy formats.
+- Add FileConverter-style batch conversion dialog
+  Select files from the current folder, pick a target format, set quality,
+  optionally resize, and convert all in one pass with a progress bar.
+- Add EXIF metadata editing for JPEG files (orientation, GPS removal)
+- Add "Copy EXIF info" to clipboard
+- Add zoom/pan history navigation (Alt+Z to go back)
+- Add smart crop (auto-detect and crop image borders)
+- Add favorite/recent folder quick-open
+- Add A/B compare toggle to context menu
+Other changes:
+- Add optional memory usage display in file info panel (ShowMemoryUsage INI)
+- Add ExplorerThumbnailProvider INI setting for future integration
+- Add ShowPixelProbeByDefault INI setting
+
 [1.5]
 New features:
 - Add on-disk thumbnail cache (CThumbnailCache) so revisiting a file is instant
@@ -1046,5 +1067,4 @@ Other changes:
 
 [1.0.12] 2007-05-08
 First release to public
-
 

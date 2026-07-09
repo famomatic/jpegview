@@ -111,6 +111,11 @@ public:
 	// Delete the thumbnail image
 	// Writes to the APP1 block passed in constructor.
 	void DeleteThumbnail();
+
+	// Remove GPS data by zeroing the GPS IFD pointer in IFD0.
+	// The GPS sub-IFD becomes unreachable but the APP1 block size is unchanged.
+	// Returns true if GPS data was present and removed.
+	bool RemoveGPSData();
 public:
 	// unknown double value
 	static double UNKNOWN_DOUBLE_VALUE;

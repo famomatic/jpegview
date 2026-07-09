@@ -89,6 +89,15 @@ void CCropCtl::SetCropRectAR(CSize sizeAR) {
 	m_sizeCropRectAspectRatio.cy = sizeAR.cy;
 }
 
+void CCropCtl::SetCropRectImageCoords(const CRect& rect) {
+	m_cropStart = CPoint(rect.left, rect.top);
+	m_cropEnd = CPoint(rect.right, rect.bottom);
+	m_bCropping = true;
+	m_bDoCropping = true;
+	m_bDoTracking = false;
+	NormalizeCroppingRect();
+}
+
 void CCropCtl::SetImageSize(CSize sizeImage) {
 #if _MSVC_LANG >= 201703L
 	int g = GCD(sizeImage.cx, sizeImage.cy);

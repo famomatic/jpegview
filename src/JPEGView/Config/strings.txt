@@ -474,3 +474,33 @@ Crop Mode
 Free	
 Fixed size...	
 Zoom to Selection	
+
+Batch convert...
+Batch Convert
+File name
+Size
+Select output folder
+No files selected for conversion.
+Convert %d files to %s format?
+Converting: %s
+Done. %d files converted, %d failed.
+Edit EXIF metadata...
+EXIF Edit
+Cannot open file.
+File too large or empty.
+No EXIF data found in this JPEG file.
+Remove GPS data
+No GPS data
+EXIF data updated successfully.
+Failed to write file.
+EXIF editing is only supported for JPEG files.
+Copy EXIF info
+Open favorite folder...
+Select a folder to open
+Smart crop borders...
+Smart Crop
+No borders detected to crop.
+Back to previous zoom
+Mark image for A/B compare
+Toggle to marked image
+Full image memory:

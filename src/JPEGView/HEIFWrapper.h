@@ -15,4 +15,8 @@ public:
 						 int frame_index, // index of requested frame
 						 const void *buffer, // memory address containing heic compressed data.
 						 int sizebytes); // size of heic compressed data.
+
+	// Compress 24-bit BGR DIB (padded to 4-byte boundary) into HEIF/HEIC.
+	// quality: 0-100. Returns malloc'd buffer (caller frees with free()).
+	static void* Compress(const void* pBGRData, int nWidth, int nHeight, size_t& nSize, int nQuality);
 };

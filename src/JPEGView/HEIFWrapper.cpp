@@ -97,3 +97,62 @@ void * HeifReader::ReadImage(int &width,
 
 	return (void*)pPixelData;
 }
+
+// Compress 24-bit BGR DIB (rows padded to 4-byte boundary) into HEIF/HEIC.
+// nQuality: 0-100. Returns malloc'd buffer (caller frees with free()).
+void* HeifReader::Compress(const void* pBGRData, int nWidth, int nHeight, size_t& nSize, int nQuality) {
+	nSize = 0;
+	if (pBGRData == NULL || nWidth <= 0 || nHeight <= 0) return NULL;
+
+	// Collect encoded bytes into a growable buffer via a custom Writer.
+	struct MemWriter : public heif::Context::Writer {
+		std::vector<uint8_t> buf;
+		heif_error write(const void* data, size_t size) override {
+			const uint8_t* p = (const uint8_t*)data;
+			buf.insert(buf.end(), p, p + size);
+			heif_error err; err.code = heif_error_Ok; err.subcode = heif_suberror_Unspecified; err.message = "";
+			return err;
+		}
+	};
+
+	void* pResult = NULL;
+	try {
+		heif::Context ctx;
+		heif::Encoder encoder(heif_compression_HEVC);
+		encoder.set_lossy_quality(nQuality);
+
+		heif::Image image;
+		image.create(nWidth, nHeight, heif_colorspace_RGB, heif_chroma_interleaved_RGB);
+		image.add_plane(heif_channel_interleaved, nWidth, nHeight, 8);
+		int stride;
+		uint8_t* dst = image.get_plane(heif_channel_interleaved, &stride);
+
+		// Convert BGR padded DIB to packed RGB in the heif image plane.
+		int nRowPadded = (nWidth * 3 + 3) & ~3;
+		for (int y = 0; y < nHeight; y++) {
+			const uint8_t* src = (const uint8_t*)pBGRData + y * nRowPadded;
+			uint8_t* d = dst + y * stride;
+			for (int x = 0; x < nWidth; x++) {
+				d[x * 3 + 0] = src[x * 3 + 2]; // R
+				d[x * 3 + 1] = src[x * 3 + 1]; // G
+				d[x * 3 + 2] = src[x * 3 + 0]; // B
+			}
+		}
+
+		ctx.encode_image(image, encoder);
+		MemWriter writer;
+		ctx.write(writer);
+		if (!writer.buf.empty()) {
+			pResult = malloc(writer.buf.size());
+			if (pResult) {
+				memcpy(pResult, writer.buf.data(), writer.buf.size());
+				nSize = writer.buf.size();
+			}
+		}
+	} catch (const heif::Error& err) {
+		return NULL;
+	} catch (...) {
+		return NULL;
+	}
+	return pResult;
+}

@@ -1661,3 +1661,87 @@ void CJPEGImage::DrawGridLines(void * pDIB, const CSize& dibSize) {
 		}
 	}
 }
+
+CString CJPEGImage::GetEXIFInfoText() {
+	CString sResult;
+	CString sLine;
+
+	// Image dimensions
+	sLine.Format(_T("Dimensions: %d x %d\n"), OrigWidth(), OrigHeight());
+	sResult += sLine;
+
+	// EXIF data (JPEG, PNG, TIFF)
+	CEXIFReader* pEXIF = GetEXIFReader();
+	if (pEXIF != NULL) {
+		if (pEXIF->GetCameraModelPresent()) {
+			sResult += CString(_T("Camera model: ")) + pEXIF->GetCameraModel() + _T("\n");
+		}
+		if (pEXIF->GetAcquisitionTimePresent()) {
+			const SYSTEMTIME& st = pEXIF->GetAcquisitionTime();
+			sLine.Format(_T("Acquisition date: %04d-%02d-%02d %02d:%02d:%02d\n"),
+				st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+			sResult += sLine;
+		}
+		if (pEXIF->GetExposureTimePresent()) {
+			const Rational& exp = pEXIF->GetExposureTime();
+			if (exp.Denominator != 0) {
+				if (exp.Numerator == 1) {
+					sLine.Format(_T("Exposure time (s): 1/%d\n"), exp.Denominator);
+				} else {
+					sLine.Format(_T("Exposure time (s): %d/%d\n"), exp.Numerator, exp.Denominator);
+				}
+				sResult += sLine;
+			}
+		}
+		if (pEXIF->GetFocalLengthPresent()) {
+			sLine.Format(_T("Focal length (mm): %.1f\n"), pEXIF->GetFocalLength());
+			sResult += sLine;
+		}
+		if (pEXIF->GetFNumberPresent()) {
+			sLine.Format(_T("F-Number: %.1f\n"), pEXIF->GetFNumber());
+			sResult += sLine;
+		}
+		if (pEXIF->GetISOSpeedPresent()) {
+			sLine.Format(_T("ISO Speed: %d\n"), pEXIF->GetISOSpeed());
+			sResult += sLine;
+		}
+		if (pEXIF->GetFlashFiredPresent()) {
+			sResult += CString(_T("Flash fired: ")) + (pEXIF->GetFlashFired() ? _T("Yes") : _T("No")) + _T("\n");
+		}
+		if (pEXIF->ImageOrientationPresent()) {
+			sLine.Format(_T("Orientation: %d\n"), pEXIF->GetImageOrientation());
+			sResult += sLine;
+		}
+		if (pEXIF->IsGPSInformationPresent()) {
+			sResult += _T("GPS: Present\n");
+		}
+		if (pEXIF->GetSoftwarePresent()) {
+			sResult += CString(_T("Software: ")) + pEXIF->GetSoftware() + _T("\n");
+		}
+	}
+
+	// RAW metadata
+	CRawMetadata* pRaw = GetRawMetadata();
+	if (pRaw != NULL) {
+		if (pRaw->GetAcquisitionTime().wYear > 1985) {
+			const SYSTEMTIME& st = pRaw->GetAcquisitionTime();
+			sLine.Format(_T("Acquisition date: %04d-%02d-%02d %02d:%02d:%02d\n"),
+				st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+			sResult += sLine;
+		}
+		if (pRaw->GetExposureTime() > 0.0) {
+			sLine.Format(_T("Exposure time (s): %.4f\n"), pRaw->GetExposureTime());
+			sResult += sLine;
+		}
+		if (pRaw->GetFocalLength() > 0.0) {
+			sLine.Format(_T("Focal length (mm): %.1f\n"), pRaw->GetFocalLength());
+			sResult += sLine;
+		}
+		if (pRaw->GetIsoSpeed() > 0.0) {
+			sLine.Format(_T("ISO Speed: %d\n"), (int)pRaw->GetIsoSpeed());
+			sResult += sLine;
+		}
+	}
+
+	return sResult;
+}

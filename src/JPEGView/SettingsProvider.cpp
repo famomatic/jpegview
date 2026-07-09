@@ -392,6 +392,16 @@ CSettingsProvider::CSettingsProvider(void) {
 		}
 	} while (nGapIndex <= 2);
 	
+	// --- New feature settings ---
+	m_bShowMemoryUsage = GetBool(_T("ShowMemoryUsage"), false);
+	m_bExplorerThumbnailProvider = GetBool(_T("ExplorerThumbnailProvider"), false);
+	m_nJXLSaveQuality = GetInt(_T("JXLSaveQuality"), 90, -1, 100);
+	m_nAVIFSaveQuality = GetInt(_T("AVIFSaveQuality"), 80, 0, 100);
+	m_nHEIFSaveQuality = GetInt(_T("HEIFSaveQuality"), 80, 0, 100);
+	m_nBatchConvertQuality = GetInt(_T("BatchConvertQuality"), 85, 0, 100);
+	m_bShowPixelProbeByDefault = GetBool(_T("ShowPixelProbeByDefault"), false);
+	m_nMaxZoomHistory = GetInt(_T("MaxZoomHistory"), 20, 0, 100);
+
 }
 
 CImageProcessingParams CSettingsProvider::LandscapeModeParams(const CImageProcessingParams& templParams) {

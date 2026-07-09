@@ -98,6 +98,43 @@ BEGIN
     LTEXT           "",IDC_RESULT,442,299,171,21,NOT WS_GROUP
 END
 
+IDD_BATCHCONVERT DIALOGEX 10, 9, 500, 380
+STYLE DS_SETFONT | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+FONT 8, "MS Shell Dlg", 0, 0, 0x1
+BEGIN
+    CONTROL         "",IDC_BC_LIST,"SysListView32",LVS_REPORT | LVS_SHOWSELALWAYS | WS_TABSTOP,10,29,480,220,WS_EX_CLIENTEDGE
+    PUSHBUTTON      "",IDC_BC_SELECTALL,10,255,90,16
+    PUSHBUTTON      "",IDC_BC_SELECTNONE,105,255,90,16
+    LTEXT           "",IDC_BC_DEST_LBL,10,280,60,10,NOT WS_GROUP
+    EDITTEXT        IDC_BC_DEST,75,278,360,13,ES_AUTOHSCROLL | NOT WS_BORDER,WS_EX_CLIENTEDGE
+    PUSHBUTTON      "",IDC_BC_BROWSE,440,278,50,13
+    LTEXT           "",IDC_BC_FORMAT,10,300,60,10,NOT WS_GROUP
+    COMBOBOX        IDC_BC_FORMAT,75,298,100,120,CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "",IDC_BC_QUALITY_LBL,190,300,40,10,NOT WS_GROUP
+    EDITTEXT        IDC_BC_QUALITY,235,298,30,13,ES_NUMBER | NOT WS_BORDER,WS_EX_CLIENTEDGE
+    CONTROL         "",IDC_BC_KEEP_ORIG,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,280,300,100,10
+    CONTROL         "",IDC_BC_RESIZE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,10,320,60,10
+    LTEXT           "",IDC_BC_RESIZE_LBL,75,320,20,10,NOT WS_GROUP
+    EDITTEXT        IDC_BC_MAXWIDTH,95,318,40,13,ES_NUMBER | NOT WS_BORDER,WS_EX_CLIENTEDGE
+    LTEXT           "x",IDC_BC_RESIZE_LBL,140,320,5,10,NOT WS_GROUP
+    EDITTEXT        IDC_BC_MAXHEIGHT,148,318,40,13,ES_NUMBER | NOT WS_BORDER,WS_EX_CLIENTEDGE
+    CONTROL         "",IDC_BC_PROGRESS,"msctls_progress32",WS_TABSTOP,10,345,480,10
+    LTEXT           "",IDC_BC_STATUS,10,360,480,10,NOT WS_GROUP
+    DEFPUSHBUTTON   "",IDC_BC_CONVERT,350,255,65,16
+    PUSHBUTTON      "",IDC_BC_CANCEL,425,255,65,16
+END
+
+IDD_EXIFEDIT DIALOGEX 10, 9, 300, 160
+STYLE DS_SETFONT | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+FONT 8, "MS Shell Dlg", 0, 0, 0x1
+BEGIN
+    CONTROL         "",IDC_EE_GPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,15,20,200,10
+    LTEXT           "",IDC_EE_ORIENTATION_LBL,15,50,80,10,NOT WS_GROUP
+    COMBOBOX        IDC_EE_ORIENTATION,100,48,180,120,CBS_DROPDOWNLIST | WS_TABSTOP
+    DEFPUSHBUTTON   "",IDC_EE_APPLY,160,130,60,16
+    PUSHBUTTON      "",IDC_EE_CANCEL,230,130,60,16
+END
+
 IDD_SETFILEEXTENSIONS DIALOGEX 8, 7, 363, 368
 STYLE DS_SETFONT | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
 FONT 8, "MS Shell Dlg", 0, 0, 0x1
@@ -278,6 +315,7 @@ BEGIN
         MENUITEM "Stop slide show/movie\t0xff", IDM_STOP_MOVIE
         MENUITEM SEPARATOR
         MENUITEM "Open image...",               IDM_OPEN
+        MENUITEM "Open favorite folder...",     IDM_FAV_FOLDERS
         POPUP "Open image with"
         BEGIN
             MENUITEM "_empty_",                     IDM_ABOUT
@@ -287,6 +325,7 @@ BEGIN
         MENUITEM "Open containing folder in Explorer", IDM_EXPLORE
         MENUITEM "Print image...",              IDM_PRINT
         MENUITEM "Batch rename/copy...",        IDM_BATCH_COPY
+        MENUITEM "Batch convert...",            IDM_BATCH_CONVERT
         POPUP "Set modification date"
         BEGIN
             MENUITEM "to current date",             IDM_TOUCH_IMAGE
@@ -301,11 +340,13 @@ BEGIN
         MENUITEM SEPARATOR
         MENUITEM "Copy to clipboard",           IDM_COPY
         MENUITEM "Copy original size image",    IDM_COPY_FULL
-        MENUITEM "Copy file path",              IDM_COPY_PATH
-        MENUITEM "Paste from clipboard",        IDM_PASTE
+MENUITEM "Copy file path",              IDM_COPY_PATH
+MENUITEM "Copy EXIF info",             IDM_COPY_EXIF_INFO
+MENUITEM "Paste from clipboard",        IDM_PASTE
         MENUITEM SEPARATOR
-        MENUITEM "Show picture info (EXIF)",    IDM_SHOW_FILEINFO
-        MENUITEM "Show filename",               IDM_SHOW_FILENAME
+MENUITEM "Show picture info (EXIF)",    IDM_SHOW_FILEINFO
+MENUITEM "Edit EXIF metadata...",       IDM_EXIF_EDIT
+MENUITEM "Show filename",               IDM_SHOW_FILENAME
         MENUITEM "Show navigation panel",       IDM_SHOW_NAVPANEL
         MENUITEM SEPARATOR
         MENUITEM "Next image",                  IDM_NEXT
@@ -388,6 +429,7 @@ BEGIN
             MENUITEM "Mirror horizontally",         IDM_MIRROR_H
             MENUITEM "Mirror vertically",           IDM_MIRROR_V
         END
+        MENUITEM "Smart crop borders...",       IDM_SMART_CROP
         POPUP "Lossless JPEG transformations"
         BEGIN
             MENUITEM "Rotate +90\t0x24B9",          IDM_ROTATE_90_LOSSLESS
@@ -403,6 +445,9 @@ BEGIN
         MENUITEM SEPARATOR
         MENUITEM "Save parameters to DB",       IDM_SAVE_PARAM_DB
         MENUITEM "Clear parameters from DB",    IDM_CLEAR_PARAM_DB
+        MENUITEM SEPARATOR
+        MENUITEM "Mark image for A/B compare", IDM_MARK_FOR_TOGGLE
+        MENUITEM "Toggle to marked image",    IDM_TOGGLE
         MENUITEM SEPARATOR
         POPUP "Zoom"
         BEGIN
@@ -420,6 +465,8 @@ BEGIN
             MENUITEM "100 %\t0x3a98",               IDM_ZOOM_100
             MENUITEM "50 %",                        IDM_ZOOM_50
             MENUITEM "25 %",                        IDM_ZOOM_25
+            MENUITEM SEPARATOR
+            MENUITEM "Back to previous zoom",    IDM_ZOOM_HISTORY_BACK
         END
         POPUP "Auto zoom mode"
         BEGIN
@@ -542,5 +589,3 @@ END
 
 #endif    // English (United States) resources
 /////////////////////////////////////////////////////////////////////////////
-
-

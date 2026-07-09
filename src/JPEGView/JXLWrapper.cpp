@@ -3,6 +3,8 @@
 #include "JXLWrapper.h"
 #include "jxl/decode.h"
 #include "jxl/decode_cxx.h"
+#include "jxl/encode.h"
+#include "jxl/encode_cxx.h"
 #include "jxl/resizable_parallel_runner.h"
 #include "jxl/resizable_parallel_runner_cxx.h"
 #include "MaxImageDef.h"
@@ -235,4 +237,85 @@ void JxlReader::DeleteCache() {
 	ICCProfileTransform::DeleteTransform(cache.transform);
 	// Setting the decoder and runner to 0 (NULL) will automatically destroy them
 	cache = { 0 };
+}
+
+// Compress 24-bit BGR DIB (rows padded to 4-byte boundary) into JPEG XL.
+// nQuality: 0-100 lossy, -1 lossless. Returns malloc'd buffer (caller frees with free()).
+void* JxlReader::Compress(const void* pBGRData, int nWidth, int nHeight, size_t& nSize, int nQuality) {
+	nSize = 0;
+	if (pBGRData == NULL || nWidth <= 0 || nHeight <= 0) return NULL;
+
+	JxlEncoderPtr enc_ptr(JxlEncoderCreate(NULL));
+	if (enc_ptr.get() == NULL) return NULL;
+	JxlEncoder* enc = enc_ptr.get();
+
+	JxlEncoderFrameSettings* frame_settings = JxlEncoderFrameSettingsCreate(enc, NULL);
+
+	JxlBasicInfo basic_info;
+	JxlEncoderInitBasicInfo(&basic_info);
+	basic_info.xsize = nWidth;
+	basic_info.ysize = nHeight;
+	basic_info.bits_per_sample = 8;
+	basic_info.exponent_bits_per_sample = 0;
+	basic_info.uses_original_profile = JXL_TRUE;
+	basic_info.num_color_channels = 3;
+	basic_info.num_extra_channels = 0;
+	basic_info.alpha_bits = 0;
+
+	if (JxlEncoderSetBasicInfo(enc, &basic_info) != JXL_ENC_SUCCESS) return NULL;
+
+	JxlColorEncoding color_encoding;
+	JxlColorEncodingSetToSRGB(&color_encoding, JXL_FALSE);
+	if (JxlEncoderSetColorEncoding(enc, &color_encoding) != JXL_ENC_SUCCESS) return NULL;
+
+	if (nQuality < 0) {
+		JxlEncoderSetFrameLossless(frame_settings, JXL_TRUE);
+	} else {
+		JxlEncoderSetFrameLossless(frame_settings, JXL_FALSE);
+		JxlEncoderFrameSettingsSetOption(frame_settings, JXL_ENC_FRAME_SETTING_EFFORT, 7);
+		// libjxl distance: 0.0 = lossless, 1.0 ~= JPEG quality 90.
+		// Map quality 0-100 to distance 15.0..0.0 (lower = higher quality).
+		float distance = (100 - nQuality) * 0.15f;
+		if (distance < 0.0f) distance = 0.0f;
+		if (distance > 15.0f) distance = 15.0f;
+		JxlEncoderSetFrameDistance(frame_settings, distance);
+	}
+
+	// Convert BGR (padded) to RGB (packed) for libjxl input.
+	int nRowPadded = (nWidth * 3 + 3) & ~3;
+	std::vector<uint8_t> rgbBuf(nWidth * nHeight * 3);
+	for (int y = 0; y < nHeight; y++) {
+		const uint8_t* src = (const uint8_t*)pBGRData + y * nRowPadded;
+		uint8_t* dst = rgbBuf.data() + y * nWidth * 3;
+		for (int x = 0; x < nWidth; x++) {
+			dst[x * 3 + 0] = src[x * 3 + 2]; // R
+			dst[x * 3 + 1] = src[x * 3 + 1]; // G
+			dst[x * 3 + 2] = src[x * 3 + 0]; // B
+		}
+	}
+
+	JxlPixelFormat pixel_format = { 3, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0 };
+	if (JxlEncoderAddImageFrame(frame_settings, &pixel_format, rgbBuf.data(), rgbBuf.size()) != JXL_ENC_SUCCESS) return NULL;
+	JxlEncoderCloseInput(enc);
+
+	// Drain the encoder output into a growable buffer.
+	size_t cap = 65536;
+	uint8_t* buf = (uint8_t*)malloc(cap);
+	if (buf == NULL) return NULL;
+	uint8_t* next = buf;
+	size_t avail = cap;
+	JxlEncoderStatus status;
+	while ((status = JxlEncoderProcessOutput(enc, &next, &avail)) == JXL_ENC_NEED_MORE_OUTPUT) {
+		size_t used = next - buf;
+		size_t newCap = cap * 2;
+		uint8_t* newBuf = (uint8_t*)realloc(buf, newCap);
+		if (newBuf == NULL) { free(buf); return NULL; }
+		buf = newBuf;
+		next = buf + used;
+		avail = newCap - used;
+		cap = newCap;
+	}
+	if (status != JXL_ENC_SUCCESS) { free(buf); return NULL; }
+	nSize = next - buf;
+	return buf;
 }

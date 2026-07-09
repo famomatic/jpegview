@@ -162,3 +162,59 @@ void AvifReader::DeleteCache() {
 	ICCProfileTransform::DeleteTransform(cache.transform);
 	cache = { 0 };
 }
+
+// Compress 24-bit BGR DIB (rows padded to 4-byte boundary) into AVIF.
+// nQuality: 0-100. Returns malloc'd buffer (caller frees with free()).
+void* AvifReader::Compress(const void* pBGRData, int nWidth, int nHeight, size_t& nSize, int nQuality) {
+	nSize = 0;
+	if (pBGRData == NULL || nWidth <= 0 || nHeight <= 0) return NULL;
+
+	avifEncoder* encoder = avifEncoderCreate();
+	if (encoder == NULL) return NULL;
+	encoder->maxThreads = 4;
+	encoder->quality = nQuality;
+
+	avifImage* image = avifImageCreate(nWidth, nHeight, 8, AVIF_PIXEL_FORMAT_YUV444);
+	if (image == NULL) { avifEncoderDestroy(encoder); return NULL; }
+	image->colorPrimaries = AVIF_COLOR_PRIMARIES_SRGB;
+	image->transferCharacteristics = AVIF_TRANSFER_CHARACTERISTICS_SRGB;
+	image->matrixCoefficients = AVIF_MATRIX_COEFFICIENTS_BT601;
+
+	// Convert BGR padded DIB to packed RGB for libavif.
+	int nRowPadded = (nWidth * 3 + 3) & ~3;
+	std::vector<uint8_t> rgbBuf(nWidth * nHeight * 3);
+	for (int y = 0; y < nHeight; y++) {
+		const uint8_t* src = (const uint8_t*)pBGRData + y * nRowPadded;
+		uint8_t* dst = rgbBuf.data() + y * nWidth * 3;
+		for (int x = 0; x < nWidth; x++) {
+			dst[x * 3 + 0] = src[x * 3 + 2]; // R
+			dst[x * 3 + 1] = src[x * 3 + 1]; // G
+			dst[x * 3 + 2] = src[x * 3 + 0]; // B
+		}
+	}
+
+	avifRGBImage rgb;
+	memset(&rgb, 0, sizeof(rgb));
+	avifRGBImageSetDefaults(&rgb, image);
+	rgb.format = AVIF_RGB_FORMAT_RGB;
+	rgb.depth = 8;
+	rgb.pixels = rgbBuf.data();
+	rgb.rowBytes = nWidth * 3;
+
+	void* pResult = NULL;
+	if (avifImageRGBToYUV(image, &rgb) == AVIF_RESULT_OK) {
+		avifRWData output = AVIF_DATA_EMPTY;
+		if (avifEncoderWrite(encoder, image, &output) == AVIF_RESULT_OK) {
+			pResult = malloc(output.size);
+			if (pResult) {
+				memcpy(pResult, output.data, output.size);
+				nSize = output.size;
+			}
+		}
+		avifRWDataFree(&output);
+	}
+
+	avifImageDestroy(image);
+	avifEncoderDestroy(encoder);
+	return pResult;
+}
