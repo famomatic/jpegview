@@ -5,6 +5,8 @@
 
 double CEXIFReader::UNKNOWN_DOUBLE_VALUE = 283740261.192864;
 
+std::mutex CEXIFReader::s_parseLock;
+
 // File-scope base/size of the APP1 block currently being parsed. The static
 // Read* helpers below cannot access instance members, so they consult these
 // globals to bounds-check EXIF offset pointers. Only valid while a
@@ -301,6 +303,11 @@ CEXIFReader::CEXIFReader(void* pApp1Block, EImageFormat eImageFormat)
 	m_acqDate{ 0 },
 	m_dateTime{ 0 }
 {
+	// The static Read* helpers consult file-scope globals (g_pEXIFApp1Base,
+	// g_nEXIFApp1Size) for bounds checking. Serialize construction so two
+	// images parsed concurrently don't corrupt each other's globals.
+	std::lock_guard<std::mutex> parseLock(s_parseLock);
+
 	m_bFlashFired = false;
 	m_bFlashFlagPresent = false;
 	m_dFocalLength = m_dExposureBias = m_dFNumber = UNKNOWN_DOUBLE_VALUE;

@@ -27,18 +27,10 @@
 
 // OriginalPixels: 소스 프로바이더가 있으면 그것에서, 없으면 m_pOrigPixels에서.
 void* CJPEGImage::OriginalPixels() {
-	if (m_pSourceData != NULL) {
-		CFullBufferSource* pFull = dynamic_cast<CFullBufferSource*>(m_pSourceData);
-		if (pFull != NULL) return const_cast<void*>(pFull->GetFullBuffer());
-	}
 	return m_pOrigPixels;
 }
 
 const void* CJPEGImage::OriginalPixels() const {
-	if (m_pSourceData != NULL) {
-		const CFullBufferSource* pFull = dynamic_cast<const CFullBufferSource*>(m_pSourceData);
-		if (pFull != NULL) return pFull->GetFullBuffer();
-	}
 	return m_pOrigPixels;
 }
 
@@ -165,10 +157,13 @@ CJPEGImage::CJPEGImage(IImageSourceData* pSourceData, EImageFormat eImageFormat,
 		m_pEXIFData = NULL;
 		m_pEXIFReader = NULL;
 	}
-	m_pRawMetadata = pSourceData->RawMetadata();
+	// The source owns the RAW metadata and frees it in Release(). Leave
+	// m_pRawMetadata NULL here so the destructor does not double-free it;
+	// GetRawMetadata() falls back to the source while it is alive.
+	m_pRawMetadata = NULL;
 
 	InitCommon(eImageFormat, false, nFrameIndex, nNumberOfFrames, nFrameTimeMs,
-		pLDC, bIsThumbnailImage, pSourceData->RawMetadata(), 0);
+		pLDC, bIsThumbnailImage, NULL, 0);
 }
 
 // 공통 초기화: 두 생성자가 공유하는 멤버 채우기.
@@ -385,6 +380,13 @@ void CJPEGImage::FreeUnsharpMaskResources() {
 bool CJPEGImage::ApplyUnsharpMaskToOriginalPixels(const CUnsharpMaskParams & unsharpMaskParams) {
 	InvalidateAllCachedPixelData();
 
+	// Destructive transforms read/write m_pOrigPixels in place. For a lazy
+	// (partially-loaded) image m_pOrigPixels is NULL, so materialize the full
+	// buffer first via ConvertSrcTo4Channels().
+	if (!ConvertSrcTo4Channels()) {
+		return false;
+	}
+
 	double dStartTime = Helpers::GetExactTickCount();
 
 	bool bSuccess = false;
@@ -411,6 +413,13 @@ bool CJPEGImage::ApplyUnsharpMaskToOriginalPixels(const CUnsharpMaskParams & uns
 bool CJPEGImage::RotateOriginalPixels(double dRotation, bool bAutoCrop, bool bKeepAspectRatio) {
 	InvalidateAllCachedPixelData();
 
+	// Destructive transforms read/write m_pOrigPixels in place. For a lazy
+	// (partially-loaded) image m_pOrigPixels is NULL, so materialize the full
+	// buffer first via ConvertSrcTo4Channels().
+	if (!ConvertSrcTo4Channels()) {
+		return false;
+	}
+
 	CPoint offset;
 	CSize newSize = GetSizeAfterFreeRotation(CSize(m_nOrigWidth, m_nOrigHeight), dRotation, bAutoCrop, bKeepAspectRatio, offset);
 	void* pRotatedPixels = CBasicProcessing::RotateHQ(offset, newSize, dRotation,
@@ -433,6 +442,13 @@ bool CJPEGImage::RotateOriginalPixels(double dRotation, bool bAutoCrop, bool bKe
 
 bool CJPEGImage::TrapezoidOriginalPixels(const CTrapezoid& trapezoid, bool bAutoCrop, bool bKeepAspectRatio) {
 	InvalidateAllCachedPixelData();
+
+	// Destructive transforms read/write m_pOrigPixels in place. For a lazy
+	// (partially-loaded) image m_pOrigPixels is NULL, so materialize the full
+	// buffer first via ConvertSrcTo4Channels().
+	if (!ConvertSrcTo4Channels()) {
+		return false;
+	}
 
 	int nXStart, nXEnd;
 	int nYStart = trapezoid.y1, nYEnd = trapezoid.y2;
@@ -488,6 +504,13 @@ bool CJPEGImage::ResizeOriginalPixels(EResizeFilter filter, CSize newSize) {
 	}
 
 	InvalidateAllCachedPixelData();
+
+	// Destructive transforms read/write m_pOrigPixels in place. For a lazy
+	// (partially-loaded) image m_pOrigPixels is NULL, so materialize the full
+	// buffer first via ConvertSrcTo4Channels().
+	if (!ConvertSrcTo4Channels()) {
+		return false;
+	}
 
 	void* pResizedPixels = m_pOrigPixels;
 	int currentWidth = m_nOrigWidth;
@@ -1336,7 +1359,9 @@ bool CJPEGImage::ConvertSrcTo4Channels() {
 			// m_pOrigPixels so the destructive transform can operate in place.
 			// This is expensive but correct, and only happens when the user
 			// explicitly rotates/mirrors/crops a partially-loaded image.
-			int nBytes = m_nOrigWidth * m_nOrigHeight * 4;
+			// Use 64-bit math: on x64 MAX_IMAGE_DIMENSION is 1,000,000, so the
+			// int product can overflow before the *4.
+			__int64 nBytes = (__int64)m_nOrigWidth * m_nOrigHeight * 4;
 			uint8* pFullDecode = new(std::nothrow) uint8[nBytes];
 			if (pFullDecode == NULL) {
 				return false;
@@ -1576,7 +1601,9 @@ CJPEGImage* CJPEGImage::CreateThumbnailImage() {
 	// mtime, so any edit invalidates it automatically. Only large images (the
 	// expensive path that downsamples via the LDC) benefit from caching; small
 	// images already take a cheap full-pixel copy below.
-	const bool bCacheEligible = !m_sSourceFile.IsEmpty() && (m_nOrigWidth * m_nOrigHeight >= 120000);
+	// Use 64-bit math: on x64 MAX_IMAGE_DIMENSION is 1,000,000, so the int
+	// product can overflow and produce a wrong (possibly negative) result.
+	const bool bCacheEligible = !m_sSourceFile.IsEmpty() && ((__int64)m_nOrigWidth * m_nOrigHeight >= 120000);
 	if (bCacheEligible) {
 		// Resolve current file identity (size + mtime) from disk.
 		HANDLE hFile = ::CreateFile(m_sSourceFile, GENERIC_READ, FILE_SHARE_READ, NULL,
@@ -1611,14 +1638,14 @@ CJPEGImage* CJPEGImage::CreateThumbnailImage() {
 
 	void* pPixels = NULL;
 	int nWidth, nHeight;
-	if (m_nOrigWidth*m_nOrigHeight < 120000) {
+	if ((__int64)m_nOrigWidth*m_nOrigHeight < 120000) {
 		// take a copy of the original pixels
 		nWidth = m_nOrigWidth;
 		nHeight = m_nOrigHeight;
 		if (m_nOriginalChannels == 3) {
 			pPixels = CBasicProcessing::Convert3To4Channels(m_nOrigWidth, m_nOrigHeight, OriginalPixels());
 		} else {
-			int nSizeBytes = m_nOrigWidth*m_nOrigHeight*4;
+			__int64 nSizeBytes = (__int64)m_nOrigWidth*m_nOrigHeight*4;
 			pPixels = new uint8[nSizeBytes];
 			memcpy(pPixels, OriginalPixels(), nSizeBytes);
 		}

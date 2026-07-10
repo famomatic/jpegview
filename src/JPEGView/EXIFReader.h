@@ -1,5 +1,11 @@
 #pragma once
 
+// Serializes CEXIFReader construction, which publishes file-scope globals
+// (g_pEXIFApp1Base/g_nEXIFApp1Size) used by the static Read* helpers for
+// bounds checking. Without this, two images parsed concurrently on
+// different threads would corrupt each other's globals.
+#include <mutex>
+
 // Signed rational number: numerator/denominator
 class SignedRational {
 public:
@@ -153,4 +159,8 @@ private:
 
 	void ReadGPSData(uint8* pTIFFHeader, uint8* pTagGPSIFD, int nApp1Size, bool bLittleEndian);
 	GPSCoordinate* ReadGPSCoordinate(uint8* pTIFFHeader, uint8* pTagLatOrLong, LPCTSTR reference, bool bLittleEndian);
+
+	// Serializes construction so the file-scope EXIF globals are not
+	// corrupted by concurrent parses on different threads.
+	static std::mutex s_parseLock;
 };

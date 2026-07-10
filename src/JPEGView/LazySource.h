@@ -81,6 +81,15 @@ protected:
 	virtual bool SetPyramidLevel(int level) = 0;
 	virtual bool ReadSinglePixel(int x, int y, uint8 outBGRA[4]);
 
+	// Acquire/release the source's internal serialization lock around a
+	// SetPyramidLevel + decode sequence so another thread cannot switch the
+	// IFD between the level-set and the pixel read. Default is a no-op;
+	// CTiffLazySource overrides to lock its recursive_mutex. The lock is
+	// recursive so DecodeStrips/DecodeTile (which also lock) can be called
+	// while this outer lock is held.
+	virtual void LockSource() {}
+	virtual void UnlockSource() {}
+
 private:
 	bool DecodeRegionStripped(const CRect& sourceRect, int zoomLevel,
 	                          uint8* pDst, CSize dstSize);

@@ -98,6 +98,12 @@ void CWorkThread::ThreadFunc(void* arg) {
 			if ((*iter)->Processed == false) {
 				requestHandled = *iter;
 				nNumUnprocessedRequests++;
+				// Process requests in FIFO order. Previously the loop kept
+				// overwriting requestHandled, so the *last* unprocessed
+				// request was processed first (LIFO), which defeated the
+				// read-ahead loader's intent of processing the current image
+				// before the pre-fetched next image.
+				break;
 			}
 		}
 
@@ -160,17 +166,16 @@ void CWorkThread::ThreadFunc(void* arg) {
 }
 
 void CWorkThread::DeleteAllRequestsMarkedForDeletion(CWorkThread* thisPtr) {
-	bool bDeleted = false;
-	std::list<CRequestBase*>::iterator iter;
-	for (iter = thisPtr->m_requestList.begin( ); iter != thisPtr->m_requestList.end( ); iter++ ) {
+	// Single-pass deletion. The previous implementation erased one element
+	// and then recursed from the beginning of the list, making it O(n^2)
+	// when many requests were marked for deletion at once.
+	std::list<CRequestBase*>::iterator iter = thisPtr->m_requestList.begin();
+	while (iter != thisPtr->m_requestList.end()) {
 		if ((*iter)->Deleted) {
 			delete *iter;
-			thisPtr->m_requestList.erase(iter);
-			bDeleted = true;
-			break;
+			iter = thisPtr->m_requestList.erase(iter);
+		} else {
+			iter++;
 		}
-	}
-	if (bDeleted) {
-		DeleteAllRequestsMarkedForDeletion(thisPtr);
 	}
 }

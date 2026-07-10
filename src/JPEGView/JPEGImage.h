@@ -341,7 +341,13 @@ public:
 	LPCTSTR GetJPEGComment() { return m_sJPEGComment; }
 
 	// Gets the metadata for RAW camera images, NULL if none
-	CRawMetadata* GetRawMetadata() { return m_pRawMetadata; }
+	CRawMetadata* GetRawMetadata() {
+		// When pixels are owned by m_pSourceData (lazy/partial load), the
+		// source owns the RAW metadata and frees it in Release(). m_pRawMetadata
+		// is NULL in that case to avoid a double-free in the destructor.
+		if (m_pRawMetadata != NULL) return m_pRawMetadata;
+		return (m_pSourceData != NULL) ? m_pSourceData->RawMetadata() : NULL;
+	}
 
 	// Converts the target offset from 'center of image' based format to pixel coordinate format 
 	static CPoint ConvertOffset(CSize fullTargetSize, CSize clippingSize, CPoint targetOffset);

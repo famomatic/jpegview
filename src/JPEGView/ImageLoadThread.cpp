@@ -1114,8 +1114,27 @@ void CImageLoadThread::ProcessReadGDIPlusRequest(CRequest * request) {
 		pBitmap = m_pLastBitmap;
 	} else {
 		DeleteCachedGDIBitmap();
-		m_pLastBitmap = pBitmap = new Gdiplus::Bitmap(sFileName, CSettingsProvider::This().UseEmbeddedColorProfiles());
-		m_sLastFileName = sFileName;
+		// GDI+ can throw on malformed files; wrap in try/catch like every
+		// other ProcessRead* method. Also avoid caching a bitmap that is in
+		// an error state, so a failed load is not reused on the next call
+		// with the same filename.
+		try {
+			pBitmap = new Gdiplus::Bitmap(sFileName, CSettingsProvider::This().UseEmbeddedColorProfiles());
+		} catch (...) {
+			pBitmap = NULL;
+			request->ExceptionError = true;
+		}
+		if (pBitmap != NULL && pBitmap->GetLastStatus() != Gdiplus::Ok) {
+			delete pBitmap;
+			pBitmap = NULL;
+		}
+		if (pBitmap != NULL) {
+			m_pLastBitmap = pBitmap;
+			m_sLastFileName = sFileName;
+		}
+	}
+	if (pBitmap == NULL) {
+		return;
 	}
 	bool isOutOfMemory, isAnimatedGIF;
 	request->Image = ConvertGDIPlusBitmapToJPEGImage(pBitmap, request->FrameIndex, NULL, 0, isOutOfMemory, isAnimatedGIF);

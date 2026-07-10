@@ -169,7 +169,13 @@ bool CTiffLazySource::OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex)
 	// 4.x without fully reading each directory.
 	tdir_t nDirs = TIFFNumberOfDirectories(m_tif);
 	m_nFrameCount = (nDirs > 0) ? (int)nDirs : 1;
-	TIFFSetDirectory(m_tif, (tdir_t)nFrameIndex);
+	// The directory was already set to nFrameIndex at the top of this method
+	// (or left at 0 when nFrameIndex == 0). TIFFNumberOfDirectories() in
+	// libtiff 4.x does not change the current directory, so the redundant
+	// TIFFSetDirectory here was wasting I/O. Only re-set if the count call
+	// moved us (it shouldn't, but guard defensively).
+	if (TIFFCurrentDirectory(m_tif) != (tdir_t)nFrameIndex)
+		TIFFSetDirectory(m_tif, (tdir_t)nFrameIndex);
 
 	// 피라미드 레벨 감지.
 	m_nPyramidLevels = DetectPyramidLevels();
@@ -184,6 +190,14 @@ int CTiffLazySource::DetectPyramidLevels()
 	// 단, 멀티프레임 문서와 구분해야 한다: 피라미드는 각 레벨이
 	// 이전 레벨의 정확히 1/2(또는 가까운 값)여야 한다.
 	if (m_nFrameCount <= 1)
+		return 1;
+
+	// Skip pyramid detection for multi-page documents (e.g. scans with
+	// hundreds of pages). Pyramidal TIFFs have a small number of levels
+	// (typically 3-8), so iterating every IFD on a 500-page document just to
+	// discover there is no pyramid wastes seconds of I/O and negates the
+	// TIFFNumberOfDirectories() optimization above.
+	if (m_nFrameCount > 16)
 		return 1;
 
 	int levels = 1;
@@ -234,7 +248,10 @@ int CTiffLazySource::DetectPyramidLevels()
 
 bool CTiffLazySource::SetPyramidLevel(int level)
 {
-	std::lock_guard<std::mutex> lock(m_tifLock);
+	// Caller must hold m_tifLock (via LockSource). This method switches the
+	// TIFF directory and updates metadata; it must run atomically with the
+	// subsequent decode to prevent another thread from switching the IFD
+	// between the level-set and the pixel read.
 	if (level == m_nCurrentPyramidLevel)
 		return true;
 
@@ -279,7 +296,7 @@ bool CTiffLazySource::SetPyramidLevel(int level)
 
 bool CTiffLazySource::SetFrame(int nFrame)
 {
-	std::lock_guard<std::mutex> lock(m_tifLock);
+	// Caller must hold m_tifLock (via LockSource).
 	if (nFrame < 0 || nFrame >= m_nFrameCount)
 		return false;
 	if (nFrame == m_nCurrentFrame)
@@ -312,7 +329,51 @@ CRawMetadata* CTiffLazySource::RawMetadata() const
 
 bool CTiffLazySource::DecodeSingleStrip(int stripIndex, uint8* pDst, int dstStride)
 {
-	// libtiff로 스트립 하나를 디코드.
+	// 이 스트립의 행 수 (마지막 스트립은 더 짧을 수 있음).
+	int rowsInStrip = m_nRowsPerStrip;
+	int stripStartRow = stripIndex * m_nRowsPerStrip;
+	if (stripStartRow + rowsInStrip > m_nHeight)
+		rowsInStrip = m_nHeight - stripStartRow;
+	if (rowsInStrip <= 0)
+		return false;
+
+	// RGBA fast path: palette/YCbCr/MINISWHITE/16-bit/32-bit 등은 libtiff의
+	// TIFFReadRGBAStrip으로 디코드한다. libtiff가 모든 색상 공간 변환과
+	// 비트 깊이 변환을 처리하므로 수동 변환보다 정확하다.
+	if (m_bUseRGBA || m_nBitsPerSample != 8)
+	{
+		// TIFFReadRGBAStrip은 전체 이미지 너비 * rowsInStrip 크기의
+		// uint32(ABGR) 버퍼를 채운다. 마지막 스트립은 나머지 행만 유효.
+		uint32* pRGBA = (uint32*)_TIFFmalloc((tmsize_t)m_nWidth * rowsInStrip * sizeof(uint32));
+		if (pRGBA == nullptr)
+			return false;
+		// TIFFReadRGBAStrip은 항상 전체 rowsPerStrip을 채우려 하므로,
+		// 마지막 스트립의 빈 행은 무시된다 (버퍼가 충분히 큼).
+		if (TIFFReadRGBAStrip(m_tif, (uint32)stripIndex, pRGBA) == 0)
+		{
+			_TIFFfree(pRGBA);
+			return false;
+		}
+		// libtiff RGBA는 메모리에 ABGR(uint32)로 저장된다.
+		// BGRA 레이아웃으로 변환: A=byte3, B=byte2, G=byte1, R=byte0.
+		for (int y = 0; y < rowsInStrip; y++)
+		{
+			const uint32* pSrcRow = pRGBA + (size_t)y * m_nWidth;
+			uint8* pDstRow = pDst + (size_t)y * dstStride;
+			for (int x = 0; x < m_nWidth; x++)
+			{
+				uint32 px = pSrcRow[x];
+				pDstRow[x * 4 + 0] = (uint8)((px >> 0) & 0xFF);  // B (TIFFGetR)
+				pDstRow[x * 4 + 1] = (uint8)((px >> 8) & 0xFF);  // G (TIFFGetG)
+				pDstRow[x * 4 + 2] = (uint8)((px >> 16) & 0xFF); // R (TIFFGetB)
+				pDstRow[x * 4 + 3] = (uint8)((px >> 24) & 0xFF); // A (TIFFGetA)
+			}
+		}
+		_TIFFfree(pRGBA);
+		return true;
+	}
+
+	// 8비트 RGB/MINISBLACK fast path: 수동 변환이 TIFFReadRGBAStrip보다 빠르다.
 	tmsize_t stripSize = TIFFStripSize(m_tif);
 	if (stripSize <= 0)
 		return false;
@@ -323,17 +384,6 @@ bool CTiffLazySource::DecodeSingleStrip(int stripIndex, uint8* pDst, int dstStri
 
 	tmsize_t bytesRead = TIFFReadEncodedStrip(m_tif, (uint32)stripIndex, pStripBuf, stripSize);
 	if (bytesRead < 0)
-	{
-		_TIFFfree(pStripBuf);
-		return false;
-	}
-
-	// 이 스트립의 행 수 (마지막 스트립은 더 짧을 수 있음).
-	int rowsInStrip = m_nRowsPerStrip;
-	int stripStartRow = stripIndex * m_nRowsPerStrip;
-	if (stripStartRow + rowsInStrip > m_nHeight)
-		rowsInStrip = m_nHeight - stripStartRow;
-	if (rowsInStrip <= 0)
 	{
 		_TIFFfree(pStripBuf);
 		return false;
@@ -351,15 +401,9 @@ void CTiffLazySource::ConvertStripToBGRA(const uint8* pSrc, uint8* pDst,
                                           int width, int rowsInStrip,
                                           int srcStride, int dstStride)
 {
-	// RGBA fast path: libtiff의 TIFFReadRGBAImage를 쓸 수 없으므로
-	// 수동으로 변환. 8비트 RGB/그레이스케일만 처리.
-	if (m_nBitsPerSample != 8)
-	{
-		// 16/32비트는 일단 검은색으로 채운다 (향후 지원).
-		for (int y = 0; y < rowsInStrip; y++)
-			memset(pDst + (size_t)y * dstStride, 0, width * 4);
-		return;
-	}
+	// This method is only reached for 8-bit RGB/MINISBLACK/MINISWHITE
+	// (the RGBA fast path in DecodeSingleStrip/DecodeTile handles palette,
+	// YCbCr, CMYK, and 16/32-bit via TIFFReadRGBAStrip/TIFFReadRGBATile).
 
 	for (int y = 0; y < rowsInStrip; y++)
 	{
@@ -401,16 +445,9 @@ void CTiffLazySource::ConvertStripToBGRA(const uint8* pSrc, uint8* pDst,
 		}
 		else
 		{
-			// 팔레트, YCbCr, CMYK 등은 RGBA 변환이 복잡하므로
-			// 여기서는 단순 복사. 향후 TIFFReadRGBAImage 기반으로 보강.
-			for (int x = 0; x < width; x++)
-			{
-				const uint8* s = pSrcRow + (size_t)x * m_nChannels;
-				pDstRow[x * 4 + 0] = s[0];
-				pDstRow[x * 4 + 1] = (m_nChannels > 1) ? s[1] : s[0];
-				pDstRow[x * 4 + 2] = (m_nChannels > 2) ? s[2] : s[0];
-				pDstRow[x * 4 + 3] = 0xFF;
-			}
+			// Should not reach here: palette/YCbCr/CMYK use the RGBA path.
+			// Fill black as a safe fallback rather than a wrong-color copy.
+			memset(pDstRow, 0, width * 4);
 		}
 	}
 }
@@ -418,7 +455,7 @@ void CTiffLazySource::ConvertStripToBGRA(const uint8* pSrc, uint8* pDst,
 bool CTiffLazySource::DecodeStrips(int startStrip, int stripCount,
                                     uint8* pDst, int dstStride)
 {
-	std::lock_guard<std::mutex> lock(m_tifLock);
+	std::lock_guard<std::recursive_mutex> lock(m_tifLock);
 	if (m_tif == nullptr || m_bReleased)
 		return false;
 
@@ -446,7 +483,7 @@ bool CTiffLazySource::DecodeStrips(int startStrip, int stripCount,
 
 bool CTiffLazySource::DecodeTile(int tileX, int tileY, uint8* pDst)
 {
-	std::lock_guard<std::mutex> lock(m_tifLock);
+	std::lock_guard<std::recursive_mutex> lock(m_tifLock);
 	if (m_tif == nullptr || m_bReleased)
 		return false;
 
@@ -454,6 +491,37 @@ bool CTiffLazySource::DecodeTile(int tileX, int tileY, uint8* pDst)
 	int tilesPerRow = (m_nWidth + m_nTileWidth - 1) / m_nTileWidth;
 	int tileIndex = tileY * tilesPerRow + tileX;
 
+	// RGBA fast path: palette/YCbCr/MINISWHITE/16-bit/32-bit 등은 libtiff의
+	// TIFFReadRGBATile로 디코드한다.
+	if (m_bUseRGBA || m_nBitsPerSample != 8)
+	{
+		uint32* pRGBA = (uint32*)_TIFFmalloc((tmsize_t)m_nTileWidth * m_nTileHeight * sizeof(uint32));
+		if (pRGBA == nullptr)
+			return false;
+		if (TIFFReadRGBATile(m_tif, (uint32)tileX * m_nTileWidth, (uint32)tileY * m_nTileHeight, pRGBA) == 0)
+		{
+			_TIFFfree(pRGBA);
+			return false;
+		}
+		// libtiff RGBA(ABGR uint32) -> BGRA 변환.
+		for (int y = 0; y < m_nTileHeight; y++)
+		{
+			const uint32* pSrcRow = pRGBA + (size_t)y * m_nTileWidth;
+			uint8* pDstRow = pDst + (size_t)y * m_nTileWidth * 4;
+			for (int x = 0; x < m_nTileWidth; x++)
+			{
+				uint32 px = pSrcRow[x];
+				pDstRow[x * 4 + 0] = (uint8)((px >> 0) & 0xFF);  // B
+				pDstRow[x * 4 + 1] = (uint8)((px >> 8) & 0xFF);  // G
+				pDstRow[x * 4 + 2] = (uint8)((px >> 16) & 0xFF); // R
+				pDstRow[x * 4 + 3] = (uint8)((px >> 24) & 0xFF); // A
+			}
+		}
+		_TIFFfree(pRGBA);
+		return true;
+	}
+
+	// 8비트 RGB/MINISBLACK fast path.
 	tmsize_t tileSize = TIFFTileSize(m_tif);
 	if (tileSize <= 0)
 		return false;

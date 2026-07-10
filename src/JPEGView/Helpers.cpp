@@ -779,7 +779,7 @@ EImageFormat GetImageFormat(LPCTSTR sFileName) {
 		} else if (_tcsicmp(sEnding, _T("HDR")) == 0 || _tcsicmp(sEnding, _T("PIC")) == 0) {
 			return IF_HDR;
 		} else if (_tcsicmp(sEnding, _T("JXR")) == 0 || _tcsicmp(sEnding, _T("WDP")) == 0 ||
-				   _tcsicmp(sEnding, _T("HDP")) == 0 || _tcsicmp(sEnding, _T("WDP")) == 0) {
+				   _tcsicmp(sEnding, _T("HDP")) == 0) {
 			return IF_JXR;
 		} else if (IsInFileEndingList(CSettingsProvider::This().FilesProcessedByWIC(), sEnding)) {
 			return IF_WIC;

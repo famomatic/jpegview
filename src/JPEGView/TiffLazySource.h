@@ -34,6 +34,11 @@ public:
 	CRawMetadata* RawMetadata() const override;
 	void Release() override;
 
+	// Serialize the SetPyramidLevel + decode sequence against concurrent
+	// access. m_tifLock is recursive so DecodeStrips/DecodeTile can re-enter.
+	void LockSource() override { m_tifLock.lock(); }
+	void UnlockSource() override { m_tifLock.unlock(); }
+
 private:
 	CTiffLazySource();
 	bool OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex);
@@ -57,6 +62,9 @@ private:
 	// Serializes all access to m_tif. libtiff is not thread-safe and a single
 	// TIFF* cannot be touched concurrently; the resampler (ProcessingThreadPool)
 	// and LDC/histogram (SamplePoint) can both reach this source at once.
-	std::mutex m_tifLock;
+	// Recursive so that SamplePoint/DecodeRegion can hold the lock across the
+	// SetPyramidLevel + decode sequence, preventing another thread from
+	// switching the IFD between the level-set and the pixel read.
+	std::recursive_mutex m_tifLock;
 };
 // end

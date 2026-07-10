@@ -29,6 +29,9 @@ static const char* kOrigWidthKey = "JPEGViewOrigWidth";
 static const char* kOrigHeightKey = "JPEGViewOrigHeight";
 static const char* kOrigChannelsKey = "JPEGViewOrigChannels";
 static const char* kSignatureKey = "JPEGViewSig";
+// Path-only hash (no size/mtime) so Invalidate() can find stale entries
+// left by in-place edits that changed the file size/mtime.
+static const char* kPathHashKey = "JPEGViewPathHash";
 // Bumped whenever the on-disk format changes, so old cache files are ignored.
 static const char* kSignatureValue = "JVTC1";
 
@@ -58,6 +61,18 @@ CString CThumbnailCache::MakeKey(LPCTSTR sFilePath, __int64 nFileSize, const FIL
 		lastModTime.dwLowDateTime, lastModTime.dwHighDateTime);
 
 	uint64_t h = Fnv1a64((LPCTSTR)sIdentity, sIdentity.GetLength() * sizeof(TCHAR));
+	CString sHex;
+	sHex.Format(_T("%016I64x"), h);
+	return sHex;
+}
+
+// Path-only hash (lowercased, no size/mtime). Used as a PNG text chunk so
+// Invalidate() can find and delete stale entries whose key (path+size+mtime)
+// no longer matches after an in-place edit.
+static CString MakePathHash(LPCTSTR sFilePath) {
+	CString sPath(sFilePath);
+	sPath.MakeLower();
+	uint64_t h = Fnv1a64((LPCTSTR)sPath, sPath.GetLength() * sizeof(TCHAR));
 	CString sHex;
 	sHex.Format(_T("%016I64x"), h);
 	return sHex;
@@ -159,14 +174,14 @@ static void PngReadFromMemory(png_structp png_ptr, png_bytep out, png_size_t len
 	*pp += len;
 }
 
-// Decodes a PNG from memory into a freshly malloc'd BGRA buffer.
-// Returns the pixel buffer (caller frees with free()) or NULL on failure.
+// Decodes a PNG from memory into a freshly new[]'d BGRA buffer.
+// Returns the pixel buffer (caller frees with delete[]) or NULL on failure.
 // On success fills nWidth/nHeight. Also reads the original-dimension text
 // chunks when present so the caller can reconstruct source geometry.
-static uint8* DecodePngBGRA(const uint8* pBuffer, size_t nSize,
+static uint8* DecodePngBGRAEx(const uint8* pBuffer, size_t nSize,
 	int& nWidth, int& nHeight,
 	int* pOrigWidth = NULL, int* pOrigHeight = NULL, int* pOrigChannels = NULL,
-	CStringA* psSignature = NULL) {
+	CStringA* psSignature = NULL, CStringA* psPathHash = NULL) {
 	if (png_sig_cmp((png_bytep)pBuffer, 0, 8) != 0) return NULL;
 
 	png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
@@ -178,7 +193,7 @@ static uint8* DecodePngBGRA(const uint8* pBuffer, size_t nSize,
 	png_bytep* rows = NULL;
 
 	if (setjmp(png_jmpbuf(png_ptr))) {
-		free(pPixels); pPixels = NULL;
+		delete[] pPixels; pPixels = NULL;
 		free(rows); rows = NULL;
 		png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
 		return NULL;
@@ -210,10 +225,12 @@ static uint8* DecodePngBGRA(const uint8* pBuffer, size_t nSize,
 	}
 
 	size_t rowBytes = png_get_rowbytes(png_ptr, info_ptr);
-	pPixels = (uint8*)malloc((size_t)nHeight * rowBytes);
+	// Allocate with new[] so the buffer can be handed directly to CJPEGImage
+	// (whose destructor uses delete[]) without an extra copy in TryGet().
+	pPixels = new(std::nothrow) uint8[(size_t)nHeight * rowBytes];
 	rows = (png_bytep*)malloc(nHeight * sizeof(png_bytep));
 	if (pPixels == NULL || rows == NULL) {
-		free(pPixels); free(rows);
+		delete[] pPixels; free(rows);
 		png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
 		return NULL;
 	}
@@ -237,6 +254,8 @@ static uint8* DecodePngBGRA(const uint8* pBuffer, size_t nSize,
 				*pOrigChannels = atoi(text[i].text);
 			} else if (strcmp(text[i].key, kSignatureKey) == 0 && psSignature) {
 				*psSignature = CStringA(text[i].text);
+			} else if (strcmp(text[i].key, kPathHashKey) == 0 && psPathHash) {
+				*psPathHash = CStringA(text[i].text);
 			}
 		}
 	}
@@ -285,13 +304,13 @@ bool CThumbnailCache::TryGet(LPCTSTR sFilePath, __int64 nFileSize, const FILETIM
 	int nThumbW = 0, nThumbH = 0;
 	int nOrigChannels = 4;
 	CStringA sSignature;
-	uint8* pPixels = DecodePngBGRA(pBuffer, nSize, nThumbW, nThumbH,
+	uint8* pPixels = DecodePngBGRAEx(pBuffer, nSize, nThumbW, nThumbH,
 		&nOrigWidth, &nOrigHeight, &nOrigChannels, &sSignature);
 	free(pBuffer);
 	if (pPixels == NULL) return false;
 	if (sSignature != kSignatureValue) {
 		// Stale/incompatible cache entry - discard it.
-		free(pPixels);
+		delete[] pPixels;
 		::DeleteFile(sCacheFile);
 		return false;
 	}
@@ -307,19 +326,10 @@ bool CThumbnailCache::TryGet(LPCTSTR sFilePath, __int64 nFileSize, const FILETIM
 		::CloseHandle(hTouch);
 	}
 
-	// CJPEGImage takes ownership of pPixels (delete[] semantics in dtor use
-	// delete[] on m_pOrigPixels, but we used malloc). Re-alloc with new[] to
-	// match the class ownership model and free the malloc'd buffer.
-	size_t nBytes = (size_t)nThumbW * nThumbH * 4;
-	uint8* pOwned = new(std::nothrow) uint8[nBytes];
-	if (pOwned == NULL) {
-		free(pPixels);
-		return false;
-	}
-	memcpy(pOwned, pPixels, nBytes);
-	free(pPixels);
-
-	ppThumbnail = new CJPEGImage(nThumbW, nThumbH, pOwned, NULL, 4, 0,
+	// DecodePngBGRA now allocates with new[], matching CJPEGImage's delete[]
+	// ownership model, so the buffer can be handed over directly without a
+	// copy.
+	ppThumbnail = new CJPEGImage(nThumbW, nThumbH, pPixels, NULL, 4, 0,
 		IF_CLIPBOARD, false, 0, 1, 0, NULL, true, NULL);
 
 	// The decoded thumbnail is always 32bpp BGRA (png_set_add_alpha), so the
@@ -367,12 +377,16 @@ void CThumbnailCache::Put(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& 
 
 		// Store original geometry + format signature as text chunks so a cached
 		// file is self-describing and can be invalidated by bumping the value.
-		png_text text[4];
+		png_text text[5];
 		memset(text, 0, sizeof(text));
-		char szW[16], szH[16], szC[16];
+		char szW[16], szH[16], szC[16], szPathHash[32];
 		sprintf_s(szW, "%d", nOrigWidth);
 		sprintf_s(szH, "%d", nOrigHeight);
 		sprintf_s(szC, "%d", nChannels);
+		// Path-only hash so Invalidate() can find this entry even after an
+		// in-place edit changed the file size/mtime (and thus the cache key).
+		CString sPathHash = MakePathHash(sFilePath);
+		sprintf_s(szPathHash, "%S", (LPCTSTR)sPathHash);
 		text[0].compression = PNG_TEXT_COMPRESSION_NONE;
 		text[0].key = (png_charp)kOrigWidthKey;
 		text[0].text = szW;
@@ -385,7 +399,10 @@ void CThumbnailCache::Put(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& 
 		text[3].compression = PNG_TEXT_COMPRESSION_NONE;
 		text[3].key = (png_charp)kSignatureKey;
 		text[3].text = (png_charp)kSignatureValue;
-		png_set_text(png_ptr, info_ptr, text, 4);
+		text[4].compression = PNG_TEXT_COMPRESSION_NONE;
+		text[4].key = (png_charp)kPathHashKey;
+		text[4].text = szPathHash;
+		png_set_text(png_ptr, info_ptr, text, 5);
 
 		PngWriteFromBGRA(png_ptr, info_ptr, nThumbW, nThumbH, pBGRA);
 	}
@@ -422,26 +439,77 @@ void CThumbnailCache::Invalidate(LPCTSTR sFilePath) {
 	if (!m_bEnabled || sFilePath == NULL) return;
 	std::lock_guard<std::mutex> lock(m_csLock);
 
-	// We don't have the exact size/mtime here, so try all variants is not
-	// feasible; instead derive the key from the current file stat. Callers
-	// that edit in place should pass the pre-edit signature, but this best
-	// effort using the current file state is sufficient for the common case.
+	// An in-place edit (e.g. lossless JPEG transform) changes the file size
+	// and/or mtime, so the cache key (path+size+mtime) no longer matches the
+	// old entry. Scan all cache files and delete any whose stored path-only
+	// hash matches, so stale entries don't linger until LRU eviction.
+	CStringA sTargetPathHashA;
+	{
+		CString sPathHash = MakePathHash(sFilePath);
+		sTargetPathHashA = CStringA(sPathHash);
+	}
+
+	CString sDir(CacheDir());
+	CString sPattern = sDir + _T("*.png");
+	WIN32_FIND_DATA fd;
+	HANDLE hFind = ::FindFirstFile(sPattern, &fd);
+	if (hFind != INVALID_HANDLE_VALUE) {
+		do {
+			if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue;
+			CString sCacheFile = sDir + fd.cFileName;
+			HANDLE hFile = ::CreateFile(sCacheFile, GENERIC_READ, FILE_SHARE_READ, NULL,
+				OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+			if (hFile == INVALID_HANDLE_VALUE) continue;
+			DWORD nSize = ::GetFileSize(hFile, NULL);
+			if (nSize == INVALID_FILE_SIZE || nSize == 0) {
+				::CloseHandle(hFile);
+				continue;
+			}
+			uint8* pBuffer = (uint8*)malloc(nSize);
+			if (pBuffer == NULL) {
+				::CloseHandle(hFile);
+				continue;
+			}
+			DWORD nRead = 0;
+			BOOL bOk = ::ReadFile(hFile, pBuffer, nSize, &nRead, NULL);
+			::CloseHandle(hFile);
+			if (!bOk || nRead != nSize) {
+				free(pBuffer);
+				continue;
+			}
+			// Decode just to read the text chunks; discard the pixels.
+			int nW = 0, nH = 0;
+			CStringA sStoredPathHash;
+			uint8* pPixels = DecodePngBGRAEx(pBuffer, nSize, nW, nH, NULL, NULL, NULL, NULL, &sStoredPathHash);
+			free(pBuffer);
+			if (pPixels != NULL) delete[] pPixels;
+			if (sStoredPathHash == sTargetPathHashA) {
+				::SetFileAttributes(sCacheFile, FILE_ATTRIBUTE_NORMAL);
+				::DeleteFile(sCacheFile);
+			}
+		} while (::FindNextFile(hFind, &fd));
+		::FindClose(hFind);
+	}
+
+	// Also delete the entry matching the current file stat (the common case
+	// where the file hasn't been edited since caching).
 	__int64 nFileSize = 0;
 	HANDLE hFile = ::CreateFile(sFilePath, GENERIC_READ, FILE_SHARE_READ, NULL,
 		OPEN_EXISTING, 0, NULL);
-	if (hFile == INVALID_HANDLE_VALUE) return;
-	FILETIME ftMod;
-	BOOL bGotTime = ::GetFileTime(hFile, NULL, NULL, &ftMod);
-	LARGE_INTEGER li;
-	if (::GetFileSizeEx(hFile, &li)) nFileSize = li.QuadPart;
-	::CloseHandle(hFile);
-	if (!bGotTime || nFileSize == 0) return;
-
-	CString sKey = MakeKey(sFilePath, nFileSize, ftMod);
-	CString sCacheFile;
-	if (GetCacheFilePath(sKey, sCacheFile)) {
-		::SetFileAttributes(sCacheFile, FILE_ATTRIBUTE_NORMAL);
-		::DeleteFile(sCacheFile);
+	if (hFile != INVALID_HANDLE_VALUE) {
+		FILETIME ftMod;
+		BOOL bGotTime = ::GetFileTime(hFile, NULL, NULL, &ftMod);
+		LARGE_INTEGER li;
+		if (::GetFileSizeEx(hFile, &li)) nFileSize = li.QuadPart;
+		::CloseHandle(hFile);
+		if (bGotTime && nFileSize > 0) {
+			CString sKey = MakeKey(sFilePath, nFileSize, ftMod);
+			CString sCacheFile;
+			if (GetCacheFilePath(sKey, sCacheFile)) {
+				::SetFileAttributes(sCacheFile, FILE_ATTRIBUTE_NORMAL);
+				::DeleteFile(sCacheFile);
+			}
+		}
 	}
 }
 

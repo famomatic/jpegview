@@ -86,29 +86,35 @@ bool CLazySource::SamplePoint(int x, int y, int zoomLevel, uint8 outBGRA[4])
 	if (m_bReleased)
 		return false;
 
+	// Hold the source lock across the SetPyramidLevel + pixel read so another
+	// thread cannot switch the IFD between the level-set and the read. The
+	// lock is recursive so DecodeStrips/DecodeTile (which also lock) can be
+	// called while this outer lock is held.
+	LockSource();
+	bool bOk = false;
 	// zoomLevel > 0이면 임베디드 피라미드 레벨로 전환.
 	if (zoomLevel > 0 && zoomLevel < m_nPyramidLevels)
 	{
-		if (!SetPyramidLevel(zoomLevel))
-			return false;
-		// 피라미드 레벨에서의 좌표로 변환.
-		int scaledW = m_nWidth >> zoomLevel;
-		int scaledH = m_nHeight >> zoomLevel;
-		if (scaledW < 1) scaledW = 1;
-		if (scaledH < 1) scaledH = 1;
-		if (x >= scaledW) x = scaledW - 1;
-		if (y >= scaledH) y = scaledH - 1;
+		if (SetPyramidLevel(zoomLevel))
+		{
+			// 피라미드 레벨에서의 좌표로 변환.
+			int scaledW = m_nWidth >> zoomLevel;
+			int scaledH = m_nHeight >> zoomLevel;
+			if (scaledW < 1) scaledW = 1;
+			if (scaledH < 1) scaledH = 1;
+			if (x >= scaledW) x = scaledW - 1;
+			if (y >= scaledH) y = scaledH - 1;
+			if (x >= 0 && x < m_nWidth && y >= 0 && y < m_nHeight)
+				bOk = ReadSinglePixel(x, y, outBGRA);
+		}
 	}
 	else
 	{
-		if (!SetPyramidLevel(0))
-			return false;
+		if (SetPyramidLevel(0) && x >= 0 && x < m_nWidth && y >= 0 && y < m_nHeight)
+			bOk = ReadSinglePixel(x, y, outBGRA);
 	}
-
-	if (x < 0 || x >= m_nWidth || y < 0 || y >= m_nHeight)
-		return false;
-
-	return ReadSinglePixel(x, y, outBGRA);
+	UnlockSource();
+	return bOk;
 }
 
 bool CLazySource::DecodeRegion(const CRect& sourceRect, int zoomLevel,
@@ -119,28 +125,37 @@ bool CLazySource::DecodeRegion(const CRect& sourceRect, int zoomLevel,
 	if (dstSize.cx <= 0 || dstSize.cy <= 0)
 		return false;
 
+	// Hold the source lock across the SetPyramidLevel + decode so another
+	// thread cannot switch the IFD between the level-set and the read. The
+	// lock is recursive so DecodeStrips/DecodeTile (which also lock) can be
+	// called while this outer lock is held.
+	LockSource();
+	bool bOk = false;
 	// 피라미드 레벨 전환.
 	if (zoomLevel > 0 && zoomLevel < m_nPyramidLevels)
 	{
-		if (!SetPyramidLevel(zoomLevel))
-			return false;
+		if (SetPyramidLevel(zoomLevel))
+			bOk = true;
 	}
 	else
 	{
-		if (!SetPyramidLevel(0))
-			return false;
+		if (SetPyramidLevel(0))
+			bOk = true;
 	}
-
-	// sourceRect를 현재 레벨의 이미지 경계로 클립.
-	CRect rect = sourceRect;
-	rect.IntersectRect(rect, CRect(0, 0, m_nWidth, m_nHeight));
-	if (rect.Width() <= 0 || rect.Height() <= 0)
-		return false;
-
-	if (m_bTiled)
-		return DecodeRegionTiled(rect, zoomLevel, pDst, dstSize);
-	else
-		return DecodeRegionStripped(rect, zoomLevel, pDst, dstSize);
+	if (bOk)
+	{
+		// sourceRect를 현재 레벨의 이미지 경계로 클립.
+		CRect rect = sourceRect;
+		rect.IntersectRect(rect, CRect(0, 0, m_nWidth, m_nHeight));
+		if (rect.Width() <= 0 || rect.Height() <= 0)
+			bOk = false;
+		else if (m_bTiled)
+			bOk = DecodeRegionTiled(rect, zoomLevel, pDst, dstSize);
+		else
+			bOk = DecodeRegionStripped(rect, zoomLevel, pDst, dstSize);
+	}
+	UnlockSource();
+	return bOk;
 }
 
 bool CLazySource::DecodeRegionStripped(const CRect& sourceRect, int zoomLevel,

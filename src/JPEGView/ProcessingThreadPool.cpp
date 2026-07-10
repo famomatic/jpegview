@@ -1,8 +1,10 @@
 #include "StdAfx.h"
 #include "ProcessingThreadPool.h"
 #include "SettingsProvider.h"
+#include <mutex>
 
 CProcessingThreadPool* CProcessingThreadPool::sm_instance;
+static std::once_flag g_processingThreadPoolOnce;
 
 ///////////////////////////////////////////////////////////////////////////////////
 // Supporting classes
@@ -45,9 +47,11 @@ private:
 ///////////////////////////////////////////////////////////////////////////////////
 
 CProcessingThreadPool& CProcessingThreadPool::This() {
-	if (sm_instance == NULL) {
+	// Serialize the one-time creation so two threads entering concurrently
+	// don't both see NULL and leak a duplicate instance.
+	std::call_once(g_processingThreadPoolOnce, []() {
 		sm_instance = new CProcessingThreadPool();
-	}
+	});
 	return *sm_instance;
 }
 
@@ -86,6 +90,15 @@ bool CProcessingThreadPool::Process(CProcessingRequest* pRequest) {
 			int nSliceCY;
 			while ((nSliceCY = ~(pRequest->StripPadding - 1) & (nTargetCY / nNumThreadsUsed)) < pRequest->StripPadding) {
 				nNumThreadsUsed--;
+				// Guard against division by zero if the target height is so
+				// small that no slice meets the StripPadding minimum. Fall
+				// back to single-threaded processing in that case.
+				if (nNumThreadsUsed <= 1) {
+					nNumThreadsUsed = 1;
+					nSliceCY = ~(pRequest->StripPadding - 1) & nTargetCY;
+					if (nSliceCY < pRequest->StripPadding) nSliceCY = nTargetCY;
+					break;
+				}
 			}
 			int nLastCY = nTargetCY - (nNumThreadsUsed - 1)*nSliceCY;
 			volatile LONG nRequestThreadCounter = nNumThreadsUsed - 1;

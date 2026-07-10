@@ -103,38 +103,59 @@ void CDirectoryWatcher::ThreadFunc(void* arg) {
 	bool bSetupNewDirectory = true;
 	HANDLE waitHandles[4]{ 0 };
 	do {
-		waitHandles[0] = thisPtr->m_terminateEvent;
-		waitHandles[1] = thisPtr->m_newDirectoryEvent;
-		// Start each iteration with only the two control handles active. The
-		// change-notification handles are added below only when successfully
-		// created; this avoids passing NULL/stale handles to
-		// WaitForMultipleObjects (which is undefined behaviour).
-		waitHandles[2] = NULL;
-		waitHandles[3] = NULL;
-		int numHandles = 2;
+		// Only (re)create the change-notification handles when the watched
+		// directory actually changed. Previously numHandles was reset to 2 on
+		// every iteration, so after the first change notification the watcher
+		// stopped waiting on the file-system handles and went deaf.
+		if (bSetupNewDirectory) {
+			// Close any existing change-notification handles before creating
+			// new ones for the new directory.
+			if (waitHandles[2] != NULL && waitHandles[2] != INVALID_HANDLE_VALUE) {
+				::FindCloseChangeNotification(waitHandles[2]);
+				waitHandles[2] = NULL;
+			}
+			if (waitHandles[3] != NULL && waitHandles[3] != INVALID_HANDLE_VALUE) {
+				::FindCloseChangeNotification(waitHandles[3]);
+				waitHandles[3] = NULL;
+			}
 
-		::EnterCriticalSection(&thisPtr->m_lock);
-		if (bSetupNewDirectory && !thisPtr->m_sCurrentDirectory.IsEmpty()) {
-			waitHandles[2] = ::FindFirstChangeNotification(thisPtr->m_sCurrentDirectory, FALSE, FILE_NOTIFY_CHANGE_FILE_NAME);
-			if (waitHandles[2] != NULL && waitHandles[2] != INVALID_HANDLE_VALUE)
-			{
-				numHandles++;
-				waitHandles[3] = ::FindFirstChangeNotification(thisPtr->m_sCurrentDirectory, FALSE, FILE_NOTIFY_CHANGE_LAST_WRITE);
-				if (waitHandles[3] != NULL && waitHandles[3] != INVALID_HANDLE_VALUE) {
+			waitHandles[0] = thisPtr->m_terminateEvent;
+			waitHandles[1] = thisPtr->m_newDirectoryEvent;
+			// Start with only the two control handles active. The
+			// change-notification handles are added below only when successfully
+			// created; this avoids passing NULL/stale handles to
+			// WaitForMultipleObjects (which is undefined behaviour).
+			int numHandles = 2;
+
+			::EnterCriticalSection(&thisPtr->m_lock);
+			if (!thisPtr->m_sCurrentDirectory.IsEmpty()) {
+				waitHandles[2] = ::FindFirstChangeNotification(thisPtr->m_sCurrentDirectory, FALSE, FILE_NOTIFY_CHANGE_FILE_NAME);
+				if (waitHandles[2] != NULL && waitHandles[2] != INVALID_HANDLE_VALUE)
+				{
 					numHandles++;
-				} else {
-					// Could not create the second notification handle; close
-					// the first so we don't leak it and don't wait on NULL.
-					if (waitHandles[3] == INVALID_HANDLE_VALUE) {
-						// INVALID_HANDLE_VALUE is not a real handle to close,
-						// but FindFirstChangeNotification can return it on
-						// failure; just reset to NULL.
+					waitHandles[3] = ::FindFirstChangeNotification(thisPtr->m_sCurrentDirectory, FALSE, FILE_NOTIFY_CHANGE_LAST_WRITE);
+					if (waitHandles[3] != NULL && waitHandles[3] != INVALID_HANDLE_VALUE) {
+						numHandles++;
+					} else {
+						// Could not create the second notification handle; close
+						// the first so we don't leak it and don't wait on NULL.
+						::FindCloseChangeNotification(waitHandles[2]);
+						waitHandles[2] = NULL;
+						waitHandles[3] = NULL;
 					}
-					waitHandles[3] = NULL;
 				}
 			}
+			::LeaveCriticalSection(&thisPtr->m_lock);
+
+			bSetupNewDirectory = false;
 		}
-		::LeaveCriticalSection(&thisPtr->m_lock);
+
+		// Recompute numHandles from which notification handles are active.
+		// After the first setup this stays stable across iterations until a
+		// new directory is requested, so the watcher keeps listening.
+		int numHandles = 2;
+		if (waitHandles[2] != NULL && waitHandles[2] != INVALID_HANDLE_VALUE) numHandles++;
+		if (waitHandles[3] != NULL && waitHandles[3] != INVALID_HANDLE_VALUE) numHandles++;
 
 		// wait for events on file system or wakeup event
 		DWORD waitStatus = ::WaitForMultipleObjects(numHandles, waitHandles, FALSE, INFINITE);
