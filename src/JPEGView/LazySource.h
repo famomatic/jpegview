@@ -41,6 +41,15 @@ public:
 	bool SamplePoint(int x, int y, int zoomLevel,
 	                 uint8 outBGRA[4]) override;
 
+	// Decode only the visible viewport region. When ROI decode is enabled and
+	// the image exceeds the megapixel threshold, this avoids decoding the full
+	// image and instead decodes only the strips/tiles intersecting the viewport
+	// rectangle. The rest of the output buffer is left as transparent/black.
+	// Returns false if the source cannot do partial decode (caller should fall
+	// back to full DecodeRegion).
+	bool DecodeVisibleRegion(const CRect& viewportRect, int zoomLevel,
+	                         uint8* pDst, CSize dstSize);
+
 	int  PyramidLevelCount() const override { return m_nPyramidLevels; }
 
 	void Release() override;

@@ -158,6 +158,28 @@ bool CLazySource::DecodeRegion(const CRect& sourceRect, int zoomLevel,
 	return bOk;
 }
 
+bool CLazySource::DecodeVisibleRegion(const CRect& viewportRect, int zoomLevel,
+                                      uint8* pDst, CSize dstSize)
+{
+	if (m_bReleased || pDst == nullptr)
+		return false;
+	if (dstSize.cx <= 0 || dstSize.cy <= 0)
+		return false;
+
+	// Clip the viewport to image bounds and decode only that region. The
+	// existing DecodeRegion already handles clipping and pyramid level
+	// selection, so we delegate to it with the viewport rectangle instead of
+	// the full image. The caller is responsible for zeroing the buffer first
+	// so areas outside the viewport remain transparent.
+	CRect rect = viewportRect;
+	rect.IntersectRect(rect, CRect(0, 0, m_nWidth, m_nHeight));
+	if (rect.Width() <= 0 || rect.Height() <= 0)
+		return false;
+
+	return DecodeRegion(rect, zoomLevel, pDst, dstSize);
+}
+
+
 bool CLazySource::DecodeRegionStripped(const CRect& sourceRect, int zoomLevel,
                                        uint8* pDst, CSize dstSize)
 {

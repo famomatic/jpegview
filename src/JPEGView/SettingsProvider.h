@@ -156,6 +156,16 @@ public:
 	bool ShowPixelProbeByDefault() { return m_bShowPixelProbeByDefault; }
 	int  MaxZoomHistory() { return m_nMaxZoomHistory; }
 
+	// Region-of-interest (ROI) decode: for ultra-high-res images backed by a
+	// lazy source (e.g. multi-gigabyte TIFFs), decode only the viewport tiles
+	// instead of the full image when zoomed in. Reduces memory and improves
+	// pan responsiveness at the cost of decoding tiles on demand.
+	bool EnableROIDecode() { return m_bEnableROIDecode; }
+	// Threshold (in megapixels) above which ROI decode kicks in. Images below
+	// this threshold are decoded fully (the overhead isn't worth it for small
+	// images). Default: 50 megapixels.
+	int  ROIDecodeThresholdMP() { return m_nROIDecodeThresholdMP; }
+
 	double ZoomPauseFactor() { return m_zoomPauseFactor; }  // while internally this is represented in doubles, using a whole number percent simplifies it for the user... configuring doubles is not user friendly at all
 
 	// Returns if a user INI file exists
@@ -340,6 +350,8 @@ private:
 	int  m_nHEIFSaveQuality;        // quality for HEIF save (0-100)
 	int  m_nBatchConvertQuality;    // default quality for batch convert
 	bool m_bShowPixelProbeByDefault; // show pixel probe on startup
+	bool m_bEnableROIDecode;          // decode only viewport for ultra-high-res
+	int  m_nROIDecodeThresholdMP;     // megapixel threshold for ROI decode
 	int  m_nMaxZoomHistory;         // max zoom/pan history entries (0=disable)
 
 	std::list<CUserCommand*> m_userCommands;

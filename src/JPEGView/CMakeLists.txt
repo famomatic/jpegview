@@ -6,6 +6,11 @@ add_executable(JPEGView WIN32
     BasicProcessing.cpp
     BatchCopyDlg.cpp
     BatchConvertDlg.cpp
+    BatchRenameDlg.cpp
+    ColorPalette.cpp
+    ColorPaletteDlg.cpp
+    DuplicateFinderDlg.cpp
+    ExtractFramesDlg.cpp
     EXIFEditDlg.cpp
     Clipboard.cpp
     CropCtl.cpp

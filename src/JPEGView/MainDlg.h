@@ -289,6 +289,10 @@ private:
 	bool m_bDefaultSelectionMode;
 	// On-screen pixel/color probe overlay (RGB/HSV readout at cursor).
 	bool m_bPixelProbeEnabled;
+	// A/B pixel-difference overlay: when enabled and a file is marked for
+	// compare, the current image is differenced against the marked image and
+	// differences are highlighted in false color.
+	bool m_bABDiffOverlayEnabled;
 	// View bookmarks: stored (zoom, offset) pairs addressable by slot index.
 	struct ViewBookmark { bool valid; double zoom; CPoint offset; };
 	// Slots 1..9 (index 0..8); '0' is not a valid slot.
@@ -387,7 +391,14 @@ private:
 	void GotoBookmark();
 	void ClearBookmarks();
 	void OptimizeLosslessJPEG();
+	void ExportProcessingRecipe();
+	void ImportProcessingRecipe();
+	void ExtractAnimatedFrames();
 	void DrawPixelProbe(CDC& dc, CJPEGImage* pImage);
+	// Renders the A/B difference overlay: compares current image pixels to the
+	// marked image and highlights differences. Only active when
+	// m_bABDiffOverlayEnabled is true and a file is marked for toggle.
+	void DrawABDiffOverlay(CDC& dc, CJPEGImage* pImage);
 	void AfterNewImageLoaded(bool bSynchronize, bool bAfterStartup, bool noAdjustWindow);
 	CRect ScreenToDIB(const CSize& sizeDIB, const CRect& rect);
 	void ToggleMonitor();

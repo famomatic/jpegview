@@ -33,6 +33,24 @@ public:
 	// Removes a preset by name. Returns true if it existed.
 	bool DeletePreset(LPCTSTR sName);
 
+	// Exports the named preset to a JSON file. Returns true on success.
+	// The JSON includes all processing params, flags, and rotation so a
+	// look can be shared between machines or archived.
+	bool ExportPreset(LPCTSTR sName, LPCTSTR sJsonPath);
+
+	// Imports a preset from a JSON file created by ExportPreset().
+	// The preset name embedded in the JSON is used unless sOverrideName is
+	// non-empty. Returns true on success, false if the file is invalid or
+	// unreadable.
+	bool ImportPreset(LPCTSTR sJsonPath, LPCTSTR sOverrideName);
+
+	// Returns true if the named preset exists.
+	bool HasPreset(LPCTSTR sName) {
+		std::lock_guard<std::mutex> lock(m_csLock);
+		for (const auto& n : m_names) if (n.CompareNoCase(sName) == 0) return true;
+		return false;
+	}
+
 private:
 	CProcessingPresets();
 	CProcessingPresets(const CProcessingPresets&);

@@ -688,3 +688,10 @@ Units=auto
 ;
 ; Example for a menu entry that opens the current image in MS Paint:
 ;OpenWith0="Cmd: 'C:\WINDOWS\system32\mspaint.exe %filename%' Menuitem: 'Microsoft Paint' Flags: 'ShellExecute'"
+
+; --- v1.7 feature settings -----------------------------------------------
+; Region-of-interest (ROI) decode for ultra-high-res images.
+EnableROIDecode=false
+ROIDecodeThresholdMP=50
+MaxZoomHistory=20
+ShowPixelProbeByDefault=false

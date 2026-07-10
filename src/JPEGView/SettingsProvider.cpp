@@ -406,6 +406,11 @@ CSettingsProvider::CSettingsProvider(void) {
 
 CImageProcessingParams CSettingsProvider::LandscapeModeParams(const CImageProcessingParams& templParams) {
 	const float cfUndefined = -1;
+
+	// ROI decode: decode only the viewport for ultra-high-res images backed
+	// by a lazy source, instead of the full image.
+	m_bEnableROIDecode = GetBool(_T("EnableROIDecode"), false);
+	m_nROIDecodeThresholdMP = GetInt(_T("ROIDecodeThresholdMP"), 50, 1, 1000);
 	const int cnParams = 12;
 	float fParams[cnParams];
 	for (int i = 0; i < cnParams; i++) fParams[i] = cfUndefined;

@@ -86,6 +86,41 @@
 #define IDC_FE_OK 1004
 
 #define IDD_HELP 7000
+// --- v1.7 feature dialog IDs and controls ----------------------------------
+#define IDD_DUPLICATE_FINDER  8000
+#define IDC_DF_LIST           8001
+#define IDC_DF_SCAN           8002
+#define IDC_DF_CANCEL         8003
+#define IDC_DF_PROGRESS       8004
+#define IDC_DF_STATUS         8005
+#define IDC_DF_DELETE         8006
+#define IDC_DF_MOVE           8007
+#define IDC_DF_CLOSE          8008
+
+#define IDD_BATCH_RENAME      8100
+#define IDC_BR_LIST           8101
+#define IDC_BR_PATTERN        8102
+#define IDC_BR_PATTERN_LBL    8103
+#define IDC_BR_PREVIEW        8104
+#define IDC_BR_RENAME         8105
+#define IDC_BR_CANCEL         8106
+#define IDC_BR_STARTNUM       8107
+#define IDC_BR_STARTNUM_LBL   8108
+
+#define IDD_COLOR_PALETTE     8200
+#define IDC_CP_SWATCHES       8201
+#define IDC_CP_COPY           8202
+#define IDC_CP_CLOSE          8203
+
+#define IDD_EXTRACT_FRAMES    8300
+#define IDC_EF_DEST           8301
+#define IDC_EF_DEST_LBL       8302
+#define IDC_EF_BROWSE         8303
+#define IDC_EF_EXTRACT        8304
+#define IDC_EF_CANCEL         8305
+#define IDC_EF_PROGRESS       8306
+#define IDC_EF_STATUS         8307
+#define IDC_EF_FMT            8308
 
 #define IDD_ABOUT 2000
 #define IDC_CLOSE 1001
@@ -411,6 +446,14 @@
 #define IDM_SMART_CROP             17600  // :KeyMap: auto-detect and crop image borders
 #define IDM_FAV_FOLDERS            17650  // :KeyMap: open favorite/recent folders dialog
 #define IDM_COPY_EXIF_INFO         17700  // :KeyMap: copy EXIF info text to clipboard
+// --- v1.7 feature additions -----------------------------------------------
+#define IDM_DUPLICATE_FINDER       17750  // :KeyMap: find duplicate/similar images in folder
+#define IDM_BATCH_RENAME           17800  // :KeyMap: batch rename files in folder
+#define IDM_COLOR_PALETTE          17850  // :KeyMap: show dominant color palette of current image
+#define IDM_RECIPE_EXPORT          17900  // :KeyMap: export processing preset to JSON
+#define IDM_RECIPE_IMPORT          17910  // :KeyMap: import processing preset from JSON
+#define IDM_AB_DIFF_OVERLAY        17950  // :KeyMap: toggle pixel-difference overlay vs marked image
+#define IDM_EXTRACT_FRAMES         18000  // :KeyMap: extract all frames of an animated image to PNG
 
 // Next default values for new objects
 // 
