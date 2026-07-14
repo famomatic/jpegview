@@ -139,6 +139,15 @@ LRESULT CExtractFramesDlg::OnExtract(WORD /*wNotifyCode*/, WORD wID, HWND /*hWnd
 		}
 	}
 
+	// Release the sequential decoder cache now that every frame has been read.
+	// (WebP/JXL/APNG advance through frames across successive ReadImage calls;
+	// the cache must persist for the whole loop, then be freed exactly once.)
+	CString sLowerName = m_sFileName;
+	sLowerName.MakeLower();
+	if (sLowerName.Right(5) == _T(".webp")) WebpReaderWriter::DeleteCache();
+	else if (sLowerName.Right(4) == _T(".jxl")) JxlReader::DeleteCache();
+	else if (sLowerName.Right(4) == _T(".png") || sLowerName.Right(5) == _T(".apng")) PngReader::DeleteCache();
+
 	m_btnExtract.EnableWindow(TRUE);
 
 	CString sDone;
@@ -229,20 +238,20 @@ bool CExtractFramesDlg::ExtractFrame(int nFrameIndex, LPCTSTR sDestFolder, LPCTS
 	int nFmt = m_cbFormat.GetCurSel();
 
 	if (sLower.Right(5) == _T(".webp")) {
+		// WebP/JXL/APNG decoders are SEQUENTIAL: each ReadImage call advances to
+		// the next frame using a persistent cache. Do NOT DeleteCache here — that
+		// would reset the decoder to frame 0, so every extracted frame would be
+		// identical. The cache is released once in OnExtract after the loop.
 		pPixels = (uint8*)WebpReaderWriter::ReadImage(nWidth, nHeight, nBPP, bHasAnim, nFrameCount, nFrameTime, pEXIFData, bOOM, pBuffer, nRead);
-		// WebP ReadImage returns the first frame; for animated WebP the cache
-		// holds all frames but the API only exposes one at a time via the
-		// frame_index in the constructor. We use what we get.
-		WebpReaderWriter::DeleteCache();
 	} else if (sLower.Right(4) == _T(".jxl")) {
 		pPixels = (uint8*)JxlReader::ReadImage(nWidth, nHeight, nBPP, bHasAnim, nFrameCount, nFrameTime, pEXIFData, bOOM, pBuffer, nRead);
-		JxlReader::DeleteCache();
 	} else if (sLower.Right(5) == _T(".avif")) {
+		// AVIF takes an explicit frame index (random access), so a per-call
+		// DeleteCache is fine.
 		pPixels = (uint8*)AvifReader::ReadImage(nWidth, nHeight, nBPP, bHasAnim, nFrameIndex, nFrameCount, nFrameTime, pEXIFData, bOOM, pBuffer, nRead);
 		AvifReader::DeleteCache();
 	} else if (sLower.Right(4) == _T(".png") || sLower.Right(5) == _T(".apng")) {
 		pPixels = (uint8*)PngReader::ReadImage(nWidth, nHeight, nBPP, bHasAnim, nFrameCount, nFrameTime, pEXIFData, bOOM, pBuffer, nRead);
-		PngReader::DeleteCache();
 	} else {
 		// For GIF and other formats, use GDI+ to load each frame.
 		Gdiplus::Bitmap* pBitmap = Gdiplus::Bitmap::FromFile(m_sFileName);
@@ -258,9 +267,11 @@ bool CExtractFramesDlg::ExtractFrame(int nFrameIndex, LPCTSTR sDestFolder, LPCTS
 				Gdiplus::Rect rect(0, 0, nWidth, nHeight);
 				if (pBitmap->LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &bmpData) == Gdiplus::Ok) {
 					int nRowPadded = bmpData.Stride;
-					int nBufSize = nRowPadded * nHeight;
+					// 64-bit size: stride*height overflows a 32-bit int for very
+					// large frames, under-allocating before the memcpy.
+					__int64 nBufSize = (__int64)nRowPadded * nHeight;
 					pPixels = new uint8[nBufSize];
-					memcpy(pPixels, bmpData.Scan0, nBufSize);
+					memcpy(pPixels, bmpData.Scan0, (size_t)nBufSize);
 					nBPP = 4;
 					pBitmap->UnlockBits(&bmpData);
 				}
@@ -279,20 +290,20 @@ bool CExtractFramesDlg::ExtractFrame(int nFrameIndex, LPCTSTR sDestFolder, LPCTS
 
 	bool bSaved = SavePixelsToFile(pPixels, nWidth, nHeight, nBPP, sOutPath, nFmt);
 
-	// Free pixel data with the correct allocator per wrapper. WEBP uses new[],
-	// JXL uses new[], PNG and AVIF use malloc/free. GIF path uses new[].
+	// Free pixel data with the correct allocator per wrapper. WEBP, JXL and AVIF
+	// return new[]-allocated buffers; PNG returns a malloc'd buffer. GIF path
+	// allocates with new[]. Do NOT DeleteCache for the sequential decoders
+	// (WebP/JXL/PNG) here — that is done once after the loop in OnExtract so the
+	// decoder keeps advancing frame to frame.
 	if (sLower.Right(5) == _T(".webp")) {
 		delete[] pPixels;
-		WebpReaderWriter::DeleteCache();
 	} else if (sLower.Right(4) == _T(".jxl")) {
 		delete[] pPixels;
-		JxlReader::DeleteCache();
 	} else if (sLower.Right(5) == _T(".avif")) {
-		free(pPixels);
+		delete[] pPixels; // AvifReader::ReadImage returns new[]-allocated pixels
 		AvifReader::DeleteCache();
 	} else if (sLower.Right(4) == _T(".png") || sLower.Right(5) == _T(".apng")) {
 		free(pPixels);
-		PngReader::DeleteCache();
 	} else {
 		delete[] pPixels; // GIF path allocated with new[]
 	}

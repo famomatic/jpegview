@@ -683,7 +683,15 @@ EFilterType filter = CSettingsProvider::This().DownsamplingFilter();
 
 if (fullTargetSize.cx > MAX_IMAGE_DIMENSION || fullTargetSize.cy > MAX_IMAGE_DIMENSION) return NULL;
 
-if (GetProcessingFlag(eProcFlags, PFLAG_HighQualityResampling) && 
+// Lazy (partially-loaded) source: m_pOrigPixels is NULL, so the normal
+// ResampleHQ/PointSample paths would receive a NULL pixel pointer and return a
+// blank DIB. Decode the whole image once into m_pOrigPixels (4-channel BGRA)
+// so every path below reads real pixels with the correct channel count.
+if (OriginalPixels() == NULL && m_pSourceData != NULL) {
+	if (!MaterializeLazySource()) return NULL;
+}
+
+if (GetProcessingFlag(eProcFlags, PFLAG_HighQualityResampling) &&
     !(eResizeType == NoResize && (filter == Filter_Downsampling_Best_Quality || filter == Filter_Downsampling_No_Aliasing))) {
         void* pResult = CImageProcessorFactory::Get().ResampleHQ(fullTargetSize, targetOffset, clippingSize,
             CSize(m_nOrigWidth, m_nOrigHeight), OriginalPixels(), m_nOriginalChannels, dSharpen, filter,
@@ -710,6 +718,61 @@ if (GetProcessingFlag(eProcFlags, PFLAG_HighQualityResampling) &&
 		}
 		return pResult;
 	}
+}
+
+// Decode the whole lazy (partially-loaded) source once into m_pOrigPixels and
+// release the source. m_pOrigPixels is NULL for a lazy image, so the normal
+// pixel paths (ResampleHQ/PointSample/trapezoid/thumbnail) would otherwise get
+// a NULL pointer and produce a blank DIB.
+//
+// After this runs the image behaves like any eagerly-decoded image: a single
+// 32bpp BGRA buffer in m_pOrigPixels with m_nOriginalChannels == 4. Doing it
+// once (instead of decoding per Resample call) both fixes the previous
+// channel-count mismatch (the decoded buffer is always 4 channels while
+// m_nOriginalChannels could be 1/3) and avoids re-decoding the entire image on
+// every pan/zoom frame.
+//
+// True viewport/ROI partial decode was considered but rejected here: the
+// resamplers' fixed-point source mapping is derived from the full source size,
+// so a sub-buffer of a different size would remap the whole image and distort
+// it. Full decode is always correct; the MAX_IMAGE_PIXELS guard in the loaders
+// bounds the worst case, and ROI decode is reserved for a future path.
+bool CJPEGImage::MaterializeLazySource() {
+	if (m_pOrigPixels != NULL) {
+		// Already materialized. Drop the source if it is somehow still held so
+		// the two representations never coexist.
+		if (m_pSourceData != NULL) {
+			m_pSourceData->Release();
+			delete m_pSourceData;
+			m_pSourceData = NULL;
+		}
+		return true;
+	}
+	if (m_pSourceData == NULL) {
+		return false;
+	}
+	if (m_nOrigWidth <= 0 || m_nOrigHeight <= 0) {
+		return false;
+	}
+
+	// Use 64-bit math for the byte count: on x64 MAX_IMAGE_DIMENSION is
+	// 1,000,000, so m_nOrigWidth*m_nOrigHeight*4 can overflow a 32-bit int.
+	__int64 nBytes = (__int64)m_nOrigWidth * m_nOrigHeight * 4;
+	uint8* pFull = new(std::nothrow) uint8[nBytes];
+	if (pFull == NULL) {
+		return false;
+	}
+	CRect fullRect(0, 0, m_nOrigWidth, m_nOrigHeight);
+	if (!m_pSourceData->DecodeRegion(fullRect, 0, pFull, CSize(m_nOrigWidth, m_nOrigHeight))) {
+		delete[] pFull;
+		return false;
+	}
+	m_pOrigPixels = pFull;
+	m_nOriginalChannels = 4; // DecodeRegion always emits 32bpp BGRA
+	m_pSourceData->Release();
+	delete m_pSourceData;
+	m_pSourceData = NULL;
+	return true;
 }
 
 void* CJPEGImage::InternalResize(void* pixels, int channels, EResizeFilter filter, CSize targetSize, CSize sourceSize) {
@@ -1084,8 +1147,15 @@ void* CJPEGImage::GetDIBInternal(CSize fullTargetSize, CSize clippingSize, CPoin
 			if (pTrapezoid == NULL) {
 				m_pDIBPixels = Resample(fullTargetSize, clippingSize, targetOffset, eProcFlags, imageProcParams.Sharpen, dRotation, eResizeType);
 			} else {
-			m_pDIBPixels = CBasicProcessing::PointSampleTrapezoid(fullTargetSize, *pTrapezoid, targetOffset, clippingSize, 
-				CSize(m_nOrigWidth, m_nOrigHeight), OriginalPixels(), m_nOriginalChannels, CSettingsProvider::This().ColorBackground());
+				// Lazy (partially-loaded) source has no full pixel buffer; the
+				// trapezoid point-sampler needs contiguous original pixels, so
+				// materialize the whole image into m_pOrigPixels first. This also
+				// sets m_nOriginalChannels to 4 to match the decoded BGRA buffer.
+				if (OriginalPixels() == NULL && m_pSourceData != NULL) {
+					MaterializeLazySource();
+				}
+				m_pDIBPixels = CBasicProcessing::PointSampleTrapezoid(fullTargetSize, *pTrapezoid, targetOffset, clippingSize,
+					CSize(m_nOrigWidth, m_nOrigHeight), OriginalPixels(), m_nOriginalChannels, CSettingsProvider::This().ColorBackground());
 			}
 		}
 
@@ -1355,30 +1425,13 @@ bool CJPEGImage::ConvertSrcTo4Channels() {
 			m_pSourceData = NULL;
 		} else {
 			// Lazy source (e.g. CTiffLazySource): there is no full buffer to
-			// detach. Force a full decode of the whole image into a new
-			// m_pOrigPixels so the destructive transform can operate in place.
-			// This is expensive but correct, and only happens when the user
-			// explicitly rotates/mirrors/crops a partially-loaded image.
-			// Use 64-bit math: on x64 MAX_IMAGE_DIMENSION is 1,000,000, so the
-			// int product can overflow before the *4.
-			__int64 nBytes = (__int64)m_nOrigWidth * m_nOrigHeight * 4;
-			uint8* pFullDecode = new(std::nothrow) uint8[nBytes];
-			if (pFullDecode == NULL) {
-				return false;
-			}
-			CRect fullRect(0, 0, m_nOrigWidth, m_nOrigHeight);
-			bool bOk = m_pSourceData->DecodeRegion(fullRect, 0, pFullDecode, CSize(m_nOrigWidth, m_nOrigHeight));
-			if (!bOk) {
-				delete[] pFullDecode;
-				return false;
-			}
-			m_pOrigPixels = pFullDecode;
-			m_nOriginalChannels = 4; // DecodeRegion always emits 32bpp BGRA
-			m_pSourceData->Release();
-			delete m_pSourceData;
-			m_pSourceData = NULL;
-			// Already 4 channels from DecodeRegion, skip the conversion below.
-			return true;
+			// detach. Force a full decode of the whole image into m_pOrigPixels
+			// so the destructive transform can operate in place. This is
+			// expensive but correct, and only happens when the user explicitly
+			// rotates/mirrors/crops a partially-loaded image. MaterializeLazySource
+			// already emits 32bpp BGRA (m_nOriginalChannels = 4), so no further
+			// conversion is needed below.
+			return MaterializeLazySource();
 		}
 	}
 	if (m_nOriginalChannels == 3) {
@@ -1642,12 +1695,23 @@ CJPEGImage* CJPEGImage::CreateThumbnailImage() {
 		// take a copy of the original pixels
 		nWidth = m_nOrigWidth;
 		nHeight = m_nOrigHeight;
-		if (m_nOriginalChannels == 3) {
-			pPixels = CBasicProcessing::Convert3To4Channels(m_nOrigWidth, m_nOrigHeight, OriginalPixels());
+		// Lazy (partially-loaded) source has no full pixel buffer; decode the
+		// whole image once into m_pOrigPixels (sets m_nOriginalChannels to 4)
+		// so the thumbnail can copy from it.
+		if (OriginalPixels() == NULL && m_pSourceData != NULL) {
+			MaterializeLazySource();
+		}
+		void* pSrcForThumb = OriginalPixels();
+		if (pSrcForThumb != NULL && m_nOriginalChannels == 3) {
+			pPixels = CBasicProcessing::Convert3To4Channels(m_nOrigWidth, m_nOrigHeight, pSrcForThumb);
 		} else {
 			__int64 nSizeBytes = (__int64)m_nOrigWidth*m_nOrigHeight*4;
 			pPixels = new uint8[nSizeBytes];
-			memcpy(pPixels, OriginalPixels(), nSizeBytes);
+			if (pSrcForThumb != NULL) {
+				memcpy(pPixels, pSrcForThumb, nSizeBytes);
+			} else {
+				memset(pPixels, 0, (size_t)nSizeBytes);
+			}
 		}
 	} else {
 		// take the small image from the LDC

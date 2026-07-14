@@ -339,6 +339,13 @@ CEXIFReader::CEXIFReader(void* pApp1Block, EImageFormat eImageFormat)
 	g_pEXIFApp1Base = m_pApp1;
 	g_nEXIFApp1Size = nApp1Size;
 
+	// The TIFF header starts at offset 10 and is at least 8 bytes (endian +
+	// magic + IFD0 offset). A truncated/corrupt APP1 block that is too small
+	// to hold it must bail out before dereferencing pTIFFHeader below.
+	if (nApp1Size < 18) {
+		return;
+	}
+
 	// Read TIFF header
 	uint8* pTIFFHeader = m_pApp1 + 10;
 	bool bLittleEndian;

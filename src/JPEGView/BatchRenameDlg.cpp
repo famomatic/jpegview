@@ -130,11 +130,21 @@ CString CBatchRenameDlg::ExpandPattern(LPCTSTR sOriginalFile, const CFileDesc& f
 		sTime.Format(_T("%02d%02d%02d"), st.wHour, st.wMinute, st.wSecond);
 	}
 
+	// Remember whether the user placed the extension explicitly before the
+	// {ext} token is substituted away.
+	bool bHasExtToken = m_sPattern.Find(_T("{ext}")) >= 0;
+
 	sResult.Replace(_T("{name}"), sName);
 	sResult.Replace(_T("{ext}"), sExt);
 	sResult.Replace(_T("{num}"), sNum);
 	sResult.Replace(_T("{date}"), sDate);
 	sResult.Replace(_T("{time}"), sTime);
+
+	// Never drop the extension: if the pattern has no {ext} token, append the
+	// original extension so renamed files remain openable.
+	if (!bHasExtToken) {
+		sResult += sExt;
+	}
 
 	return sResult;
 }

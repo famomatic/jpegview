@@ -32,10 +32,12 @@ LRESULT CColorPaletteDlg::OnInitDialog(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM 
 				m_palette = CColorPalette::Extract(pPixels, nWidth, nHeight, 6);
 			} else {
 				// 3-channel BGR: build a temporary BGRA buffer.
-				int nTotal = nWidth * nHeight;
+				// 64-bit count: nWidth*nHeight (and *4) overflow a 32-bit int for
+				// large images, under-allocating pBGRA and overrunning it below.
+				size_t nTotal = (size_t)nWidth * nHeight;
 				UINT8* pBGRA = new UINT8[nTotal * 4];
 				const UINT8* pSrc = (const UINT8*)pPixels;
-				for (int i = 0; i < nTotal; i++) {
+				for (size_t i = 0; i < nTotal; i++) {
 					pBGRA[i * 4 + 0] = pSrc[i * 3 + 0];
 					pBGRA[i * 4 + 1] = pSrc[i * 3 + 1];
 					pBGRA[i * 4 + 2] = pSrc[i * 3 + 2];
@@ -139,6 +141,8 @@ void CColorPaletteDlg::CopyToClipboard(LPCTSTR sText) {
 			_tcscpy_s(pMem, nLen + 1, sText);
 			::GlobalUnlock(hMem);
 			::SetClipboardData(CF_UNICODETEXT, hMem);
+		} else {
+			::GlobalFree(hMem); // lock failed: ownership never passed to clipboard
 		}
 	}
 #else
@@ -149,6 +153,8 @@ void CColorPaletteDlg::CopyToClipboard(LPCTSTR sText) {
 			strcpy_s(pMem, strlen(sText) + 1, sText);
 			::GlobalUnlock(hMem);
 			::SetClipboardData(CF_TEXT, hMem);
+		} else {
+			::GlobalFree(hMem); // lock failed: ownership never passed to clipboard
 		}
 	}
 #endif

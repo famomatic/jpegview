@@ -219,9 +219,10 @@ static unsigned char* ReadPageToBGRA(TIFF* tif, int width, int height,
 			// libtiff returns ABGR (little-endian uint32: 0xAABBGGRR).
 			for (int y = 0; y < height; y++)
 			{
-				// libtiff renders with origin at bottom-left; flip to top-left.
-				int srcRow = height - 1 - y;
-				const uint32* pSrc = pRgbaBuf + (tmsize_t)srcRow * width;
+				// TIFFReadRGBAImageOriented(TOPLEFT) already returns a top-down
+				// raster, so read source rows in order. (A previous flip here
+				// double-flipped the image and produced a bottom-up result.)
+				const uint32* pSrc = pRgbaBuf + (tmsize_t)y * width;
 				unsigned char* pDst = pBGRA + (tmsize_t)y * rowBytes;
 				for (int x = 0; x < width; x++)
 				{

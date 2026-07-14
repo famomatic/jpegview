@@ -54,8 +54,10 @@ std::vector<CColorPalette::SColor> CColorPalette::Extract(const void* pPixelsBGR
 	const PixelBGRA* pSrc = static_cast<const PixelBGRA*>(pPixelsBGRA);
 
 	// Downsample so we never process more than ~10000 pixels.
-	int nTotalPixels = nWidth * nHeight;
-	int nMaxSamples = 10000;
+	// 64-bit count: nWidth*nHeight overflows a 32-bit int for large images,
+	// which would make the reserve() below allocate a bogus (huge) size.
+	size_t nTotalPixels = (size_t)nWidth * nHeight;
+	size_t nMaxSamples = 10000;
 	int nStep = 1;
 	if (nTotalPixels > nMaxSamples) {
 		nStep = (int)((double)nTotalPixels / nMaxSamples + 0.5);
@@ -64,7 +66,7 @@ std::vector<CColorPalette::SColor> CColorPalette::Extract(const void* pPixelsBGR
 
 	std::vector<PixelBGRA> samples;
 	samples.reserve(nTotalPixels / nStep + 1);
-	for (int i = 0; i < nTotalPixels; i += nStep) {
+	for (size_t i = 0; i < nTotalPixels; i += nStep) {
 		PixelBGRA p = pSrc[i];
 		// Skip fully transparent pixels — they carry no visible color.
 		if (p.a == 0) continue;

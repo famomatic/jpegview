@@ -24,7 +24,7 @@
 static bool IsAlphaChannelValid(int width, int height, uint32* pImageData)
 {
 	uint32 pixel = 0;
-	for (int i = 0; i < width*height; i++)
+	for (__int64 i = 0; i < (__int64)width*height; i++)
 	{
 		pixel = pixel | (*pImageData & ALPHA_OPAQUE);
 		pImageData++;
@@ -52,7 +52,7 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 	FILE *pFile = NULL;					// The file pointer
 	int channels = 0;					// The channels of the image (3 = RGA : 4 = RGBA)
 	int stride = 0;						// The stride (channels * width)
-	int i = 0;							// A counter
+	__int64 i = 0;						// A counter (64-bit: width*height can exceed INT_MAX for 65535x65535)
 
 	// Open a file pointer to the targa file and check if it was found and opened 
 	if((pFile = _tfopen(strFileName, _T("rb"))) == NULL) 
@@ -106,7 +106,10 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 	// check memory footprint
 	int targetChannels = (bits == 32) ? 4 : 3;
 	int targetStride = Helpers::DoPadding(width * targetChannels, 4);
-	uint32 numberOfBytesRequired = targetStride * height;
+	// 64-bit byte count: on x64 dims may reach 65535 and the pixel guard allows
+	// up to 1e12 pixels, so targetStride*height easily exceeds 32 bits. A 32-bit
+	// product would wrap and under-allocate, causing a heap overflow below.
+	__int64 numberOfBytesRequired = (__int64)targetStride * height;
 
 	if ((double)width * height > MAX_IMAGE_PIXELS)
 	{
@@ -249,7 +252,9 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 
 		// Create some variables to hold the rleID, current colors read, channels, & stride.
 		byte rleID = 0;
-		int colorsRead = 0;
+		// 64-bit byte offset into pImage: targetStride*height can exceed INT_MAX
+		// for large images, so a 32-bit offset would wrap and write out of bounds.
+		__int64 colorsRead = 0;
 		channels = bits / 8;
 		int x = 0;
 		int padding = targetStride - targetChannels * width;
@@ -259,7 +264,7 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 		byte* pImage = pImageData;
 
 		// Load in all the pixel data
-		int numPixels = width*height;
+		__int64 numPixels = (__int64)width*height;
 		while(i < numPixels)
 		{
 			// Read in the current color count + 1
@@ -356,10 +361,13 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 		}
 		else
 		{
-			// no valid alpha channel - set all A to 255
-			for (int i = 0; i < width*height; i++)
+			// no valid alpha channel - set all A to 255. Split the read-modify-
+			// write from the increment: `*p++ = *p | X` reads and writes *p in one
+			// unsequenced expression, which is undefined behavior.
+			for (__int64 i = 0; i < (__int64)width*height; i++)
 			{
-				*pImage32++ = *pImage32 | ALPHA_OPAQUE;
+				*pImage32 = *pImage32 | ALPHA_OPAQUE;
+				pImage32++;
 			}
 		}
 	}

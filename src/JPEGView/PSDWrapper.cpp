@@ -354,7 +354,12 @@ CJPEGImage* PsdReader::ReadImage(LPCTSTR strFileName, bool& bOutOfMemory)
 		}
 
 		int nRowSize = Helpers::DoPadding(nWidth * nChannels, 4);
-		pPixelData = new(std::nothrow) char[nRowSize * nHeight];
+		// 64-bit destination size: on x64 the pixel guard allows up to 1e12
+		// pixels, so nRowSize*nHeight overflows a 32-bit int and would
+		// under-allocate, turning every bounds check below into a false pass and
+		// the decode into a heap overflow.
+		__int64 nPixelDataSize = (__int64)nRowSize * nHeight;
+		pPixelData = new(std::nothrow) char[nPixelDataSize];
 		if (pPixelData == NULL) {
 			bOutOfMemory = true;
 			ThrowIf(true);
@@ -431,8 +436,8 @@ CJPEGImage* PsdReader::ReadImage(LPCTSTR strFileName, bool& bOutOfMemory)
 								ThrowIf(pRow >= (unsigned char*)pBuffer + nImageDataSize);
 								unsigned char value = *pRow++;
 								for (unsigned i = count; i < count + c; i++) {
-									unsigned char* pixel = (unsigned char*)pPixelData + row * nRowSize + i * nChannels + rchannel;
-									ThrowIf(pixel >= (unsigned char*)pPixelData + nRowSize * nHeight);
+									unsigned char* pixel = (unsigned char*)pPixelData + (size_t)row * nRowSize + i * nChannels + rchannel;
+									ThrowIf(pixel >= (unsigned char*)pPixelData + nPixelDataSize);
 									*pixel = value;
 								}
 							} else if (c < 128) {
@@ -440,8 +445,8 @@ CJPEGImage* PsdReader::ReadImage(LPCTSTR strFileName, bool& bOutOfMemory)
 								for (unsigned i = count; i < count + c; i++) {
 									ThrowIf(pRow >= (unsigned char*)pBuffer + nImageDataSize);
 									unsigned char value = *pRow++;
-									unsigned char* pixel = (unsigned char*)pPixelData + row * nRowSize + i * nChannels + rchannel;
-									ThrowIf(pixel >= (unsigned char*)pPixelData + nRowSize * nHeight);
+									unsigned char* pixel = (unsigned char*)pPixelData + (size_t)row * nRowSize + i * nChannels + rchannel;
+									ThrowIf(pixel >= (unsigned char*)pPixelData + nPixelDataSize);
 									*pixel = value;
 								}
 							}
@@ -461,8 +466,8 @@ CJPEGImage* PsdReader::ReadImage(LPCTSTR strFileName, bool& bOutOfMemory)
 						for (unsigned count = 0; count < nWidth; count++) {
 							ThrowIf(p >= (unsigned char*)pBuffer + nImageDataSize);
 							unsigned char value = *p++;
-							unsigned char* pixel = (unsigned char*)pPixelData + row * nRowSize + count * nChannels + rchannel;
-							ThrowIf(pixel >= (unsigned char*)pPixelData + nRowSize * nHeight);
+							unsigned char* pixel = (unsigned char*)pPixelData + (size_t)row * nRowSize + count * nChannels + rchannel;
+							ThrowIf(pixel >= (unsigned char*)pPixelData + nPixelDataSize);
 							*pixel = value;
 						}
 					}
@@ -475,8 +480,8 @@ CJPEGImage* PsdReader::ReadImage(LPCTSTR strFileName, bool& bOutOfMemory)
 					unsigned char* pChan = pInflated + channel * chanSize;
 					for (unsigned row = 0; row < nHeight; row++) {
 						for (unsigned count = 0; count < nWidth; count++) {
-							unsigned char* pixel = (unsigned char*)pPixelData + row * nRowSize + count * nChannels + rchannel;
-							ThrowIf(pixel >= (unsigned char*)pPixelData + nRowSize * nHeight);
+							unsigned char* pixel = (unsigned char*)pPixelData + (size_t)row * nRowSize + count * nChannels + rchannel;
+							ThrowIf(pixel >= (unsigned char*)pPixelData + nPixelDataSize);
 							*pixel = pChan[row * nWidth + count];
 						}
 					}
@@ -547,8 +552,8 @@ CJPEGImage* PsdReader::ReadImage(LPCTSTR strFileName, bool& bOutOfMemory)
 							// 32-bit float big-endian: take high byte of the float
 							value8 = pChan[sampleIdx];
 						}
-						unsigned char* pixel = (unsigned char*)pPixelData + row * nRowSize + count * nChannels + rchannel;
-						ThrowIf(pixel >= (unsigned char*)pPixelData + nRowSize * nHeight);
+						unsigned char* pixel = (unsigned char*)pPixelData + (size_t)row * nRowSize + count * nChannels + rchannel;
+						ThrowIf(pixel >= (unsigned char*)pPixelData + nPixelDataSize);
 						*pixel = value8;
 					}
 				}
@@ -566,8 +571,15 @@ CJPEGImage* PsdReader::ReadImage(LPCTSTR strFileName, bool& bOutOfMemory)
 			uint32* pImage32 = (uint32*)pPixelData;
 			COLORREF backgroundColor = nColorMode == MODE_CMYK ? 0 : CSettingsProvider::This().ColorTransparency();
 			if (nColorMode == MODE_CMYK) {
-				for (int i = 0; i < nWidth * nHeight; i++)
-					*pImage32++ = Helpers::AlphaBlendBackground(*pImage32, backgroundColor);
+				// Use 64-bit iteration count: on x64 MAX_IMAGE_DIMENSION is 1,000,000,
+				// so nWidth*nHeight can exceed INT_MAX and overflow as a 32-bit product.
+				__int64 nPixelCount = (__int64)nWidth * nHeight;
+				for (__int64 i = 0; i < nPixelCount; i++) {
+					// Read-modify-write must be one statement, not `*p++ = f(*p)`,
+					// which reads and writes *p unsequenced (undefined behavior).
+					*pImage32 = Helpers::AlphaBlendBackground(*pImage32, backgroundColor);
+					pImage32++;
+				}
 			}
 		}
 

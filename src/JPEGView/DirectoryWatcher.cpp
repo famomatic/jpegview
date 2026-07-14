@@ -29,6 +29,7 @@ static BOOL GetLastModificationTime(LPCTSTR fileName, FILETIME & lastModificatio
 CDirectoryWatcher::CDirectoryWatcher(HWND hTargetWindow)
 	: m_lock{ 0 }
 {
+	m_bTerminate = false;
 	m_hTargetWindow = hTargetWindow;
 	::InitializeCriticalSection(&m_lock);
 	m_terminateEvent = ::CreateEvent(0, TRUE, FALSE, NULL);

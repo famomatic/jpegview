@@ -599,6 +599,9 @@ void CImageLoadThread::ProcessReadJPEGRequest(CRequest * request) {
 					request->Image->SetJPEGComment(Helpers::GetJPEGComment(pBuffer, nFileSize));
 					request->Image->SetJPEGChromoSampling(eChromoSubSampling);
 				} else if (bOutOfMemory) {
+					// TurboJpeg reported OOM; pPixelData may still be non-NULL when the
+					// decoded channels are unsupported, so free it to avoid a leak.
+					delete[] pPixelData;
 					request->OutOfMemory = true;
 				} else {
 					// failed, try GDI+

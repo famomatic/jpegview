@@ -525,6 +525,12 @@ private:
 
 	// makes sure that the input image (m_pOrigPixels) is a 4 channel BGRA image (converts if necessary)
 	bool ConvertSrcTo4Channels();
+	// If pixels are owned by a lazy source (m_pSourceData != NULL, m_pOrigPixels == NULL),
+	// decode the whole image once into m_pOrigPixels (32bpp BGRA, m_nOriginalChannels = 4)
+	// and release the lazy source, so all normal pixel paths (Resample/PointSample/
+	// trapezoid/thumbnail) work unchanged. Idempotent: returns true immediately if the
+	// pixels are already materialized. Returns false only on allocation/decode failure.
+	bool MaterializeLazySource();
 
 	// Gets the processing flags according to the inclusion/exclusion list in INI file
 	EProcessingFlags GetProcFlagsIncludeExcludeFolders(LPCTSTR sFileName, EProcessingFlags procFlags) const;

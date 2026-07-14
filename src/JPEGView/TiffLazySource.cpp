@@ -146,7 +146,12 @@ bool CTiffLazySource::OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex)
 		(m_photometric == PHOTOMETRIC_PALETTE ||
 		 m_photometric == PHOTOMETRIC_MINISWHITE ||
 		 (m_photometric == PHOTOMETRIC_MINISBLACK && samplesPerPixel == 1) ||
-		 m_photometric == PHOTOMETRIC_YCBCR);
+		 m_photometric == PHOTOMETRIC_YCBCR ||
+		 // The manual 8-bit path (ConvertStripToBGRA) assumes interleaved
+		 // (contig) samples. For separate planar config each strip holds a
+		 // single sample plane, so route it through libtiff's RGBA reader,
+		 // which composes the planes correctly, to avoid an out-of-bounds read.
+		 m_planarConfig == PLANARCONFIG_SEPARATE);
 
 	// ICC 프로파일 읽기.
 	uint32 iccSize = 0;
@@ -347,15 +352,19 @@ bool CTiffLazySource::DecodeSingleStrip(int stripIndex, uint8* pDst, int dstStri
 		uint32* pRGBA = (uint32*)_TIFFmalloc((tmsize_t)m_nWidth * rowsInStrip * sizeof(uint32));
 		if (pRGBA == nullptr)
 			return false;
-		// TIFFReadRGBAStrip은 항상 전체 rowsPerStrip을 채우려 하므로,
-		// 마지막 스트립의 빈 행은 무시된다 (버퍼가 충분히 큼).
-		if (TIFFReadRGBAStrip(m_tif, (uint32)stripIndex, pRGBA) == 0)
+		// TIFFReadRGBAStrip takes the first ROW of the strip, not the strip
+		// index; libtiff rejects any row that is not a multiple of rowsPerStrip.
+		if (TIFFReadRGBAStrip(m_tif, (uint32)stripIndex * m_nRowsPerStrip, pRGBA) == 0)
 		{
 			_TIFFfree(pRGBA);
 			return false;
 		}
 		// libtiff RGBA는 메모리에 ABGR(uint32)로 저장된다.
 		// BGRA 레이아웃으로 변환: A=byte3, B=byte2, G=byte1, R=byte0.
+		// TIFFReadRGBAStrip returns the strip already in top-down order for a
+		// TOPLEFT image (libtiff applies the vertical flip internally based on
+		// the file's orientation tag), so read source rows in order. A previous
+		// reverse here double-flipped the strip and produced a bottom-up buffer.
 		for (int y = 0; y < rowsInStrip; y++)
 		{
 			const uint32* pSrcRow = pRGBA + (size_t)y * m_nWidth;
@@ -466,7 +475,10 @@ bool CTiffLazySource::DecodeStrips(int startStrip, int stripCount,
 			break;
 
 		// 각 스트립을 pDst의 해당 오프셋에 디코드.
-		int stripOffset = i * m_nRowsPerStrip * dstStride;
+		// 64-bit offset: i*rowsPerStrip*dstStride overflows a 32-bit int for
+		// images larger than ~2 GB (well within the x64 dimension limit),
+		// producing a wrapped/negative offset and an out-of-bounds write.
+		size_t stripOffset = (size_t)i * m_nRowsPerStrip * dstStride;
 		if (!DecodeSingleStrip(stripIndex, pDst + stripOffset, dstStride))
 		{
 			// 실패한 스트립은 검은색으로 채운다.
@@ -504,6 +516,9 @@ bool CTiffLazySource::DecodeTile(int tileX, int tileY, uint8* pDst)
 			return false;
 		}
 		// libtiff RGBA(ABGR uint32) -> BGRA 변환.
+		// TIFFReadRGBATile returns the tile already in top-down order for a
+		// TOPLEFT image (libtiff applies the vertical flip internally based on
+		// the file's orientation tag), so read source rows in order.
 		for (int y = 0; y < m_nTileHeight; y++)
 		{
 			const uint32* pSrcRow = pRGBA + (size_t)y * m_nTileWidth;
