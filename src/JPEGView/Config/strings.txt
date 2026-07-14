@@ -557,3 +557,14 @@ Scanning %d / %d: %s
 Image has %d frame(s). Choose destination and click Extract.
 Extracted %d frame(s) to:
 Exported preset '%s' to:
+Toggle histogram overlay
+Clipped:
+Toggle HDR display
+HDR display requires an HDR capable monitor and image.
+Rating:
+Rating set to %d.
+Rating removed.
+Failed to write rating.
+Rating filter: minimum %d star(s)
+Rating filter off
+Jump to:

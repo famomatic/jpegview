@@ -5,6 +5,7 @@
 #include "XMMImage.h"
 #include "Helpers.h"
 #include "SettingsProvider.h"
+#include "DisplayColorProfile.h"
 #include "HistogramCorr.h"
 #include "LocalDensityCorr.h"
 #include "ParameterDB.h"
@@ -181,6 +182,10 @@ void CJPEGImage::InitCommon(EImageFormat eImageFormat, bool bIsAnimation, int nF
 	m_pDIBPixels = NULL;
 	m_pDIBPixelsLUTProcessed = NULL;
 	m_pLastDIB = NULL;
+	m_pMonitorDIB = NULL;
+	m_pMonitorDIBSource = NULL;
+	m_monitorDIBSize = CSize(0, 0);
+	m_nMonitorDIBVersion = -1;
 	m_pThumbnail = NULL;
 	m_pHistogramThumbnail = NULL;
 	m_pGrayImage = NULL;
@@ -244,6 +249,9 @@ CJPEGImage::~CJPEGImage(void) {
 	m_pDIBPixels = NULL;
 	delete[] m_pDIBPixelsLUTProcessed;
 	m_pDIBPixelsLUTProcessed = NULL;
+	delete[] m_pMonitorDIB;
+	m_pMonitorDIB = NULL;
+	m_pMonitorDIBSource = NULL;
 	delete[] m_pGrayImage;
 	m_pGrayImage = NULL;
 	delete[] m_pSmoothGrayImage;
@@ -896,6 +904,8 @@ void CJPEGImage::SetDimRects(const CDimRect* dimRects, int numberOfRects) {
 				CBasicProcessing::DimRectangle32bpp(DIBWidth(), DIBHeight(), m_pDIBPixelsLUTProcessed,
 					dimRects[i].Rect, dimRects[i].Factor);
 			}
+			// DIB content changed in-place, monitor profile copy is stale now
+			m_pMonitorDIBSource = NULL;
 		} else {
 			// force to recreate processed DIB on next access
 			delete[] m_pDIBPixelsLUTProcessed;
@@ -1195,7 +1205,44 @@ void* CJPEGImage::GetDIBInternal(CSize fullTargetSize, CSize clippingSize, CPoin
 		delete[] pDIBUnsharpMasked;
 	}
 
-	return pDIB;
+	return ApplyDisplayProfile(pDIB, bParametersChanged);
+}
+
+void* CJPEGImage::ApplyDisplayProfile(void* pDIB, bool bParametersChanged) {
+	if (pDIB == NULL) {
+		return NULL;
+	}
+	void* hTransform = CDisplayColorProfile::GetTransform();
+	if (hTransform == NULL) {
+		delete[] m_pMonitorDIB;
+		m_pMonitorDIB = NULL;
+		m_pMonitorDIBSource = NULL;
+		return pDIB;
+	}
+	int nVersion = CDisplayColorProfile::GetVersion();
+	if (m_pMonitorDIB != NULL && !bParametersChanged && m_pMonitorDIBSource == pDIB &&
+		m_monitorDIBSize == m_ClippingSize && m_nMonitorDIBVersion == nVersion) {
+		return m_pMonitorDIB;
+	}
+	__int64 nNumPixels = (__int64)m_ClippingSize.cx * m_ClippingSize.cy;
+	if (nNumPixels <= 0 || nNumPixels > 0x7FFFFFFF / (int)sizeof(uint32)) {
+		return pDIB; // guard against size_t truncation on 32 bit builds
+	}
+	if (m_pMonitorDIB == NULL || m_monitorDIBSize != m_ClippingSize) {
+		delete[] m_pMonitorDIB;
+		m_pMonitorDIB = new(std::nothrow) uint32[(size_t)nNumPixels];
+	}
+	if (m_pMonitorDIB == NULL ||
+		!CDisplayColorProfile::ApplyTransform(hTransform, pDIB, m_pMonitorDIB, m_ClippingSize.cx, m_ClippingSize.cy)) {
+		delete[] m_pMonitorDIB;
+		m_pMonitorDIB = NULL;
+		m_pMonitorDIBSource = NULL;
+		return pDIB;
+	}
+	m_pMonitorDIBSource = pDIB;
+	m_monitorDIBSize = m_ClippingSize;
+	m_nMonitorDIBVersion = nVersion;
+	return m_pMonitorDIB;
 }
 
 void* CJPEGImage::ApplyUnsharpMask(const CUnsharpMaskParams * pUnsharpMaskParams, bool bNoChangesLDCandLUT) {

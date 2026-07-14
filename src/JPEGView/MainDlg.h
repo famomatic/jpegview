@@ -89,7 +89,8 @@ public:
 		MESSAGE_HANDLER(WM_DROPFILES, OnDropFiles)
 		MESSAGE_HANDLER(WM_CLOSE, OnClose)
 		MESSAGE_HANDLER(WM_LOAD_FILE_ASYNCH, OnLoadFileAsynch)
-		MESSAGE_HANDLER(WM_COPYDATA, OnAnotherInstanceStarted) 
+		MESSAGE_HANDLER(WM_COPYDATA, OnAnotherInstanceStarted)
+		MESSAGE_HANDLER(WM_DISPLAYCHANGE, OnDisplayChange)
 		COMMAND_ID_HANDLER(IDOK, OnOK)
 		COMMAND_ID_HANDLER(IDCANCEL, OnCancel)
 	END_MSG_MAP()
@@ -132,6 +133,7 @@ public:
 	LRESULT OnAnotherInstanceStarted(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM lParam, BOOL& /*bHandled*/);
 	LRESULT OnLoadFileAsynch(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM lParam, BOOL& /*bHandled*/);
 	LRESULT OnClose(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM lParam, BOOL& /*bHandled*/);
+	LRESULT OnDisplayChange(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, BOOL& /*bHandled*/);
 
 	// Called by main()
 	void SetStartupInfo(LPCTSTR sStartupFile, int nAutostartSlideShow, Helpers::ESorting eSorting, Helpers::ETransitionEffect eEffect, 
@@ -293,6 +295,13 @@ private:
 	// compare, the current image is differenced against the marked image and
 	// differences are highlighted in false color.
 	bool m_bABDiffOverlayEnabled;
+	// RGB histogram overlay with clipping warning, computed from the processed image.
+	bool m_bHistogramOverlayEnabled;
+	// Type-to-jump: incremental file name search within the current folder.
+	bool m_bTypeToJumpActive;
+	CString m_sTypeToJumpBuffer;
+	// XMP rating filter: navigation skips files rated below this (0 = filter off).
+	int m_nRatingFilterMin;
 	// View bookmarks: stored (zoom, offset) pairs addressable by slot index.
 	struct ViewBookmark { bool valid; double zoom; CPoint offset; };
 	// Slots 1..9 (index 0..8); '0' is not a valid slot.
@@ -387,6 +396,19 @@ private:
 	void LoadPreset();
 	void DeletePreset();
 	void TogglePixelProbe();
+	void ToggleHistogramOverlay();
+	// HDR preview: presents EXR/Radiance HDR float data via scRGB swap chain on HDR monitors
+	void ToggleHDRDisplay();
+	// Type-to-jump: incremental filename search. HandleTypeToJumpKey() consumes keys
+	// while the mode is active and returns true if the key was handled.
+	void StartTypeToJump();
+	void EndTypeToJump();
+	// XMP rating: write rating of current file, cycle minimum-rating navigation filter
+	void SetCurrentRating(int nRating);
+	void CycleRatingFilter();
+	bool HandleTypeToJumpKey(WPARAM wParam, bool bCtrl, bool bAlt);
+	void TypeToJumpNavigate(bool bAdvanceToNextMatch);
+	void DrawTypeToJumpOverlay(CDC& dc);
 	void SetBookmark();
 	void GotoBookmark();
 	void ClearBookmarks();
@@ -395,6 +417,9 @@ private:
 	void ImportProcessingRecipe();
 	void ExtractAnimatedFrames();
 	void DrawPixelProbe(CDC& dc, CJPEGImage* pImage);
+	// Renders the RGB histogram overlay (bottom-right corner) with shadow/highlight
+	// clipping warnings. Uses the cached histogram of the whole processed image.
+	void DrawHistogramOverlay(CDC& dc, CJPEGImage* pImage);
 	// Renders the A/B difference overlay: compares current image pixels to the
 	// marked image and highlights differences. Only active when
 	// m_bABDiffOverlayEnabled is true and a file is marked for toggle.

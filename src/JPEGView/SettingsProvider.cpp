@@ -203,6 +203,8 @@ CSettingsProvider::CSettingsProvider(void) {
 	m_bExchangeXButtons = GetBool(_T("ExchangeXButtons"), true);
 	m_bAutoRotateEXIF = GetBool(_T("AutoRotateEXIF"), true);
 	m_bUseEmbeddedColorProfiles = GetBool(_T("UseEmbeddedColorProfiles"), false);
+	m_bUseDisplayColorProfile = GetBool(_T("UseDisplayColorProfile"), false);
+	m_nHDRPaperWhiteNits = GetInt(_T("HDRPaperWhiteNits"), 200, 80, 1000);
 	m_nDisplayMonitor = GetInt(_T("DisplayMonitor"), -1, -1, 16);
 	m_dAutoContrastAmount = GetDouble(_T("AutoContrastCorrectionAmount"), 0.5, 0.0, 1.0);
 	m_dAutoBrightnessAmount = GetDouble(_T("AutoBrightnessCorrectionAmount"), 0.2, 0.0, 1.0);

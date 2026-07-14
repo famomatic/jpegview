@@ -27,8 +27,32 @@ static inline void rgbeToFloat(const RGBE& c, float& rf, float& gf, float& bf) {
 void* HdrReader::ReadImage(int& width, int& height, int& bpp, bool& outOfMemory,
 	const void* buffer, int sizebytes)
 {
-	outOfMemory = false;
 	bpp = 4;
+	float* pFloatPixels = ReadImageFloat(width, height, outOfMemory, buffer, sizebytes);
+	if (pFloatPixels == NULL) {
+		return NULL;
+	}
+	unsigned char* pPixelData = new(std::nothrow) unsigned char[(size_t)width * height * 4];
+	if (pPixelData == NULL) {
+		outOfMemory = true;
+		delete[] pFloatPixels;
+		width = height = 0;
+		return NULL;
+	}
+	for (__int64 i = 0; i < (__int64)width * height; i++) {
+		pPixelData[i * 4 + 0] = tonemap(pFloatPixels[i * 4 + 2]); // B
+		pPixelData[i * 4 + 1] = tonemap(pFloatPixels[i * 4 + 1]); // G
+		pPixelData[i * 4 + 2] = tonemap(pFloatPixels[i * 4 + 0]); // R
+		pPixelData[i * 4 + 3] = 255;
+	}
+	delete[] pFloatPixels;
+	return (void*)pPixelData;
+}
+
+float* HdrReader::ReadImageFloat(int& width, int& height, bool& outOfMemory,
+	const void* buffer, int sizebytes)
+{
+	outOfMemory = false;
 	width = 0;
 	height = 0;
 
@@ -68,7 +92,7 @@ void* HdrReader::ReadImage(int& width, int& height, int& bpp, bool& outOfMemory,
 	RGBE* pScanline = new(std::nothrow) RGBE[w];
 	if (pScanline == NULL) { outOfMemory = true; return NULL; }
 
-	unsigned char* pPixelData = new(std::nothrow) unsigned char[(size_t)w * h * 4];
+	float* pPixelData = new(std::nothrow) float[(size_t)w * h * 4];
 	if (pPixelData == NULL) { delete[] pScanline; outOfMemory = true; return NULL; }
 
 	for (int y = 0; y < h; y++) {
@@ -110,15 +134,15 @@ void* HdrReader::ReadImage(int& width, int& height, int& bpp, bool& outOfMemory,
 		for (int x = 0; x < w; x++) {
 			float r, g, b;
 			rgbeToFloat(pScanline[x], r, g, b);
-			pPixelData[(y * w + x) * 4 + 0] = tonemap(b);
-			pPixelData[(y * w + x) * 4 + 1] = tonemap(g);
-			pPixelData[(y * w + x) * 4 + 2] = tonemap(r);
-			pPixelData[(y * w + x) * 4 + 3] = 255;
+			pPixelData[((size_t)y * w + x) * 4 + 0] = r;
+			pPixelData[((size_t)y * w + x) * 4 + 1] = g;
+			pPixelData[((size_t)y * w + x) * 4 + 2] = b;
+			pPixelData[((size_t)y * w + x) * 4 + 3] = 1.0f;
 		}
 	}
 
 	delete[] pScanline;
 	width = w;
 	height = h;
-	return (void*)pPixelData;
+	return pPixelData;
 }

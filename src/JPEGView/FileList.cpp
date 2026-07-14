@@ -559,6 +559,21 @@ void CFileList::SetNavigationMode(Helpers::ENavigationMode eMode) {
 	m_iterStart = m_bWrapAroundFolder ? m_iter : m_fileList.begin();
 }
 
+bool CFileList::SetCurrentFile(LPCTSTR sFileTitle) {
+	if (sFileTitle == NULL) {
+		return false;
+	}
+	std::list<CFileDesc>::iterator iter;
+	for (iter = m_fileList.begin(); iter != m_fileList.end(); iter++) {
+		if (_tcsicmp(sFileTitle, iter->GetTitle()) == 0) {
+			m_iter = iter;
+			m_iterStart = m_bWrapAroundFolder ? m_iter : m_fileList.begin();
+			return true;
+		}
+	}
+	return false;
+}
+
 void CFileList::MarkCurrentFile() {
 	LPCTSTR sCurrent = Current();
 	if (::GetFileAttributes(sCurrent) != INVALID_FILE_ATTRIBUTES) {

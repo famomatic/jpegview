@@ -7,6 +7,7 @@
 #include <math.h>
 #include <limits.h>
 #include <gdiplus.h>
+#include <vector>
 
 #include "MainDlg.h"
 #include "HelpDlg.h"
@@ -61,6 +62,11 @@
 #include "KeyMap.h"
 #include "JPEGLosslessTransform.h"
 #include "DirectoryWatcher.h"
+#include "DisplayColorProfile.h"
+#include "XMPRating.h"
+#include "HDRDisplay.h"
+#include "EXRWrapper.h"
+#include "HDRWrapper.h"
 #include "DesktopWallpaper.h"
 #include "PrintImage.h"
 
@@ -252,6 +258,9 @@ CMainDlg::CMainDlg(bool bForceFullScreen) {
 	m_bAutoFitWndToImage = sp.DefaultWndToImage();
 	m_bPixelProbeEnabled = false;
 	m_bABDiffOverlayEnabled = false;
+	m_bHistogramOverlayEnabled = false;
+	m_bTypeToJumpActive = false;
+	m_nRatingFilterMin = 0;
 	for (int i = 0; i < NUM_BOOKMARKSLOTS; i++) { m_bookmarks[i].valid = false; m_bookmarks[i].zoom = -1.0; m_bookmarks[i].offset = CPoint(0, 0); }
 	m_bFullScreenMode = bForceFullScreen || (sp.ShowFullScreen() && !sp.AutoFullScreen());
 	m_bLockPaint = true;
@@ -326,6 +335,8 @@ LRESULT CMainDlg::OnInitDialog(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam
 	HelpersGUI::ScreenScaling = ::GetDeviceCaps(dc, LOGPIXELSX)/96.0f;
 
 	::SetClassLongPtr(m_hWnd, GCLP_HCURSOR, NULL);
+
+	CDisplayColorProfile::SetWindow(m_hWnd);
 
 	m_pDirectoryWatcher = new CDirectoryWatcher(m_hWnd);
 
@@ -676,6 +687,12 @@ void CMainDlg::PaintToDC(CDC& dc) {
 			DrawPixelProbe(dc, pCurrentImage);
 			DrawABDiffOverlay(dc, pCurrentImage);
 		}
+		if (m_bHistogramOverlayEnabled) {
+			DrawHistogramOverlay(dc, pCurrentImage);
+		}
+		if (m_bTypeToJumpActive) {
+			DrawTypeToJumpOverlay(dc);
+		}
 	}
 }
 
@@ -728,6 +745,9 @@ void CMainDlg::DisplayFileName(const CRect& imageProcessingArea, CDC& dc, double
 }
 
 LRESULT CMainDlg::OnSize(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, BOOL& /*bHandled*/) {
+	if (CHDRDisplay::IsActive()) {
+		CHDRDisplay::Hide(); // overlay swap chain is sized to the old client area
+	}
 	bool bKeepFitToScreen = !m_bResizeForNewImage && fabs(m_dZoom - GetZoomFactorForFitToScreen(false, false)) < 0.01;
 	this->GetClientRect(&m_clientRect);
 	this->Invalidate(FALSE);
@@ -792,6 +812,14 @@ LRESULT CMainDlg::OnLoadFileAsynch(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM lPar
 
 LRESULT CMainDlg::OnClose(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM lParam, BOOL& bHandled) {
 	GetWindowRect(m_windowRectOnClose);
+	bHandled = FALSE;
+	return 0;
+}
+
+LRESULT CMainDlg::OnDisplayChange(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, BOOL& bHandled) {
+	// monitor configuration or color profile may have changed - recreate display color transform
+	CDisplayColorProfile::Invalidate();
+	this->Invalidate(FALSE);
 	bHandled = FALSE;
 	return 0;
 }
@@ -1011,8 +1039,15 @@ LRESULT CMainDlg::OnKeyDown(UINT /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/, BOO
 	if (m_pPanelMgr->OnKeyDown((unsigned int)wParam, bShift, bAlt, bCtrl)) {
 		return 1; // a panel has handled the key
 	}
+	if (m_bTypeToJumpActive && HandleTypeToJumpKey(wParam, bCtrl, bAlt)) {
+		return 1;
+	}
 	bool bHandled = false;
-	if (wParam == VK_ESCAPE && CloseHelpDlg()) {
+	if (wParam == VK_ESCAPE && CHDRDisplay::IsActive()) {
+		bHandled = true;
+		CHDRDisplay::Hide();
+		this->Invalidate(FALSE);
+	} else if (wParam == VK_ESCAPE && CloseHelpDlg()) {
 		bHandled = true;
 	} else if (wParam == VK_ESCAPE && m_pCropCtl->IsCropping()) {
 		bHandled = true;
@@ -1330,8 +1365,10 @@ LRESULT CMainDlg::OnContextMenu(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM lParam,
 	::AppendMenu(hMenuTools, MF_STRING, IDM_CLEAR_BOOKMARKS, CNLS::GetString(_T("Clear bookmarks")));
 	::AppendMenu(hMenuTools, MF_SEPARATOR, 0, NULL);
 	::AppendMenu(hMenuTools, MF_STRING, IDM_TOGGLE_PIXEL_PROBE, CNLS::GetString(_T("Toggle pixel probe")));
+	::AppendMenu(hMenuTools, MF_STRING, IDM_TOGGLE_HISTOGRAM, CNLS::GetString(_T("Toggle histogram overlay")));
 	::AppendMenu(hMenuTools, MF_STRING, IDM_OPTIMIZE_LOSSLESS, CNLS::GetString(_T("Optimize JPEG losslessly")));
 	if (m_bPixelProbeEnabled) ::CheckMenuItem(hMenuTools, IDM_TOGGLE_PIXEL_PROBE, MF_CHECKED);
+	if (m_bHistogramOverlayEnabled) ::CheckMenuItem(hMenuTools, IDM_TOGGLE_HISTOGRAM, MF_CHECKED);
 	::AppendMenu(hMenuTrackPopup, MF_SEPARATOR, 0, NULL);
 	::AppendMenu(hMenuTools, MF_SEPARATOR, 0, NULL);
 	::AppendMenu(hMenuTools, MF_STRING, IDM_COLOR_PALETTE, CNLS::GetString(_T("Color palette..." )));
@@ -1849,6 +1886,26 @@ void CMainDlg::ExecuteCommand(int nCommand) {
 			break;
 		case IDM_TOGGLE_PIXEL_PROBE:
 			TogglePixelProbe();
+			break;
+		case IDM_TOGGLE_HISTOGRAM:
+			ToggleHistogramOverlay();
+			break;
+		case IDM_TOGGLE_HDR_DISPLAY:
+			ToggleHDRDisplay();
+			break;
+		case IDM_TYPE_TO_JUMP:
+			StartTypeToJump();
+			break;
+		case IDM_SET_RATING_0:
+		case IDM_SET_RATING_1:
+		case IDM_SET_RATING_2:
+		case IDM_SET_RATING_3:
+		case IDM_SET_RATING_4:
+		case IDM_SET_RATING_5:
+			SetCurrentRating(nCommand - IDM_SET_RATING_0);
+			break;
+		case IDM_RATING_FILTER:
+			CycleRatingFilter();
 			break;
 		case IDM_SET_BOOKMARK:
 			SetBookmark();
@@ -2830,6 +2887,10 @@ void CMainDlg::GotoImage(EImagePosition ePos, int nFlags) {
 		PushZoomHistory();
 	}
 
+	if (CHDRDisplay::IsActive()) {
+		CHDRDisplay::Hide(); // HDR preview is per-image, close on navigation
+	}
+
 	m_pCropCtl->CancelCropping(); // cancel any running crop
 
 	// solving a specific "edge" case, pun intended
@@ -2888,6 +2949,17 @@ void CMainDlg::GotoImage(EImagePosition ePos, int nFlags) {
 		case POS_AwayFromCurrent:
 			m_pFileList = m_pFileList->AwayFromCurrent();
 			break;
+	}
+
+	// Rating filter: skip over files rated below the minimum during navigation.
+	// Unrated files count as rating 0 and are skipped too (culling semantics).
+	if (m_nRatingFilterMin > 0 && m_pFileList != NULL &&
+		(ePos == POS_Next || ePos == POS_NextSlideShow || ePos == POS_Previous)) {
+		int nGuard = m_pFileList->Size();
+		while (nGuard-- > 0 && m_pFileList != NULL && m_pFileList->Current() != NULL &&
+			CXMPRating::GetCachedRating(m_pFileList->Current()) < m_nRatingFilterMin) {
+			m_pFileList = (ePos == POS_Previous) ? m_pFileList->Prev() : m_pFileList->Next();
+		}
 	}
 
 	if (bCheckIfSameImage && (m_pFileList == pOldFileList && (nOldFrameIndex == nFrameIndex || bNoWrapAroundEdgeFrame) && !m_pFileList->ChangedSinceCheckpoint())) {
@@ -3653,6 +3725,227 @@ void CMainDlg::TogglePixelProbe() {
 	this->Invalidate(FALSE);
 }
 
+void CMainDlg::ToggleHistogramOverlay() {
+	m_bHistogramOverlayEnabled = !m_bHistogramOverlayEnabled;
+	this->Invalidate(FALSE);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// HDR display: scRGB preview of EXR / Radiance HDR images on HDR monitors
+/////////////////////////////////////////////////////////////////////////////
+
+void CMainDlg::ToggleHDRDisplay() {
+	if (CHDRDisplay::IsActive()) {
+		CHDRDisplay::Hide();
+		this->Invalidate(FALSE);
+		return;
+	}
+	if (m_bMovieMode || m_pCurrentImage == NULL || m_pCurrentImage->IsClipboardImage()) return;
+	MouseOn();
+
+	bool bOk = false;
+	EImageFormat eFormat = m_pCurrentImage->GetImageFormat();
+	LPCTSTR sFileName = CurrentFileName(false);
+	if ((eFormat == IF_EXR || eFormat == IF_HDR) && sFileName != NULL && CHDRDisplay::IsHDRAvailable(m_hWnd)) {
+		// re-decode the source file to linear float pixels (decode-time tonemapping discards HDR data)
+		HANDLE hFile = ::CreateFile(sFileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+		if (hFile != INVALID_HANDLE_VALUE) {
+			DWORD nFileSize = ::GetFileSize(hFile, NULL);
+			if (nFileSize != INVALID_FILE_SIZE && nFileSize > 0 && nFileSize < 512 * 1024 * 1024) {
+				char* pBuffer = new(std::nothrow) char[nFileSize];
+				DWORD nRead = 0;
+				if (pBuffer != NULL && ::ReadFile(hFile, pBuffer, nFileSize, &nRead, NULL) && nRead == nFileSize) {
+					int nWidth = 0, nHeight = 0;
+					bool bOutOfMemory = false;
+					float* pFloatPixels = (eFormat == IF_EXR)
+						? ExrReader::ReadImageFloat(nWidth, nHeight, bOutOfMemory, pBuffer, (int)nFileSize)
+						: HdrReader::ReadImageFloat(nWidth, nHeight, bOutOfMemory, pBuffer, (int)nFileSize);
+					if (pFloatPixels != NULL) {
+						bOk = CHDRDisplay::Show(m_hWnd, pFloatPixels, nWidth, nHeight);
+						delete[] pFloatPixels;
+					}
+				}
+				delete[] pBuffer;
+			}
+			::CloseHandle(hFile);
+		}
+	}
+	if (!bOk) {
+		::MessageBox(m_hWnd, CNLS::GetString(_T("HDR display requires an HDR capable monitor and image.")),
+			_T("JPEGView"), MB_OK | MB_ICONINFORMATION);
+	}
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// XMP rating: culling workflow (rate with Ctrl+0..5, filter navigation)
+/////////////////////////////////////////////////////////////////////////////
+
+void CMainDlg::SetCurrentRating(int nRating) {
+	if (m_bMovieMode) return;
+	if (m_pCurrentImage != NULL && m_pCurrentImage->IsClipboardImage()) return;
+	LPCTSTR sFileName = CurrentFileName(false);
+	if (sFileName == NULL) return;
+	if (CXMPRating::SetRating(sFileName, nRating)) {
+		if (m_pFileList != NULL) {
+			// writing the rating touched the file - update the stored modification time
+			// so the directory watcher does not consider the file externally changed
+			m_pFileList->ModificationTimeChanged();
+		}
+		UpdateWindowTitle();
+		this->Invalidate(FALSE);
+	} else {
+		::MessageBox(m_hWnd, CNLS::GetString(_T("Failed to write rating.")), _T("JPEGView"), MB_OK | MB_ICONWARNING);
+	}
+}
+
+void CMainDlg::CycleRatingFilter() {
+	m_nRatingFilterMin = (m_nRatingFilterMin + 1) % 6;
+	UpdateWindowTitle();
+	this->Invalidate(FALSE);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// Type-to-jump: incremental filename search in the current folder
+/////////////////////////////////////////////////////////////////////////////
+
+void CMainDlg::StartTypeToJump() {
+	m_bTypeToJumpActive = true;
+	m_sTypeToJumpBuffer.Empty();
+	this->Invalidate(FALSE);
+}
+
+void CMainDlg::EndTypeToJump() {
+	m_bTypeToJumpActive = false;
+	m_sTypeToJumpBuffer.Empty();
+	this->Invalidate(FALSE);
+}
+
+// Returns if 'needle' is an in-order subsequence of 'haystack' (both lower case)
+static bool IsSubsequenceOf(const CString& needle, const CString& haystack) {
+	int nPos = 0;
+	for (int i = 0; i < needle.GetLength(); i++) {
+		bool bFound = false;
+		while (nPos < haystack.GetLength()) {
+			if (haystack[nPos++] == needle[i]) {
+				bFound = true;
+				break;
+			}
+		}
+		if (!bFound) return false;
+	}
+	return true;
+}
+
+void CMainDlg::TypeToJumpNavigate(bool bAdvanceToNextMatch) {
+	if (m_pFileList == NULL || m_sTypeToJumpBuffer.IsEmpty()) {
+		this->Invalidate(FALSE);
+		return;
+	}
+	CString sPattern(m_sTypeToJumpBuffer);
+	sPattern.MakeLower();
+
+	// Collect matches in list order; best non-empty tier wins: prefix > substring > subsequence
+	std::vector<CString> prefixMatches, substringMatches, subseqMatches;
+	std::list<CFileDesc>& fileList = m_pFileList->GetFileList();
+	for (std::list<CFileDesc>::iterator iter = fileList.begin(); iter != fileList.end(); iter++) {
+		CString sTitle(iter->GetTitle());
+		CString sTitleLower(sTitle);
+		sTitleLower.MakeLower();
+		int nFind = sTitleLower.Find(sPattern);
+		if (nFind == 0) {
+			prefixMatches.push_back(sTitle);
+		} else if (nFind > 0) {
+			substringMatches.push_back(sTitle);
+		} else if (IsSubsequenceOf(sPattern, sTitleLower)) {
+			subseqMatches.push_back(sTitle);
+		}
+	}
+	std::vector<CString>& matches = !prefixMatches.empty() ? prefixMatches :
+		!substringMatches.empty() ? substringMatches : subseqMatches;
+	if (matches.empty()) {
+		this->Invalidate(FALSE);
+		return;
+	}
+
+	LPCTSTR sCurrentTitle = m_pFileList->CurrentFileTitle();
+	int nTarget = 0;
+	int nCurrentPos = -1;
+	for (int i = 0; i < (int)matches.size(); i++) {
+		if (sCurrentTitle != NULL && _tcsicmp(matches[i], sCurrentTitle) == 0) {
+			nCurrentPos = i;
+			break;
+		}
+	}
+	if (bAdvanceToNextMatch) {
+		nTarget = (nCurrentPos < 0) ? 0 : (nCurrentPos + 1) % (int)matches.size();
+	} else if (nCurrentPos >= 0) {
+		// current file already matches - stay on it
+		this->Invalidate(FALSE);
+		return;
+	}
+
+	if (m_pFileList->SetCurrentFile(matches[nTarget])) {
+		GotoImage(POS_Current, NO_REMOVE_KEY_MSG);
+	}
+	this->Invalidate(FALSE);
+}
+
+bool CMainDlg::HandleTypeToJumpKey(WPARAM wParam, bool bCtrl, bool bAlt) {
+	if (bCtrl || bAlt) {
+		EndTypeToJump();
+		return false; // let shortcuts work normally
+	}
+	switch (wParam) {
+		case VK_ESCAPE:
+		case VK_RETURN:
+			EndTypeToJump();
+			return true;
+		case VK_BACK:
+			if (!m_sTypeToJumpBuffer.IsEmpty()) {
+				m_sTypeToJumpBuffer.Delete(m_sTypeToJumpBuffer.GetLength() - 1);
+				TypeToJumpNavigate(false);
+			}
+			return true;
+		case VK_TAB:
+			TypeToJumpNavigate(true);
+			return true;
+		case VK_SHIFT:
+		case VK_CAPITAL:
+			return true; // ignore, stay active
+		default: {
+			UINT nChar = ::MapVirtualKey((UINT)wParam, MAPVK_VK_TO_CHAR) & 0x7FFFFFFF;
+			if (nChar >= 32 && nChar < 127) {
+				TCHAR c = (TCHAR)nChar;
+				if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
+				m_sTypeToJumpBuffer += c;
+				TypeToJumpNavigate(false);
+				return true;
+			}
+			// any other key (arrows, page keys, ...) leaves the mode and is processed normally
+			EndTypeToJump();
+			return false;
+		}
+	}
+}
+
+void CMainDlg::DrawTypeToJumpOverlay(CDC& dc) {
+	CString sText;
+	sText.Format(_T("%s %s_"), CNLS::GetString(_T("Jump to:")), (LPCTSTR)m_sTypeToJumpBuffer);
+	HFONT hFont = (HFONT)::GetStockObject(DEFAULT_GUI_FONT);
+	HFONT hOldFont = (HFONT)::SelectObject(dc, hFont);
+	CSize textSize;
+	::GetTextExtentPoint32(dc, sText, sText.GetLength(), &textSize);
+	int nPad = HelpersGUI::ScaleToScreen(6);
+	int nW = max(HelpersGUI::ScaleToScreen(200), textSize.cx + 2 * nPad);
+	CRect rect((m_clientRect.Width() - nW) / 2, HelpersGUI::ScaleToScreen(24),
+		(m_clientRect.Width() + nW) / 2, HelpersGUI::ScaleToScreen(24) + textSize.cy + 2 * nPad);
+	dc.FillSolidRect(&rect, RGB(16, 16, 16));
+	dc.SetBkMode(TRANSPARENT);
+	dc.SetTextColor(RGB(255, 255, 255));
+	dc.TextOut(rect.left + nPad, rect.top + nPad, sText);
+	::SelectObject(dc, hOldFont);
+}
+
 /////////////////////////////////////////////////////////////////////////////
 // View bookmarks (zoom + offset)
 /////////////////////////////////////////////////////////////////////////////
@@ -3821,6 +4114,76 @@ void CMainDlg::DrawPixelProbe(CDC& dc, CJPEGImage* pImage) {
 }
 
 /////////////////////////////////////////////////////////////////////////////
+// RGB histogram overlay with clipping warning
+/////////////////////////////////////////////////////////////////////////////
+
+void CMainDlg::DrawHistogramOverlay(CDC& dc, CJPEGImage* pImage) {
+	if (pImage == NULL) return;
+	const CHistogram* pHistogram = pImage->GetProcessedHistogram();
+	if (pHistogram == NULL || pHistogram->GetTotalValues() <= 0) return;
+
+	const int* pChannels[3] = { pHistogram->GetChannelR(), pHistogram->GetChannelG(), pHistogram->GetChannelB() };
+	const COLORREF channelColors[3] = { RGB(255, 96, 96), RGB(96, 224, 96), RGB(112, 144, 255) };
+
+	// Common vertical scale over all channels, sqrt-compressed like the EXIF panel histogram
+	int nMaxValue = 1;
+	for (int ch = 0; ch < 3; ch++) {
+		for (int i = 0; i < 256; i++) {
+			nMaxValue = max(nMaxValue, pChannels[ch][i]);
+		}
+	}
+
+	int nW = HelpersGUI::ScaleToScreen(256);
+	int nH = HelpersGUI::ScaleToScreen(96);
+	int nMargin = HelpersGUI::ScaleToScreen(10);
+	int nTextH = HelpersGUI::ScaleToScreen(16);
+	CRect box(m_clientRect.right - nW - nMargin, m_clientRect.bottom - nH - nTextH - nMargin,
+		m_clientRect.right - nMargin, m_clientRect.bottom - nMargin);
+	dc.FillSolidRect(&box, RGB(16, 16, 16));
+
+	int nBaseY = box.bottom - HelpersGUI::ScaleToScreen(2);
+	double dScaling = nH / sqrt((double)nMaxValue);
+	for (int ch = 0; ch < 3; ch++) {
+		CPen pen;
+		pen.CreatePen(PS_SOLID, 1, channelColors[ch]);
+		HPEN hOldPen = dc.SelectPen(pen);
+		dc.MoveTo(box.left, nBaseY - (int)(sqrt((double)pChannels[ch][0]) * dScaling + 0.5));
+		for (int i = 1; i < 256; i++) {
+			int nX = box.left + i * (box.Width() - 1) / 255;
+			int nY = nBaseY - (int)(sqrt((double)pChannels[ch][i]) * dScaling + 0.5);
+			dc.LineTo(nX, max(box.top + nTextH, nY));
+		}
+		dc.SelectPen(hOldPen);
+	}
+
+	// Clipping warning: share of pixels at 0 (shadows) and 255 (highlights), worst channel
+	double dTotal = (double)pHistogram->GetTotalValues();
+	double dClipLow = 0.0, dClipHigh = 0.0;
+	for (int ch = 0; ch < 3; ch++) {
+		dClipLow = max(dClipLow, pChannels[ch][0] / dTotal * 100.0);
+		dClipHigh = max(dClipHigh, pChannels[ch][255] / dTotal * 100.0);
+	}
+	HFONT hFont = (HFONT)::GetStockObject(DEFAULT_GUI_FONT);
+	HFONT hOldFont = (HFONT)::SelectObject(dc, hFont);
+	dc.SetBkMode(TRANSPARENT);
+	if (dClipLow >= 0.05) {
+		CString sLow;
+		sLow.Format(_T("%s %.1f%%"), CNLS::GetString(_T("Clipped:")), dClipLow);
+		dc.SetTextColor(RGB(255, 210, 90));
+		dc.TextOut(box.left + 3, box.top + 2, sLow);
+	}
+	if (dClipHigh >= 0.05) {
+		CString sHigh;
+		sHigh.Format(_T("%.1f%% %s"), dClipHigh, CNLS::GetString(_T("Clipped:")));
+		CSize textSize;
+		::GetTextExtentPoint32(dc, sHigh, sHigh.GetLength(), &textSize);
+		dc.SetTextColor(RGB(255, 210, 90));
+		dc.TextOut(box.right - textSize.cx - 3, box.top + 2, sHigh);
+	}
+	::SelectObject(dc, hOldFont);
+}
+
+/////////////////////////////////////////////////////////////////////////////
 // Named processing presets
 /////////////////////////////////////////////////////////////////////////////
 
@@ -3958,6 +4321,19 @@ void CMainDlg::UpdateWindowTitle() {
 	} else {
 		CString sWindowText =  sCurrentFileName;
 		sWindowText += Helpers::GetMultiframeIndex(m_pCurrentImage);
+		if (!m_pCurrentImage->IsClipboardImage()) {
+			int nRating = CXMPRating::GetCachedRating(CurrentFileName(false));
+			if (nRating > 0) {
+				sWindowText += _T(" [");
+				for (int i = 0; i < nRating; i++) sWindowText += _T('*');
+				sWindowText += _T(']');
+			}
+		}
+		if (m_nRatingFilterMin > 0) {
+			CString sFilter;
+			sFilter.Format(_T(" {filter: %d*+}"), m_nRatingFilterMin);
+			sWindowText += sFilter;
+		}
 		if (CSettingsProvider::This().ShowEXIFDateInTitle()) {
 			CEXIFReader* pEXIF = m_pCurrentImage->GetEXIFReader();
 			CRawMetadata* pRawMetadata = m_pCurrentImage->GetRawMetadata();

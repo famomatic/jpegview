@@ -43,8 +43,32 @@ static inline unsigned char tonemap(float v) {
 void* ExrReader::ReadImage(int& width, int& height, int& bpp, bool& outOfMemory,
 	const void* buffer, int sizebytes)
 {
-	outOfMemory = false;
 	bpp = 4;
+	float* pFloatPixels = ReadImageFloat(width, height, outOfMemory, buffer, sizebytes);
+	if (pFloatPixels == NULL) {
+		return NULL;
+	}
+	unsigned char* pPixelData = new(std::nothrow) unsigned char[(size_t)width * height * 4];
+	if (pPixelData == NULL) {
+		outOfMemory = true;
+		delete[] pFloatPixels;
+		width = height = 0;
+		return NULL;
+	}
+	for (__int64 i = 0; i < (__int64)width * height; i++) {
+		pPixelData[i * 4 + 0] = tonemap(pFloatPixels[i * 4 + 2]); // B
+		pPixelData[i * 4 + 1] = tonemap(pFloatPixels[i * 4 + 1]); // G
+		pPixelData[i * 4 + 2] = tonemap(pFloatPixels[i * 4 + 0]); // R
+		pPixelData[i * 4 + 3] = 255;
+	}
+	delete[] pFloatPixels;
+	return (void*)pPixelData;
+}
+
+float* ExrReader::ReadImageFloat(int& width, int& height, bool& outOfMemory,
+	const void* buffer, int sizebytes)
+{
+	outOfMemory = false;
 	width = 0;
 	height = 0;
 
@@ -176,7 +200,7 @@ void* ExrReader::ReadImage(int& width, int& height, int& bpp, bool& outOfMemory,
 		for (int i = 0; i < w * h; i++) { pG[i] = pR[i]; pB[i] = pR[i]; }
 	}
 
-	unsigned char* pPixelData = new(std::nothrow) unsigned char[(size_t)w * h * 4];
+	float* pPixelData = new(std::nothrow) float[(size_t)w * h * 4];
 	if (pPixelData == NULL) {
 		outOfMemory = true;
 		exr_decoding_destroy(ctx, &decode);
@@ -186,10 +210,10 @@ void* ExrReader::ReadImage(int& width, int& height, int& bpp, bool& outOfMemory,
 	}
 
 	for (int i = 0; i < w * h; i++) {
-		pPixelData[i * 4 + 0] = tonemap(pB[i]);
-		pPixelData[i * 4 + 1] = tonemap(pG[i]);
-		pPixelData[i * 4 + 2] = tonemap(pR[i]);
-		pPixelData[i * 4 + 3] = 255;
+		pPixelData[i * 4 + 0] = pR[i];
+		pPixelData[i * 4 + 1] = pG[i];
+		pPixelData[i * 4 + 2] = pB[i];
+		pPixelData[i * 4 + 3] = pA[i];
 	}
 
 	exr_decoding_destroy(ctx, &decode);
@@ -198,6 +222,6 @@ void* ExrReader::ReadImage(int& width, int& height, int& bpp, bool& outOfMemory,
 
 	width = w;
 	height = h;
-	return (void*)pPixelData;
+	return pPixelData;
 }
 

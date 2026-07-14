@@ -88,3 +88,13 @@ Ctrl+Shift+V            IDM_COPY_EXIF_INFO
 Alt+Z                   IDM_ZOOM_HISTORY_BACK
 Ctrl+Shift+A            IDM_SMART_CROP
 Ctrl+Shift+O            IDM_FAV_FOLDERS
+H                       IDM_TOGGLE_HISTOGRAM
+Ctrl+H                  IDM_TOGGLE_HDR_DISPLAY
+J                       IDM_TYPE_TO_JUMP
+Ctrl+0                  IDM_SET_RATING_0
+Ctrl+1                  IDM_SET_RATING_1
+Ctrl+2                  IDM_SET_RATING_2
+Ctrl+3                  IDM_SET_RATING_3
+Ctrl+4                  IDM_SET_RATING_4
+Ctrl+5                  IDM_SET_RATING_5
+Ctrl+Shift+R            IDM_RATING_FILTER

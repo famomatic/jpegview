@@ -454,6 +454,17 @@
 #define IDM_RECIPE_IMPORT          17910  // :KeyMap: import processing preset from JSON
 #define IDM_AB_DIFF_OVERLAY        17950  // :KeyMap: toggle pixel-difference overlay vs marked image
 #define IDM_EXTRACT_FRAMES         18000  // :KeyMap: extract all frames of an animated image to PNG
+// --- v1.7 display, culling and navigation additions ------------------------
+#define IDM_TOGGLE_HISTOGRAM       18050  // :KeyMap: toggle RGB histogram overlay with clipping warning
+#define IDM_TOGGLE_HDR_DISPLAY     18100  // :KeyMap: toggle HDR display output (scRGB, HDR monitors)
+#define IDM_TYPE_TO_JUMP           18150  // :KeyMap: incremental type-to-jump filename search in folder
+#define IDM_SET_RATING_0           18200  // :KeyMap: remove image rating (XMP)
+#define IDM_SET_RATING_1           18201  // :KeyMap: rate image 1 star (XMP)
+#define IDM_SET_RATING_2           18202  // :KeyMap: rate image 2 stars (XMP)
+#define IDM_SET_RATING_3           18203  // :KeyMap: rate image 3 stars (XMP)
+#define IDM_SET_RATING_4           18204  // :KeyMap: rate image 4 stars (XMP)
+#define IDM_SET_RATING_5           18205  // :KeyMap: rate image 5 stars (XMP)
+#define IDM_RATING_FILTER          18210  // :KeyMap: cycle minimum-rating filter for folder navigation
 
 // Next default values for new objects
 // 

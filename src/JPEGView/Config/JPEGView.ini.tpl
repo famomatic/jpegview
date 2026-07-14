@@ -304,6 +304,16 @@ ForceGDIPlus=false
 ; results in much slower loading of JPEGs! Only set to true if you really need this.
 UseEmbeddedColorProfiles=false
 
+; If true, the final rendered image is transformed from sRGB to the ICC color profile
+; of the monitor the JPEGView window is displayed on (wide-gamut monitor support).
+; The transform follows the window when moved between monitors with different profiles.
+; Has no visible effect on monitors without a calibrated/installed color profile.
+UseDisplayColorProfile=false
+
+; Paper white level in nits for the HDR display mode (toggled with Ctrl+H for EXR/HDR
+; images on HDR monitors). Image value 1.0 is mapped to this luminance. Range 80..1000.
+HDRPaperWhiteNits=200
+
 ; -----------------------------------------------
 ; - TRANSPARENCY OPTIONS
 ; -----------------------------------------------

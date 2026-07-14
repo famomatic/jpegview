@@ -18,6 +18,9 @@ add_executable(JPEGView WIN32
     dcraw_mod.cpp
     DesktopWallpaper.cpp
     DirectoryWatcher.cpp
+    DisplayColorProfile.cpp
+    HDRDisplay.cpp
+    XMPRating.cpp
     EXIFDisplay.cpp
     EXIFDisplayCtl.cpp
     EXIFHelpers.cpp

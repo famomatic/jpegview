@@ -429,6 +429,14 @@ private:
 	void* m_pDIBPixels;
 	void* m_pLastDIB; // one of the pointers above
 
+	// Copy of the DIB returned by GetDIB(), transformed to the monitor color profile.
+	// Only used when display color management is active. m_pLastDIB stays untransformed (sRGB)
+	// so that save/clipboard/probe operations are not affected by the monitor profile.
+	void* m_pMonitorDIB;
+	void* m_pMonitorDIBSource; // DIB pointer m_pMonitorDIB was created from (identity check only, never dereferenced)
+	CSize m_monitorDIBSize;
+	int m_nMonitorDIBVersion;
+
 	// Cached gray and smoothed gray image for unsharp masking
 	int16* m_pGrayImage;
 	int16* m_pSmoothGrayImage;
@@ -505,6 +513,11 @@ private:
 
 	// Apply the given unsharp mask to m_pDIBPixels (can be null to not apply an unsharp mask, then NULL is returned)
 	void* ApplyUnsharpMask(const CUnsharpMaskParams * pUnsharpMaskParams, bool bNoChangesLDCandLUT);
+
+	// Transforms the processed DIB to the monitor color profile (cached in m_pMonitorDIB).
+	// Returns the transformed DIB, or pDIB unchanged when display color management is inactive.
+	// bParametersChanged must be true when pDIB content may have changed since the last call.
+	void* ApplyDisplayProfile(void* pDIB, bool bParametersChanged);
 
 	// pCachedTargetDIB is a pointer at the caller side holding the old processed DIB.
 	// Returns a pointer to DIB to be used (either pCachedTargetDIB or pSourceDIB)

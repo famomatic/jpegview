@@ -101,6 +101,10 @@ public:
 	// Index of current file in file list (zero based)
 	int CurrentIndex() const;
 
+	// Sets the current position to the file with the given title (file name without path)
+	// in the current folder. Returns false if no such file is in the list.
+	bool SetCurrentFile(LPCTSTR sFileTitle);
+
 	// Sets the sorting of the file list and resorts the list
 	void SetSorting(Helpers::ESorting eSorting, bool sortAscending);
 	// Gets the sorting mode

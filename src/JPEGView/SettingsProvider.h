@@ -99,6 +99,8 @@ public:
 	bool ExchangeXButtons() { return m_bExchangeXButtons; }
 	bool AutoRotateEXIF() { return m_bAutoRotateEXIF; }
 	bool UseEmbeddedColorProfiles() { return m_bUseEmbeddedColorProfiles; }
+	bool UseDisplayColorProfile() { return m_bUseDisplayColorProfile; }
+	int HDRPaperWhiteNits() { return m_nHDRPaperWhiteNits; }
 	LPCTSTR ACCExclude() { return m_sACCExclude; }
 	LPCTSTR ACCInclude() { return m_sACCInclude; }
 	LPCTSTR LDCExclude() { return m_sLDCExclude; }
@@ -296,6 +298,8 @@ private:
 	bool m_bExchangeXButtons;
 	bool m_bAutoRotateEXIF;
 	bool m_bUseEmbeddedColorProfiles;
+	bool m_bUseDisplayColorProfile;
+	int m_nHDRPaperWhiteNits;
 	CString m_sACCExclude;
 	CString m_sACCInclude;
 	CString m_sLDCExclude;

@@ -9,6 +9,7 @@
 #include "SettingsProvider.h"
 #include "HelpersGUI.h"
 #include "NLS.h"
+#include "XMPRating.h"
 
 static int GetFileNameHeight(HDC dc) {
 	CSize size;
@@ -117,6 +118,14 @@ void CEXIFDisplayCtl::FillEXIFDataDisplay() {
 	m_pEXIFDisplay->AddTitle(sFileTitle);
 	m_pEXIFDisplay->AddLine(CNLS::GetString(_T("Image width:")), CurrentImage()->OrigWidth());
 	m_pEXIFDisplay->AddLine(CNLS::GetString(_T("Image height:")), CurrentImage()->OrigHeight());
+	if (!CurrentImage()->IsClipboardImage()) {
+		int nRating = CXMPRating::GetCachedRating(m_pMainDlg->CurrentFileName(false));
+		if (nRating > 0) {
+			CString sStars;
+			for (int i = 0; i < nRating; i++) sStars += _T('*');
+			m_pEXIFDisplay->AddLine(CNLS::GetString(_T("Rating:")), sStars);
+		}
+	}
 	if (CSettingsProvider::This().ShowMemoryUsage()) {
 		// Show estimated memory: full image in BGRA vs decoded region
 		__int64 nFullBytes = (__int64)CurrentImage()->OrigWidth() * CurrentImage()->OrigHeight() * 4;
