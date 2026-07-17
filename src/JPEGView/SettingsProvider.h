@@ -170,6 +170,72 @@ public:
 
 	double ZoomPauseFactor() { return m_zoomPauseFactor; }  // while internally this is represented in doubles, using a whole number percent simplifies it for the user... configuring doubles is not user friendly at all
 
+	// --- Zoom behavior settings ---
+	// When true, zooming in/out also resizes the window to match the image size
+	// (the original JPEGView behavior). When false, zooming only changes the
+	// zoom level without touching the window size. Can be toggled live with the
+	// IDM_FIT_WINDOW_TO_IMAGE command or the context menu.
+	bool ZoomAdjustsWindow() { return m_bZoomAdjustsWindow; }
+	// Overrides the ZoomAdjustsWindow setting at runtime (live toggling). Not persisted to the INI file.
+	void SetZoomAdjustsWindow(bool bValue) { m_bZoomAdjustsWindow = bValue; }
+	// Zoom step in percent for IDM_ZOOM_INC / IDM_ZOOM_DEC and mouse wheel.
+	// Default 20 means each step multiplies/divides the zoom by ~1.20.
+	int  ZoomStepPercent() { return m_nZoomStepPercent; }
+	// When true, zoom always centers on the mouse cursor (when the mouse is
+	// over the window). When false, zoom centers on the image center.
+	bool ZoomToMouseDefault() { return m_bZoomToMouseDefault; }
+	// Minimum zoom factor as a percent (1..10000). Default 1 (1%).
+	int  MinZoomPercent() { return m_nMinZoomPercent; }
+	// Maximum zoom factor as a percent (1..6553500). Default 6553500 (unbounded).
+	int  MaxZoomPercent() { return m_nMaxZoomPercent; }
+	// Pan speed multiplier for keyboard arrow panning. Default 1.0.
+	double PanSpeed() { return m_dPanSpeed; }
+	// Show the current zoom percentage in the window title bar.
+	bool ShowZoomInTitle() { return m_bShowZoomInTitle; }
+	// Smoothly animate zoom transitions (interpolated zoom). Default false.
+	bool SmoothZoom() { return m_bSmoothZoom; }
+
+	// --- Slideshow settings ---
+	// Default slideshow speed in frames per second when starting a slideshow without an
+	// explicit interval. Default 1.0 (one image per second).
+	double DefaultSlideShowFPS() { return m_dDefaultSlideShowFPS; }
+	// Minimum display time in milliseconds for slideshow images before advancing, even if
+	// decoding is fast. Default 250.
+	int  SlideShowMinDisplayTimeMs() { return m_nSlideShowMinDisplayTimeMs; }
+
+	// --- Zoom navigator thumbnail settings ---
+	// Maximal thumbnail size (width) for the zoom navigator, in pixels at 96 DPI.
+	// Default 320. The height is derived from the aspect ratio.
+	int  ZoomNavigatorThumbMaxWidth() { return m_nZoomNavThumbMaxW; }
+	// Normal thumbnail width for the zoom navigator. Default 200.
+	int  ZoomNavigatorThumbNormalWidth() { return m_nZoomNavThumbNormalW; }
+	// Minimal thumbnail width for the zoom navigator. Default 133.
+	int  ZoomNavigatorThumbMinWidth() { return m_nZoomNavThumbMinW; }
+
+	// --- Zoom timing settings ---
+	// Milliseconds to wait after a zoom operation before refining to high quality.
+	// Default 200.
+	int  ZoomRefineTimeoutMs() { return m_nZoomRefineTimeoutMs; }
+	// Milliseconds the zoom percentage label stays visible after zooming. Default 1000.
+	int  ZoomTextTimeoutMs() { return m_nZoomTextTimeoutMs; }
+
+	// --- Image processing increments ---
+	// Increment for contrast adjustment via keyboard. Default 0.03.
+	double ContrastIncrement() { return m_dContrastInc; }
+	// Increment for sharpen adjustment via keyboard. Default 0.05.
+	double SharpenIncrement() { return m_dSharpenInc; }
+	// Increment for local density correction via keyboard. Default 0.1.
+	double LDCIncrement() { return m_dLDCInc; }
+	// Multiplicator for gamma adjustment via keyboard. Default 1.02.
+	double GammaFactor() { return m_dGammaFactor; }
+
+	// --- Image dimension limits ---
+	// Maximum image dimension (width or height) in pixels. Images larger than this are
+	// rejected. Default depends on build: 1000000 (x64) or 65535 (x86).
+	unsigned int MaxImageDimension() { return m_nMaxImageDimension; }
+	// Maximum image pixel count (RAM guard). Default depends on build.
+	unsigned long long MaxImagePixels() { return m_nMaxImagePixels; }
+
 	// Returns if a user INI file exists
 	bool ExistsUserINI();
 	// Copies the user INI file (in AppData/Roaming) from the INI file template JPEGView.ini.tpl
@@ -343,6 +409,33 @@ private:
 	bool m_bFlashWindowAlert;
 	bool m_bBeepSoundAlert;
 	int m_zoomPauseFactor;
+	// --- Zoom behavior settings ---
+	bool m_bZoomAdjustsWindow;       // zoom in/out also resizes window to image
+	int  m_nZoomStepPercent;         // zoom step percent for inc/dec
+	bool m_bZoomToMouseDefault;      // zoom centers on mouse by default
+	int  m_nMinZoomPercent;          // minimum zoom percent
+	int  m_nMaxZoomPercent;          // maximum zoom percent
+	double m_dPanSpeed;              // keyboard pan speed multiplier
+	bool m_bShowZoomInTitle;         // show zoom % in window title
+	bool m_bSmoothZoom;              // animate zoom transitions
+	// --- Slideshow settings ---
+	double m_dDefaultSlideShowFPS;       // default slideshow FPS
+	int    m_nSlideShowMinDisplayTimeMs; // min display time for slideshow
+	// --- Zoom navigator thumbnail settings ---
+	int    m_nZoomNavThumbMaxW;          // max thumb width
+	int    m_nZoomNavThumbNormalW;       // normal thumb width
+	int    m_nZoomNavThumbMinW;          // min thumb width
+	// --- Zoom timing settings ---
+	int    m_nZoomRefineTimeoutMs;       // zoom refine delay
+	int    m_nZoomTextTimeoutMs;         // zoom label display time
+	// --- Image processing increments ---
+	double m_dContrastInc;              // contrast increment
+	double m_dSharpenInc;               // sharpen increment
+	double m_dLDCInc;                   // LDC increment
+	double m_dGammaFactor;              // gamma multiplicator
+	// --- Image dimension limits ---
+	unsigned int       m_nMaxImageDimension;
+	unsigned long long m_nMaxImagePixels;
 	bool m_bWindowBorderlessOnStartup;
 	bool m_bWindowAlwaysOnTopOnStartup;
 

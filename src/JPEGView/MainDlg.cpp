@@ -77,13 +77,7 @@
 static const int MIN_WND_WIDTH = 320;
 static const int MIN_WND_HEIGHT = 240;
 
-static const double GAMMA_FACTOR = 1.02; // multiplicator for gamma value
-static const double CONTRAST_INC = 0.03; // increment for contrast value
-static const double SHARPEN_INC = 0.05; // increment for sharpen value
-static const double LDC_INC = 0.1; // increment for LDC (lighten shadows and darken highlights)
 static const int NUM_THREADS = 1; // number of readahead threads to use
-static const int ZOOM_TIMEOUT = 200; // refinement done after this many milliseconds
-static const int ZOOM_TEXT_TIMEOUT = 1000; // zoom label disappears after this many milliseconds
 
 static const int DARKEN_HIGHLIGHTS = 0; // used in AdjustLDC() call
 static const int BRIGHTEN_SHADOWS = 1; // used in AdjustLDC() call
@@ -230,7 +224,7 @@ CMainDlg::CMainDlg(bool bForceFullScreen) {
 	m_bExceptionErrorLastImage = false;
 	m_nLastLoadError = HelpersGUI::FileLoad_Ok;
 
-	m_dMovieFPS = 1.0;
+	m_dMovieFPS = CSettingsProvider::This().DefaultSlideShowFPS();
 	m_nAutoStartSlideShow = false;
 	m_eForcedSorting = Helpers::FS_Undefined;
 
@@ -762,7 +756,7 @@ LRESULT CMainDlg::OnSize(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, BO
 	// keep fit to screen
 	if (bKeepFitToScreen) {
 		if (fabs(m_dZoom - GetZoomFactorForFitToScreen(false, false)) >= 0.00001) {
-			StartLowQTimer(ZOOM_TIMEOUT);
+			StartLowQTimer(CSettingsProvider::This().ZoomRefineTimeoutMs());
 		}
 		ResetZoomToFitScreen(false, false, false);
 	}
@@ -1027,7 +1021,7 @@ LRESULT CMainDlg::OnMouseWheel(UINT /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/, 
 			GotoImage(POS_Previous);
 		}
 	} else if (m_dZoom > 0 && !m_pUnsharpMaskPanelCtl->IsVisible()) {
-		PerformZoom(CSettingsProvider::This().MouseWheelZoomSpeed() * double(nDelta) / WHEEL_DELTA, true, m_bMouseOn, true);
+		PerformZoom(CSettingsProvider::This().MouseWheelZoomSpeed() * double(nDelta) / WHEEL_DELTA, true, m_bMouseOn, CSettingsProvider::This().ZoomAdjustsWindow());
 	}
 	return 0;
 }
@@ -1169,7 +1163,7 @@ LRESULT CMainDlg::OnTimer(UINT /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/, BOOL&
 		// Goto next image if no other messages to process are pending
 		if (!::PeekMessage(&msg, this->m_hWnd, 0, 0, PM_NOREMOVE)) {
 			int nRealDisplayTimeMs = ::GetTickCount() - m_nLastSlideShowImageTickCount;
-			if (m_nCurrentTimeout > 250 && wParam == SLIDESHOW_TIMER_EVENT_ID) {
+			if (m_nCurrentTimeout > CSettingsProvider::This().SlideShowMinDisplayTimeMs() && wParam == SLIDESHOW_TIMER_EVENT_ID) {
 				if (m_nCurrentTimeout - nRealDisplayTimeMs > 100) {
 					// restart timer
 					::Sleep(m_nCurrentTimeout - nRealDisplayTimeMs);
@@ -1188,7 +1182,7 @@ LRESULT CMainDlg::OnTimer(UINT /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/, BOOL&
 	} else if (wParam == ZOOM_TIMER_EVENT_ID) {
 		::KillTimer(this->m_hWnd, ZOOM_TIMER_EVENT_ID);
 		if (m_bTemporaryLowQ || m_bInZooming) {
-			::SetTimer(this->m_hWnd, ZOOM_TEXT_TIMER_EVENT_ID, ZOOM_TEXT_TIMEOUT, NULL);
+			::SetTimer(this->m_hWnd, ZOOM_TEXT_TIMER_EVENT_ID, CSettingsProvider::This().ZoomTextTimeoutMs(), NULL);
 			if (m_bInZooming) m_bShowZoomFactor = true;
 			m_bTemporaryLowQ = false;
 			m_bInZooming = false;
@@ -2049,7 +2043,7 @@ void CMainDlg::ExecuteCommand(int nCommand) {
 				this->MouseOn();
 			}
 			m_dZoom = -1;
-			StartLowQTimer(ZOOM_TIMEOUT);
+			StartLowQTimer(CSettingsProvider::This().ZoomRefineTimeoutMs());
 			this->SetWindowPos(NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOCOPYBITS | SWP_FRAMECHANGED);
 			break;
 		case IDM_HIDE_TITLE_BAR:
@@ -2095,7 +2089,7 @@ void CMainDlg::ExecuteCommand(int nCommand) {
 						this->Invalidate(FALSE);
 					}
 
-					StartLowQTimer(ZOOM_TIMEOUT);  // trigger a redraw as if zoom changed (might not be necessary)
+					StartLowQTimer(CSettingsProvider::This().ZoomRefineTimeoutMs());  // trigger a redraw as if zoom changed (might not be necessary)
 				}
 			}
 
@@ -2108,26 +2102,28 @@ void CMainDlg::ExecuteCommand(int nCommand) {
 			// Note: If auto fit is on but the window size does not match the image size (due to manual window resizing), restore window to image
 			if (!(m_bAutoFitWndToImage && !IsImageExactlyFittingWindow()))
 				m_bAutoFitWndToImage = !m_bAutoFitWndToImage;
+			// Keep the zoom-adjusts-window setting in sync so zoom in/out respects the toggle.
+			CSettingsProvider::This().SetZoomAdjustsWindow(m_bAutoFitWndToImage);
 			AdjustWindowToImage(false);
 			break;
 		case IDM_ZOOM_400:
-			PerformZoom(4.0, false, m_bMouseOn, true);
+			PerformZoom(4.0, false, m_bMouseOn, CSettingsProvider::This().ZoomAdjustsWindow());
 			break;
 		case IDM_ZOOM_200:
-			PerformZoom(2.0, false, m_bMouseOn, true);
+			PerformZoom(2.0, false, m_bMouseOn, CSettingsProvider::This().ZoomAdjustsWindow());
 			break;
 		case IDM_ZOOM_100:
 			ResetZoomTo100Percents(m_bMouseOn);
 			break;
 		case IDM_ZOOM_50:
-			PerformZoom(0.5, false, m_bMouseOn, true);
+			PerformZoom(0.5, false, m_bMouseOn, CSettingsProvider::This().ZoomAdjustsWindow());
 			break;
 		case IDM_ZOOM_25:
-			PerformZoom(0.25, false, m_bMouseOn, true);
+			PerformZoom(0.25, false, m_bMouseOn, CSettingsProvider::This().ZoomAdjustsWindow());
 			break;
 		case IDM_ZOOM_INC:
 		case IDM_ZOOM_DEC:
-			PerformZoom((nCommand == IDM_ZOOM_INC) ? 1 : -1, true, m_bMouseOn, true);
+			PerformZoom((nCommand == IDM_ZOOM_INC) ? 1 : -1, true, m_bMouseOn, CSettingsProvider::This().ZoomAdjustsWindow());
 			break;
 		case IDM_ZOOM_MODE:
 			m_bZoomModeOnLeftMouse = !m_bZoomModeOnLeftMouse;
@@ -2316,18 +2312,27 @@ void CMainDlg::ExecuteCommand(int nCommand) {
 			break;
 		case IDM_CONTRAST_INC:
 		case IDM_CONTRAST_DEC:
-			AdjustContrast((nCommand == IDM_CONTRAST_INC)? CONTRAST_INC : -CONTRAST_INC);
+			{
+				double dInc = CSettingsProvider::This().ContrastIncrement();
+				AdjustContrast((nCommand == IDM_CONTRAST_INC) ? dInc : -dInc);
+			}
 			break;
 		case IDM_GAMMA_INC:
 		case IDM_GAMMA_DEC:
-			AdjustGamma((nCommand == IDM_GAMMA_INC)? 1.0/GAMMA_FACTOR : GAMMA_FACTOR);
+			{
+				double dGamma = CSettingsProvider::This().GammaFactor();
+				AdjustGamma((nCommand == IDM_GAMMA_INC) ? 1.0/dGamma : dGamma);
+			}
 			break;
 		case IDM_LDC_SHADOWS_INC:	
 		case IDM_LDC_SHADOWS_DEC:
 		case IDM_LDC_HIGHLIGHTS_INC:
 		case IDM_LDC_HIGHLIGHTS_DEC:
-			AdjustLDC((nCommand == IDM_LDC_HIGHLIGHTS_INC || nCommand == IDM_LDC_HIGHLIGHTS_DEC) ? DARKEN_HIGHLIGHTS : BRIGHTEN_SHADOWS,
-				(nCommand == IDM_LDC_SHADOWS_INC || nCommand == IDM_LDC_HIGHLIGHTS_INC) ? LDC_INC : -LDC_INC);
+			{
+				double dInc = CSettingsProvider::This().LDCIncrement();
+				AdjustLDC((nCommand == IDM_LDC_HIGHLIGHTS_INC || nCommand == IDM_LDC_HIGHLIGHTS_DEC) ? DARKEN_HIGHLIGHTS : BRIGHTEN_SHADOWS,
+					(nCommand == IDM_LDC_SHADOWS_INC || nCommand == IDM_LDC_HIGHLIGHTS_INC) ? dInc : -dInc);
+			}
 			break;
 		case IDM_TOGGLE_RESAMPLING_QUALITY:
 			m_bHQResampling = !m_bHQResampling;
@@ -2343,12 +2348,18 @@ void CMainDlg::ExecuteCommand(int nCommand) {
 		case IDM_PAN_DOWN:
 		case IDM_PAN_RIGHT:
 		case IDM_PAN_LEFT:
-			PerformPan((nCommand == IDM_PAN_LEFT) ? PAN_STEP : (nCommand == IDM_PAN_RIGHT) ? -PAN_STEP : 0,
-				(nCommand == IDM_PAN_UP) ? PAN_STEP : (nCommand == IDM_PAN_DOWN) ? -PAN_STEP : 0, false);
+			{
+				int nPanStep = Helpers::RoundToInt(PAN_STEP * CSettingsProvider::This().PanSpeed());
+				PerformPan((nCommand == IDM_PAN_LEFT) ? nPanStep : (nCommand == IDM_PAN_RIGHT) ? -nPanStep : 0,
+					(nCommand == IDM_PAN_UP) ? nPanStep : (nCommand == IDM_PAN_DOWN) ? -nPanStep : 0, false);
+			}
 			break;
 		case IDM_SHARPEN_INC:
 		case IDM_SHARPEN_DEC:
-			AdjustSharpen((nCommand == IDM_SHARPEN_INC) ? SHARPEN_INC : -SHARPEN_INC);
+			{
+				double dInc = CSettingsProvider::This().SharpenIncrement();
+				AdjustSharpen((nCommand == IDM_SHARPEN_INC) ? dInc : -dInc);
+			}
 			break;
 		case IDM_CONTEXT_MENU:
 			BOOL bNotUsed;
@@ -3102,13 +3113,15 @@ bool CMainDlg::PerformZoom(double dValue, bool bExponent, bool bZoomToMouse, boo
 		m_dZoom = dValue;
 	}
 
+	double dCfgZoomMin = CSettingsProvider::This().MinZoomPercent() / 100.0;
+	double dCfgZoomMax = CSettingsProvider::This().MaxZoomPercent() / 100.0;
 	if (m_pCurrentImage == NULL) {
-		m_dZoom = max(Helpers::ZoomMin, min(Helpers::ZoomMax, m_dZoom));
+		m_dZoom = max(dCfgZoomMin, min(dCfgZoomMax, m_dZoom));
 		return true;
 	}
 
-	double dZoomMin = max(0.0001, min(Helpers::ZoomMin, GetZoomFactorForFitToScreen(false, false) * 0.5));
-	m_dZoom = max(dZoomMin, min(Helpers::ZoomMax, m_dZoom));
+	double dZoomMin = max(0.0001, min(dCfgZoomMin, GetZoomFactorForFitToScreen(false, false) * 0.5));
+	m_dZoom = max(dZoomMin, min(dCfgZoomMax, m_dZoom));
 
 	// always try to snap to 100%... aka if within 1% of 100%, snap exactly to it
 	if (abs(m_dZoom - 1.0) < 0.01) {
@@ -3169,7 +3182,7 @@ bool CMainDlg::PerformZoom(double dValue, bool bExponent, bool bZoomToMouse, boo
 	}
 
 
-	if (bZoomToMouse) {
+	if (bZoomToMouse && CSettingsProvider::This().ZoomToMouseDefault()) {
 		// zoom to mouse
 		int nCenterX = m_bZoomMode ? m_nCapturedX : m_nMouseX;
 		int nCenterY = m_bZoomMode ? m_nCapturedY : m_nMouseY;
@@ -3185,12 +3198,15 @@ bool CMainDlg::PerformZoom(double dValue, bool bExponent, bool bZoomToMouse, boo
 	}
 
 	m_bInZooming = true;
-	StartLowQTimer(ZOOM_TIMEOUT);
+	StartLowQTimer(CSettingsProvider::This().ZoomRefineTimeoutMs());
 	if (fabs(dOldZoom - m_dZoom) > 0.0001 || m_bZoomMode) {
 		this->Invalidate(FALSE);
 		InvalidateHelpDlg();
 		if (bAdjustWindowToImage) {
 			AdjustWindowToImage(false);
+		}
+		if (CSettingsProvider::This().ShowZoomInTitle()) {
+			UpdateWindowTitle();
 		}
 	}
 
@@ -3275,7 +3291,7 @@ void CMainDlg::ResetZoomToFitScreen(bool bFillWithCrop, bool bAllowEnlarge, bool
 void CMainDlg::ResetZoomTo100Percents(bool bZoomToMouse) {
 	if (m_pCurrentImage != NULL && fabs(m_dZoom - 1) > 0.01) {
 		// the current design (unless changed) cursor always shows in windowed mode, so always zoom to cursor when not fullscreen
-		PerformZoom(1.0, false, bZoomToMouse || !m_bFullScreenMode, true);
+		PerformZoom(1.0, false, bZoomToMouse || !m_bFullScreenMode, CSettingsProvider::This().ZoomAdjustsWindow());
 	}
 }
 
@@ -4343,6 +4359,11 @@ void CMainDlg::UpdateWindowTitle() {
 				sWindowText += " - " + Helpers::SystemTimeToString(pRawMetadata->GetAcquisitionTime());
 			}
 		}
+		if (CSettingsProvider::This().ShowZoomInTitle() && m_dZoom > 0) {
+			CString sZoom;
+			sZoom.Format(_T(" (%d%%)"), Helpers::RoundToInt(m_dZoom * 100));
+			sWindowText += sZoom;
+		}
 		sWindowText += " - " + CString(JPEGVIEW_TITLE);
 		this->SetWindowText(sWindowText);
 	}
@@ -4392,10 +4413,11 @@ double CMainDlg::GetZoomMultiplier(CJPEGImage* pImage, const CRect& clientRect) 
 	double dZoomToFit;
 	CSize fittedSize = Helpers::GetImageRect(pImage->OrigWidth(), pImage->OrigHeight(), 
 		clientRect.Width(), clientRect.Height(), true, false, false, dZoomToFit);
-	// Zoom multiplier (zoom step) should be around 1.1 but reach the value 1.0 after an integral number
-	// of zooming steps
-	int n = Helpers::RoundToInt(log(1/dZoomToFit)/log(1.1));
-	return (n == 0) ? 1.1 : exp(log(1/dZoomToFit)/n);
+	// Zoom multiplier (zoom step) should be around the configured step but reach the value 1.0 after an integral number
+	// of zooming steps. ZoomStepPercent default 20 -> ~1.20 per step.
+	double dStepBase = 1.0 + CSettingsProvider::This().ZoomStepPercent() / 100.0;
+	int n = Helpers::RoundToInt(log(1/dZoomToFit)/log(dStepBase));
+	return (n == 0) ? dStepBase : exp(log(1/dZoomToFit)/n);
 }
 
 EProcessingFlags CMainDlg::CreateDefaultProcessingFlags(bool bKeepParams) {

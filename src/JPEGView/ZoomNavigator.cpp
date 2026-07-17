@@ -3,18 +3,12 @@
 #include "JPEGImage.h"
 #include "Helpers.h"
 #include "HelpersGUI.h"
+#include "SettingsProvider.h"
 #include <math.h>
 
 // in 96 DPI
-static const int cnThumbWL = 320; // maximal thumb size
-static const int cnThumbHL = 240;
-
-static const int cnThumbW = 200; // normal thumb size
-static const int cnThumbH = 150;
-
-static const int cnThumbWS = 133; // minimal thumb size
-static const int cnThumbHS = 100;
-
+// Thumbnail sizes are now configurable via INI (ZoomNavigatorThumbMaxWidth etc.).
+// These limits control the window-width breakpoints for thumb scaling.
 static const int cnLimit1 = 800; // width of window where normal thumb size is reached
 static const int cnLimit2 = 1400; // width of window where maximal thumb size is reached
 
@@ -57,10 +51,14 @@ CRect CZoomNavigator::GetNavigatorRect(CJPEGImage* pImage, const CRect& panelRec
 
 CSize CZoomNavigator::GetThumbSize(int width) {
 	const float fAspectRatio = 0.66666666f;
-	float factor = (float)(cnThumbW - cnThumbWL) / (cnLimit1 - cnLimit2);
-	float offset = cnThumbWL - factor * cnLimit2;
+	// Read configurable thumbnail sizes from settings (defaults match the original constants).
+	int nThumbWL = CSettingsProvider::This().ZoomNavigatorThumbMaxWidth();
+	int nThumbW  = CSettingsProvider::This().ZoomNavigatorThumbNormalWidth();
+	int nThumbWS = CSettingsProvider::This().ZoomNavigatorThumbMinWidth();
+	float factor = (float)(nThumbW - nThumbWL) / (cnLimit1 - cnLimit2);
+	float offset = nThumbWL - factor * cnLimit2;
 	int thumbWidth = (int)(factor * width + offset + 0.5f);
-	thumbWidth = min(cnThumbWL, max(cnThumbWS, thumbWidth));
+	thumbWidth = min(nThumbWL, max(nThumbWS, thumbWidth));
 	int thumbHeight = (int)(thumbWidth * fAspectRatio + 0.5f);
 	return CSize(HelpersGUI::ScaleToScreen(thumbWidth), HelpersGUI::ScaleToScreen(thumbHeight));
 }

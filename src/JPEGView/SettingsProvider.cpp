@@ -197,6 +197,38 @@ CSettingsProvider::CSettingsProvider(void) {
 	m_bWindowBorderlessOnStartup = GetBool(_T("WindowBorderlessOnStartup"), false);
 	m_bWindowAlwaysOnTopOnStartup = GetBool(_T("WindowAlwaysOnTopOnStartup"), false);
 	m_zoomPauseFactor = GetInt(_T("ZoomPausePercent"), 100, 0, 6553500) / 100.0;  // can't have a % larger than the MAX_IMAGE_DIMENSION %, and convert to a scale factor (double/double division) only once
+	// --- Zoom behavior settings ---
+	m_bZoomAdjustsWindow = GetBool(_T("ZoomAdjustsWindow"), true);  // default: original behavior (resize window on zoom)
+	m_nZoomStepPercent = GetInt(_T("ZoomStepPercent"), 20, 1, 1000);
+	m_bZoomToMouseDefault = GetBool(_T("ZoomToMouseDefault"), true);
+	m_nMinZoomPercent = GetInt(_T("MinZoomPercent"), 1, 1, 10000);
+	m_nMaxZoomPercent = GetInt(_T("MaxZoomPercent"), 6553500, 1, 6553500);
+	m_dPanSpeed = GetDouble(_T("PanSpeed"), 1.0, 0.1, 100.0);
+	m_bShowZoomInTitle = GetBool(_T("ShowZoomInTitle"), false);
+	m_bSmoothZoom = GetBool(_T("SmoothZoom"), false);
+	// --- Slideshow settings ---
+	m_dDefaultSlideShowFPS = GetDouble(_T("DefaultSlideShowFPS"), 1.0, 0.01, 1000.0);
+	m_nSlideShowMinDisplayTimeMs = GetInt(_T("SlideShowMinDisplayTimeMs"), 250, 0, 60000);
+	// --- Zoom navigator thumbnail settings ---
+	m_nZoomNavThumbMaxW = GetInt(_T("ZoomNavigatorThumbMaxWidth"), 320, 50, 2000);
+	m_nZoomNavThumbNormalW = GetInt(_T("ZoomNavigatorThumbNormalWidth"), 200, 50, 2000);
+	m_nZoomNavThumbMinW = GetInt(_T("ZoomNavigatorThumbMinWidth"), 133, 50, 2000);
+	// --- Zoom timing settings ---
+	m_nZoomRefineTimeoutMs = GetInt(_T("ZoomRefineTimeoutMs"), 200, 0, 10000);
+	m_nZoomTextTimeoutMs = GetInt(_T("ZoomTextTimeoutMs"), 1000, 0, 60000);
+	// --- Image processing increments ---
+	m_dContrastInc = GetDouble(_T("ContrastIncrement"), 0.03, 0.001, 1.0);
+	m_dSharpenInc = GetDouble(_T("SharpenIncrement"), 0.05, 0.001, 1.0);
+	m_dLDCInc = GetDouble(_T("LDCIncrement"), 0.1, 0.001, 1.0);
+	m_dGammaFactor = GetDouble(_T("GammaFactor"), 1.02, 1.0, 10.0);
+	// --- Image dimension limits ---
+#ifdef _WIN64
+	m_nMaxImageDimension = (unsigned int)GetInt(_T("MaxImageDimension"), 1000000, 100, 1000000);
+	m_nMaxImagePixels = (unsigned long long)_wtoi64(GetString(_T("MaxImagePixels"), _T("1000000000000")).GetString());
+#else
+	m_nMaxImageDimension = (unsigned int)GetInt(_T("MaxImageDimension"), 65535, 100, 65535);
+	m_nMaxImagePixels = (unsigned long long)GetInt(_T("MaxImagePixels"), 1024 * 1024 * 100, 1, 1024 * 1024 * 100);
+#endif
 	m_bSaveWithoutPrompt = GetBool(_T("OverwriteOriginalFileWithoutSaveDialog"), false);
 	m_bCropWithoutPromptLosslessJPEG = GetBool(_T("CropWithoutPromptLosslessJPEG"), false);
 	m_bAllowFileDeletion = GetBool(_T("AllowFileDeletion"), true);
