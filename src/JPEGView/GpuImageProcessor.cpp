@@ -77,98 +77,145 @@ GpuImageProcessor::GpuImageProcessor()
     m_pApplyLDC32bppSat_CS = nullptr;
     m_pApplySaturationAnd3ChannelLUT_CS = nullptr;
     m_pResampleX_CS = nullptr;
+    m_pResampleY_CS = nullptr;
     m_pUnsharpMask_CS = nullptr;
     m_pGaussFilter1C16_CS = nullptr;
     m_pGaussFilter1C16Y_CS = nullptr;
+    if (m_deviceAvailable) {
+        // Compile all compute shaders on a background thread so the first
+        // paint that needs one (e.g. the zoom navigator appearing) does not
+        // block the UI thread on D3DCompile. The getters stay as fallback for
+        // any call that arrives before the precompile finishes; m_csShaders
+        // makes the race safe. Shader compilation only touches the D3D11
+        // device (free-threaded), never the immediate context.
+        m_precompileThread = std::thread([this]() {
+            GetResampleXShader();
+            GetResampleYShader();
+            GetApplySaturationAnd3ChannelLUTShader();
+            GetApply3ChannelLUTShader();
+            GetApplyLDC32bppShader();
+            GetApplyLDC32bppSatShader();
+            GetUnsharpMaskShader();
+            GetGaussFilter1C16Shader();
+            GetGaussFilter1C16YShader();
+        });
+    }
 }
 
 GpuImageProcessor::~GpuImageProcessor() {
+    if (m_precompileThread.joinable()) {
+        m_precompileThread.join();
+    }
     if (m_pApply3ChannelLUT_CS) { m_pApply3ChannelLUT_CS->Release(); m_pApply3ChannelLUT_CS = nullptr; }
     if (m_pApplyLDC32bpp_CS) { m_pApplyLDC32bpp_CS->Release(); m_pApplyLDC32bpp_CS = nullptr; }
     if (m_pApplyLDC32bppSat_CS) { m_pApplyLDC32bppSat_CS->Release(); m_pApplyLDC32bppSat_CS = nullptr; }
     if (m_pApplySaturationAnd3ChannelLUT_CS) { m_pApplySaturationAnd3ChannelLUT_CS->Release(); m_pApplySaturationAnd3ChannelLUT_CS = nullptr; }
     if (m_pResampleX_CS) { m_pResampleX_CS->Release(); m_pResampleX_CS = nullptr; }
+    if (m_pResampleY_CS) { m_pResampleY_CS->Release(); m_pResampleY_CS = nullptr; }
     if (m_pUnsharpMask_CS) { m_pUnsharpMask_CS->Release(); m_pUnsharpMask_CS = nullptr; }
     if (m_pGaussFilter1C16_CS) { m_pGaussFilter1C16_CS->Release(); m_pGaussFilter1C16_CS = nullptr; }
     if (m_pGaussFilter1C16Y_CS) { m_pGaussFilter1C16Y_CS->Release(); m_pGaussFilter1C16Y_CS = nullptr; }
 }
 
 ID3D11ComputeShader* GpuImageProcessor::GetApply3ChannelLUTShader() {
-    if (m_pApply3ChannelLUT_CS != nullptr) {
-        return m_pApply3ChannelLUT_CS;
-    }
     if (!m_deviceAvailable) {
         return nullptr;
     }
-    m_pApply3ChannelLUT_CS = gpu_shaders::CompileComputeShader(
-        CGpuDevice::Instance().Device(), gpu_shaders::kApply3ChannelLUT_CS,
-        "main", "cs_5_0");
+    std::lock_guard<std::mutex> lock(m_csShaders);
+    if (m_pApply3ChannelLUT_CS == nullptr) {
+        m_pApply3ChannelLUT_CS = gpu_shaders::CompileComputeShader(
+            CGpuDevice::Instance().Device(), gpu_shaders::kApply3ChannelLUT_CS,
+            "main", "cs_5_0");
+    }
     return m_pApply3ChannelLUT_CS;
 }
 
 ID3D11ComputeShader* GpuImageProcessor::GetApplyLDC32bppShader() {
-    if (m_pApplyLDC32bpp_CS != nullptr) {
-        return m_pApplyLDC32bpp_CS;
-    }
     if (!m_deviceAvailable) {
         return nullptr;
     }
-    m_pApplyLDC32bpp_CS = gpu_shaders::CompileComputeShader(
-        CGpuDevice::Instance().Device(), gpu_shaders::kApplyLDC32bpp_CS,
-        "main", "cs_5_0");
+    std::lock_guard<std::mutex> lock(m_csShaders);
+    if (m_pApplyLDC32bpp_CS == nullptr) {
+        m_pApplyLDC32bpp_CS = gpu_shaders::CompileComputeShader(
+            CGpuDevice::Instance().Device(), gpu_shaders::kApplyLDC32bpp_CS,
+            "main", "cs_5_0");
+    }
     return m_pApplyLDC32bpp_CS;
 }
 
 ID3D11ComputeShader* GpuImageProcessor::GetApplyLDC32bppSatShader() {
-    if (m_pApplyLDC32bppSat_CS != nullptr) return m_pApplyLDC32bppSat_CS;
     if (!m_deviceAvailable) return nullptr;
-    m_pApplyLDC32bppSat_CS = gpu_shaders::CompileComputeShader(
-        CGpuDevice::Instance().Device(), gpu_shaders::kApplyLDC32bppSat_CS, "main", "cs_5_0");
+    std::lock_guard<std::mutex> lock(m_csShaders);
+    if (m_pApplyLDC32bppSat_CS == nullptr) {
+        m_pApplyLDC32bppSat_CS = gpu_shaders::CompileComputeShader(
+            CGpuDevice::Instance().Device(), gpu_shaders::kApplyLDC32bppSat_CS, "main", "cs_5_0");
+    }
     return m_pApplyLDC32bppSat_CS;
 }
 
 ID3D11ComputeShader* GpuImageProcessor::GetApplySaturationAnd3ChannelLUTShader() {
-    if (m_pApplySaturationAnd3ChannelLUT_CS != nullptr) return m_pApplySaturationAnd3ChannelLUT_CS;
     if (!m_deviceAvailable) return nullptr;
-    m_pApplySaturationAnd3ChannelLUT_CS = gpu_shaders::CompileComputeShader(
-        CGpuDevice::Instance().Device(), gpu_shaders::kApplySaturationAnd3ChannelLUT_CS, "main", "cs_5_0");
+    std::lock_guard<std::mutex> lock(m_csShaders);
+    if (m_pApplySaturationAnd3ChannelLUT_CS == nullptr) {
+        m_pApplySaturationAnd3ChannelLUT_CS = gpu_shaders::CompileComputeShader(
+            CGpuDevice::Instance().Device(), gpu_shaders::kApplySaturationAnd3ChannelLUT_CS, "main", "cs_5_0");
+    }
     return m_pApplySaturationAnd3ChannelLUT_CS;
 }
 
 ID3D11ComputeShader* GpuImageProcessor::GetResampleXShader() {
-    if (m_pResampleX_CS != nullptr) {
-        return m_pResampleX_CS;
-    }
     if (!m_deviceAvailable) {
         return nullptr;
     }
-    m_pResampleX_CS = gpu_shaders::CompileComputeShader(
-        CGpuDevice::Instance().Device(), gpu_shaders::kResampleX_CS,
-        "main", "cs_5_0");
+    std::lock_guard<std::mutex> lock(m_csShaders);
+    if (m_pResampleX_CS == nullptr) {
+        m_pResampleX_CS = gpu_shaders::CompileComputeShader(
+            CGpuDevice::Instance().Device(), gpu_shaders::kResampleX_CS,
+            "main", "cs_5_0");
+    }
     return m_pResampleX_CS;
 }
 
+ID3D11ComputeShader* GpuImageProcessor::GetResampleYShader() {
+    if (!m_deviceAvailable) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(m_csShaders);
+    if (m_pResampleY_CS == nullptr) {
+        m_pResampleY_CS = gpu_shaders::CompileComputeShader(
+            CGpuDevice::Instance().Device(), gpu_shaders::kResampleY_CS,
+            "main", "cs_5_0");
+    }
+    return m_pResampleY_CS;
+}
+
 ID3D11ComputeShader* GpuImageProcessor::GetUnsharpMaskShader() {
-    if (m_pUnsharpMask_CS != nullptr) return m_pUnsharpMask_CS;
     if (!m_deviceAvailable) return nullptr;
-    m_pUnsharpMask_CS = gpu_shaders::CompileComputeShader(
-        CGpuDevice::Instance().Device(), gpu_shaders::kUnsharpMask_CS, "main", "cs_5_0");
+    std::lock_guard<std::mutex> lock(m_csShaders);
+    if (m_pUnsharpMask_CS == nullptr) {
+        m_pUnsharpMask_CS = gpu_shaders::CompileComputeShader(
+            CGpuDevice::Instance().Device(), gpu_shaders::kUnsharpMask_CS, "main", "cs_5_0");
+    }
     return m_pUnsharpMask_CS;
 }
 
 ID3D11ComputeShader* GpuImageProcessor::GetGaussFilter1C16Shader() {
-    if (m_pGaussFilter1C16_CS != nullptr) return m_pGaussFilter1C16_CS;
     if (!m_deviceAvailable) return nullptr;
-    m_pGaussFilter1C16_CS = gpu_shaders::CompileComputeShader(
-        CGpuDevice::Instance().Device(), gpu_shaders::kGaussFilter1C16_CS, "main", "cs_5_0");
+    std::lock_guard<std::mutex> lock(m_csShaders);
+    if (m_pGaussFilter1C16_CS == nullptr) {
+        m_pGaussFilter1C16_CS = gpu_shaders::CompileComputeShader(
+            CGpuDevice::Instance().Device(), gpu_shaders::kGaussFilter1C16_CS, "main", "cs_5_0");
+    }
     return m_pGaussFilter1C16_CS;
 }
 
 ID3D11ComputeShader* GpuImageProcessor::GetGaussFilter1C16YShader() {
-    if (m_pGaussFilter1C16Y_CS != nullptr) return m_pGaussFilter1C16Y_CS;
     if (!m_deviceAvailable) return nullptr;
-    m_pGaussFilter1C16Y_CS = gpu_shaders::CompileComputeShader(
-        CGpuDevice::Instance().Device(), gpu_shaders::kGaussFilter1C16Y_CS, "main", "cs_5_0");
+    std::lock_guard<std::mutex> lock(m_csShaders);
+    if (m_pGaussFilter1C16Y_CS == nullptr) {
+        m_pGaussFilter1C16Y_CS = gpu_shaders::CompileComputeShader(
+            CGpuDevice::Instance().Device(), gpu_shaders::kGaussFilter1C16Y_CS, "main", "cs_5_0");
+    }
     return m_pGaussFilter1C16Y_CS;
 }
 
@@ -177,8 +224,9 @@ void* GpuImageProcessor::ResampleHQ(CSize fullTargetSize, CPoint fullTargetOffse
     int nChannels, double dSharpen, EFilterType eFilter, bool bUpsampling) {
     // GPU resample: float 2-pass separable FIR. Falls back to CPU if the
     // shader/device is unavailable, or for unsupported channel counts.
-    ID3D11ComputeShader* cs = GetResampleXShader();
-    if (cs == nullptr || !m_deviceAvailable) {
+    ID3D11ComputeShader* csX = GetResampleXShader();
+    ID3D11ComputeShader* csY = GetResampleYShader();
+    if (csX == nullptr || csY == nullptr || !m_deviceAvailable) {
         return CpuFallbackResample(fullTargetSize, fullTargetOffset, clippedTargetSize,
             sourceSize, pPixels, nChannels, dSharpen, eFilter, bUpsampling);
     }
@@ -205,15 +253,47 @@ void* GpuImageProcessor::ResampleHQ(CSize fullTargetSize, CPoint fullTargetOffse
     CAutoFilter filterY(sourceSize.cy, fullTargetSize.cy, dSharpen, fxType);
     const FilterKernelBlock& ky = filterY.Kernels();
 
-    // Source X/Y start and increment (16.16 fixed point), matching the CPU
-    // SampleUp/Down_HQ derivation.
-    uintfp incX = (uintfp)((uint64_t)65536 * (uint32_t)(sourceSize.cx - 1) / (fullTargetSize.cx - 1));
-    uintfp incY = (uintfp)((uint64_t)65536 * (uint32_t)(sourceSize.cy - 1) / (fullTargetSize.cy - 1));
-    int firstY = max(0, (int)((uintfp)incY * fullTargetOffset.y >> 16) - 1);
-    int lastY = min(sourceSize.cy - 1, (int)(((uintfp)incY * (fullTargetOffset.y + clippedTargetSize.cy - 1)) >> 16) + 2);
+    // Source X/Y start, increment and filtered source-row band (16.16 fixed
+    // point), computed in 64 bits and mirroring the CPU derivation exactly:
+    // SampleUp_HQ for upsampling, SampleDown_HQ for downsampling (the two use
+    // different source mappings and band margins).
+    uint64_t incX64, incY64, startX64, startY64;
+    int firstY, lastY;
+    if (bUpsampling) {
+        incX64 = 65536ULL * (uint32_t)(sourceSize.cx - 1) / (fullTargetSize.cx - 1);
+        incY64 = 65536ULL * (uint32_t)(sourceSize.cy - 1) / (fullTargetSize.cy - 1);
+        // Bicubic upsampling kernels have length 4 with offset 1.
+        firstY = max(0, (int)(incY64 * fullTargetOffset.y >> 16) - 1);
+        lastY = min(sourceSize.cy - 1, (int)((incY64 * (fullTargetOffset.y + clippedTargetSize.cy - 1)) >> 16) + 2);
+        startX64 = incX64 * fullTargetOffset.x;
+        startY64 = incY64 * fullTargetOffset.y - 65536ULL * firstY;
+    } else {
+        incX64 = (((uint64_t)sourceSize.cx << 16) / fullTargetSize.cx) + 1;
+        incY64 = (((uint64_t)sourceSize.cy << 16) / fullTargetSize.cy) + 1;
+        uint64_t incOffX = (incX64 - 65536) >> 1;
+        uint64_t incOffY = (incY64 - 65536) >> 1;
+        // The band must include every tap of the first and last used Y kernel.
+        firstY = (int)((incOffY + incY64 * fullTargetOffset.y) >> 16);
+        firstY = max(0, firstY - ky.Indices[fullTargetOffset.y]->FilterOffset);
+        lastY = (int)((incOffY + incY64 * (fullTargetOffset.y + clippedTargetSize.cy - 1)) >> 16);
+        const FilterKernel* pLastYFilter = ky.Indices[fullTargetOffset.y + clippedTargetSize.cy - 1];
+        lastY = min(sourceSize.cy - 1, lastY - pLastYFilter->FilterOffset + pLastYFilter->FilterLen - 1);
+        startX64 = incOffX + incX64 * fullTargetOffset.x;
+        startY64 = incOffY + incY64 * fullTargetOffset.y - 65536ULL * firstY;
+    }
     int tempH = lastY - firstY + 1;   // intermediate height = #source rows filtered
-    uintfp startX_FP = incX * fullTargetOffset.x;
-    uintfp startY_FP = incY * fullTargetOffset.y - 65536 * firstY;
+    // The shader works in 32-bit fixed point; bail out to CPU (which uses
+    // 64-bit fixed point on x64) if any position can overflow 32 bits.
+    uint64_t maxX_FP = startX64 + incX64 * (uint64_t)(clippedTargetSize.cx - 1);
+    uint64_t maxY_FP = startY64 + incY64 * (uint64_t)(clippedTargetSize.cy - 1);
+    if (tempH <= 0 || maxX_FP > 0xFFFFFFFFULL || maxY_FP > 0xFFFFFFFFULL) {
+        return CpuFallbackResample(fullTargetSize, fullTargetOffset, clippedTargetSize,
+            sourceSize, pPixels, nChannels, dSharpen, eFilter, bUpsampling);
+    }
+    uintfp incX = (uintfp)incX64;
+    uintfp incY = (uintfp)incY64;
+    uintfp startX_FP = (uintfp)startX64;
+    uintfp startY_FP = (uintfp)startY64;
 
     // Upload source as a UINT texture. If 3-channel, expand to 4 on the fly
     // (pad alpha 0xFF) via a small staging copy.
@@ -255,23 +335,19 @@ void* GpuImageProcessor::ResampleHQ(CSize fullTargetSize, CPoint fullTargetOffse
 
     gpu_tex::UploadBGRA(ctx, texSrc, srcW, srcH, srcData);
 
-    // Run the X pass: texSrc -> texX, using filterX kernels.
-    if (!RunResamplePass(ctx, device, cs, texSrc, texX, kx, clippedTargetSize.cx, tempH,
-        srcW, srcH, startX_FP, incX)) {
+    // Run the X pass: texSrc -> texX, using filterX kernels. Filters the
+    // clipped target columns over the source-row band [firstY, lastY].
+    if (!RunResamplePass(ctx, device, csX, texSrc, texX, kx, fullTargetOffset.x,
+        clippedTargetSize.cx, tempH, srcW, firstY, startX_FP, incX)) {
         texSrc->Release(); texX->Release(); texOut->Release(); delete[] srcBGRA;
         return CpuFallbackResample(fullTargetSize, fullTargetOffset, clippedTargetSize,
             sourceSize, pPixels, nChannels, dSharpen, eFilter, bUpsampling);
     }
 
-    // Run the Y pass: texX -> texOut, using filterY kernels.
-    // The shader filters "columns" but we feed it the X result transposed:
-    // for the Y pass, target column i maps to output row i, and the source
-    // "row" dimension is the X result's width. We invoke the same shader with
-    // swapped roles: srcW=tempH (rows of X result), srcH=clippedTargetSize.cx,
-    // tgtW=clippedTargetSize.cy (output rows), tgtH=clippedTargetSize.cx.
-    // Each thread (x=target row in output, y=column) reads texX[y, ...].
-    if (!RunResamplePassY(ctx, device, cs, texX, texOut, ky, clippedTargetSize.cy,
-        clippedTargetSize.cx, tempH, clippedTargetSize.cx, startY_FP, incY)) {
+    // Run the Y pass: texX -> texOut, filtering each column of the X result
+    // along the band-row axis with the filterY kernels.
+    if (!RunResamplePassY(ctx, device, csY, texX, texOut, ky, fullTargetOffset.y,
+        clippedTargetSize.cx, clippedTargetSize.cy, tempH, startY_FP, incY)) {
         texSrc->Release(); texX->Release(); texOut->Release(); delete[] srcBGRA;
         return CpuFallbackResample(fullTargetSize, fullTargetOffset, clippedTargetSize,
             sourceSize, pPixels, nChannels, dSharpen, eFilter, bUpsampling);
@@ -303,12 +379,14 @@ struct KernelBuffers {
 };
 
 static KernelBuffers BuildKernelBuffers(ID3D11Device* device,
-    const FilterKernelBlock& kernels, int nTargetColumns) {
+    const FilterKernelBlock& kernels, int nTargetColumns, int nKernelOffset) {
     KernelBuffers kb;
     kb.descs.resize((size_t)nTargetColumns * 3);
     int valueBase = 0;
     for (int i = 0; i < nTargetColumns; ++i) {
-        const FilterKernel* pk = kernels.Indices[i];
+        // Kernels are generated for the full target dimension; a clipped
+        // render uses the sub-range starting at the target offset.
+        const FilterKernel* pk = kernels.Indices[nKernelOffset + i];
         kb.descs[(size_t)i * 3 + 0] = pk->FilterOffset;
         kb.descs[(size_t)i * 3 + 1] = pk->FilterLen;
         kb.descs[(size_t)i * 3 + 2] = valueBase;
@@ -364,8 +442,8 @@ static void ReleaseKernelBuffers(KernelBuffers& kb) {
 
 bool GpuImageProcessor::RunResamplePass(ID3D11DeviceContext* ctx, ID3D11Device* device,
     ID3D11ComputeShader* cs, ID3D11Texture2D* texSrc, ID3D11Texture2D* texOut,
-    const FilterKernelBlock& kernels, int tgtW, int tgtH,
-    int srcW, int srcH, uintfp startX_FP, uintfp incX_FP) {
+    const FilterKernelBlock& kernels, int nKernelOffset, int tgtW, int tgtH,
+    int srcW, int srcRowOffset, uintfp startX_FP, uintfp incX_FP) {
     // SRV for source, UAV for output.
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{}; srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UINT;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; srvDesc.Texture2D.MipLevels = 1;
@@ -374,7 +452,7 @@ bool GpuImageProcessor::RunResamplePass(ID3D11DeviceContext* ctx, ID3D11Device* 
     uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D; uavDesc.Texture2D.MipSlice = 0;
     ID3D11UnorderedAccessView* uavOut = nullptr; device->CreateUnorderedAccessView(texOut, &uavDesc, &uavOut);
 
-    KernelBuffers kb = BuildKernelBuffers(device, kernels, tgtW);
+    KernelBuffers kb = BuildKernelBuffers(device, kernels, tgtW, nKernelOffset);
     if (!srvIn || !uavOut || !kb.ok) {
         if (srvIn) srvIn->Release();
         if (uavOut) uavOut->Release();
@@ -382,10 +460,10 @@ bool GpuImageProcessor::RunResamplePass(ID3D11DeviceContext* ctx, ID3D11Device* 
         return false;
     }
 
-    struct { UINT srcW, srcH, tgtW, tgtH; } cb0Data = { (UINT)srcW, (UINT)srcH, (UINT)tgtW, (UINT)tgtH };
+    struct { UINT srcW, srcH, tgtW, tgtH; } cb0Data = { (UINT)srcW, (UINT)(srcRowOffset + tgtH), (UINT)tgtW, (UINT)tgtH };
     D3D11_BUFFER_DESC c0d{}; c0d.ByteWidth = sizeof(cb0Data); c0d.Usage = D3D11_USAGE_DEFAULT; c0d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     D3D11_SUBRESOURCE_DATA c0i{}; c0i.pSysMem = &cb0Data; ID3D11Buffer* cb0Buf = nullptr; device->CreateBuffer(&c0d, &c0i, &cb0Buf);
-    struct { UINT startX, incX, _p0, _p1; } cb1Data = { (UINT)startX_FP, (UINT)incX_FP, 0, 0 };
+    struct { UINT startX, incX, rowOff, _p1; } cb1Data = { (UINT)startX_FP, (UINT)incX_FP, (UINT)srcRowOffset, 0 };
     D3D11_BUFFER_DESC c1d{}; c1d.ByteWidth = sizeof(cb1Data); c1d.Usage = D3D11_USAGE_DEFAULT; c1d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     D3D11_SUBRESOURCE_DATA c1i{}; c1i.pSysMem = &cb1Data; ID3D11Buffer* cb1Buf = nullptr; device->CreateBuffer(&c1d, &c1i, &cb1Buf);
 
@@ -394,7 +472,7 @@ bool GpuImageProcessor::RunResamplePass(ID3D11DeviceContext* ctx, ID3D11Device* 
     ctx->CSSetUnorderedAccessViews(0, 1, &uavOut, nullptr);
     ID3D11Buffer* cbs[2] = { cb0Buf, cb1Buf }; ctx->CSSetConstantBuffers(0, 2, cbs);
     ctx->CSSetShader(cs, nullptr, 0);
-    // Dispatch: threads cover (tgtW x tgtH) = (target columns x source rows).
+    // Dispatch: threads cover (tgtW x tgtH) = (target columns x band rows).
     ctx->Dispatch((tgtW + 7) / 8, (tgtH + 7) / 8, 1);
     ctx->Flush();
 
@@ -409,14 +487,11 @@ bool GpuImageProcessor::RunResamplePass(ID3D11DeviceContext* ctx, ID3D11Device* 
 
 bool GpuImageProcessor::RunResamplePassY(ID3D11DeviceContext* ctx, ID3D11Device* device,
     ID3D11ComputeShader* cs, ID3D11Texture2D* texSrc, ID3D11Texture2D* texOut,
-    const FilterKernelBlock& kernels, int tgtW, int tgtH,
-    int srcW, int srcH, uintfp startX_FP, uintfp incX_FP) {
-    // Y pass: filter along the row dimension of the X result. The X result is
-    // (tgtW x srcRows) where srcRows=srcW here (we transposed conceptually).
-    // We treat texSrc as having width=srcRows, height=tgtW; each output pixel
-    // (col x, row y) reads texSrc[x, sourceRow] along the sourceRow axis.
-    // The shader's dtid.x = output row (tgtW axis), dtid.y = output column.
-    // Mapping: sample texSrc[dtid.y, srcRow] for srcRow in kernel taps.
+    const FilterKernelBlock& kernels, int nKernelOffset, int tgtW, int tgtH,
+    int srcH, uintfp startY_FP, uintfp incY_FP) {
+    // Y pass: filter each column of the X result along its row (band) axis.
+    // texSrc is the X result (tgtW columns x srcH band rows); texOut is the
+    // final clipped target (tgtW x tgtH). One kernel per output row.
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{}; srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UINT;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; srvDesc.Texture2D.MipLevels = 1;
     ID3D11ShaderResourceView* srvIn = nullptr; device->CreateShaderResourceView(texSrc, &srvDesc, &srvIn);
@@ -424,7 +499,7 @@ bool GpuImageProcessor::RunResamplePassY(ID3D11DeviceContext* ctx, ID3D11Device*
     uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D; uavDesc.Texture2D.MipSlice = 0;
     ID3D11UnorderedAccessView* uavOut = nullptr; device->CreateUnorderedAccessView(texOut, &uavDesc, &uavOut);
 
-    KernelBuffers kb = BuildKernelBuffers(device, kernels, tgtW);
+    KernelBuffers kb = BuildKernelBuffers(device, kernels, tgtH, nKernelOffset);
     if (!srvIn || !uavOut || !kb.ok) {
         if (srvIn) srvIn->Release();
         if (uavOut) uavOut->Release();
@@ -432,13 +507,10 @@ bool GpuImageProcessor::RunResamplePassY(ID3D11DeviceContext* ctx, ID3D11Device*
         return false;
     }
 
-    // srcW here = number of source rows in the X result (= tempH).
-    // srcH here = width of X result (= output columns).
-    // tgtW = number of output rows; tgtH = number of output columns.
-    struct { UINT srcW, srcH, tgtW, tgtH; } cb0Data = { (UINT)srcW, (UINT)srcH, (UINT)tgtW, (UINT)tgtH };
+    struct { UINT srcW, srcH, tgtW, tgtH; } cb0Data = { (UINT)tgtW, (UINT)srcH, (UINT)tgtW, (UINT)tgtH };
     D3D11_BUFFER_DESC c0d{}; c0d.ByteWidth = sizeof(cb0Data); c0d.Usage = D3D11_USAGE_DEFAULT; c0d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     D3D11_SUBRESOURCE_DATA c0i{}; c0i.pSysMem = &cb0Data; ID3D11Buffer* cb0Buf = nullptr; device->CreateBuffer(&c0d, &c0i, &cb0Buf);
-    struct { UINT startX, incX, _p0, _p1; } cb1Data = { (UINT)startX_FP, (UINT)incX_FP, 0, 0 };
+    struct { UINT startY, incY, _p0, _p1; } cb1Data = { (UINT)startY_FP, (UINT)incY_FP, 0, 0 };
     D3D11_BUFFER_DESC c1d{}; c1d.ByteWidth = sizeof(cb1Data); c1d.Usage = D3D11_USAGE_DEFAULT; c1d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     D3D11_SUBRESOURCE_DATA c1i{}; c1i.pSysMem = &cb1Data; ID3D11Buffer* cb1Buf = nullptr; device->CreateBuffer(&c1d, &c1i, &cb1Buf);
 
@@ -447,6 +519,7 @@ bool GpuImageProcessor::RunResamplePassY(ID3D11DeviceContext* ctx, ID3D11Device*
     ctx->CSSetUnorderedAccessViews(0, 1, &uavOut, nullptr);
     ID3D11Buffer* cbs[2] = { cb0Buf, cb1Buf }; ctx->CSSetConstantBuffers(0, 2, cbs);
     ctx->CSSetShader(cs, nullptr, 0);
+    // Dispatch: threads cover (tgtW x tgtH) = (target columns x target rows).
     ctx->Dispatch((tgtW + 7) / 8, (tgtH + 7) / 8, 1);
     ctx->Flush();
 

@@ -41,7 +41,7 @@ CThumbnailCache& CThumbnailCache::This() {
 }
 
 CThumbnailCache::CThumbnailCache()
-	: m_bEnabled(false), m_nMaxBytes(0) {
+	: m_bEnabled(false), m_nMaxBytes(0), m_bShutdown(false) {
 	m_bEnabled = CSettingsProvider::This().ThumbnailCacheEnabled();
 	// INI gives the limit in megabytes; convert to bytes. 0 means disabled.
 	int nMB = CSettingsProvider::This().ThumbnailCacheMaxMB();
@@ -49,7 +49,20 @@ CThumbnailCache::CThumbnailCache()
 	if (m_nMaxBytes <= 0) m_bEnabled = false;
 }
 
-CThumbnailCache::~CThumbnailCache() {}
+CThumbnailCache::~CThumbnailCache() {
+	// Stop the async writer. Pending jobs are dropped (the cache is only an
+	// optimization); a write already in progress completes so no torn file is
+	// left behind (StoreEntry writes atomically via temp file + rename anyway).
+	{
+		std::lock_guard<std::mutex> lock(m_csJobs);
+		m_bShutdown = true;
+		m_jobs.clear();
+	}
+	m_cvJobs.notify_all();
+	if (m_worker.joinable()) {
+		m_worker.join();
+	}
+}
 
 CString CThumbnailCache::MakeKey(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& lastModTime) const {
 	CString sKeyInput(sFilePath);
@@ -343,9 +356,6 @@ void CThumbnailCache::Put(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& 
 	CJPEGImage* pThumbnail, int nOrigWidth, int nOrigHeight) {
 	if (!m_bEnabled || pThumbnail == NULL) return;
 	if (nOrigWidth <= 0 || nOrigHeight <= 0) return;
-	// Hold the lock across encode + write + eviction so a concurrent TryGet
-	// for the same key never sees a half-written temp file.
-	std::lock_guard<std::mutex> lock(m_csLock);
 
 	int nThumbW = pThumbnail->OrigWidth();
 	int nThumbH = pThumbnail->OrigHeight();
@@ -356,7 +366,80 @@ void CThumbnailCache::Put(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& 
 	int nChannels = pThumbnail->OriginalChannels();
 	if (nChannels != 4) return; // thumbnail images are always 32bpp BGRA
 
-	const uint8* pBGRA = (const uint8*)pSrc;
+	StoreEntry(sFilePath, nFileSize, lastModTime, (const unsigned char*)pSrc,
+		nThumbW, nThumbH, nOrigWidth, nOrigHeight);
+}
+
+void CThumbnailCache::PutAsync(LPCTSTR sFilePath, int nThumbWidth, int nThumbHeight,
+	const void* pBGRA, int nOrigWidth, int nOrigHeight) {
+	if (!m_bEnabled || sFilePath == NULL || *sFilePath == 0 || pBGRA == NULL) return;
+	if (nThumbWidth <= 0 || nThumbHeight <= 0 || nOrigWidth <= 0 || nOrigHeight <= 0) return;
+
+	AsyncPutJob job;
+	job.sFilePath = sFilePath;
+	job.nThumbW = nThumbWidth;
+	job.nThumbH = nThumbHeight;
+	job.nOrigW = nOrigWidth;
+	job.nOrigH = nOrigHeight;
+	// Copy the pixels now - the caller's thumbnail can be freed at any time.
+	size_t nBytes = (size_t)nThumbWidth * nThumbHeight * 4;
+	job.pixels.assign((const unsigned char*)pBGRA, (const unsigned char*)pBGRA + nBytes);
+
+	{
+		std::lock_guard<std::mutex> lock(m_csJobs);
+		if (m_bShutdown) return;
+		// One pending entry per file is enough - a newer thumbnail for the
+		// same path replaces the queued one.
+		for (auto it = m_jobs.begin(); it != m_jobs.end(); ++it) {
+			if (it->sFilePath.CompareNoCase(job.sFilePath) == 0) {
+				*it = std::move(job);
+				m_cvJobs.notify_one();
+				return;
+			}
+		}
+		m_jobs.push_back(std::move(job));
+		if (!m_worker.joinable()) {
+			m_worker = std::thread(&CThumbnailCache::WorkerLoop, this);
+		}
+	}
+	m_cvJobs.notify_one();
+}
+
+void CThumbnailCache::WorkerLoop() {
+	for (;;) {
+		AsyncPutJob job;
+		{
+			std::unique_lock<std::mutex> lock(m_csJobs);
+			m_cvJobs.wait(lock, [this]() { return m_bShutdown || !m_jobs.empty(); });
+			if (m_bShutdown) return;
+			job = std::move(m_jobs.front());
+			m_jobs.pop_front();
+		}
+		// Resolve the source file identity (size + mtime) here on the worker,
+		// so the paint thread never touches the file system.
+		HANDLE hFile = ::CreateFile(job.sFilePath, GENERIC_READ, FILE_SHARE_READ, NULL,
+			OPEN_EXISTING, 0, NULL);
+		if (hFile == INVALID_HANDLE_VALUE) continue;
+		FILETIME ftMod;
+		LARGE_INTEGER liSize;
+		bool bHaveStat = (::GetFileTime(hFile, NULL, NULL, &ftMod) != FALSE) &&
+			(::GetFileSizeEx(hFile, &liSize) != FALSE);
+		::CloseHandle(hFile);
+		if (!bHaveStat || liSize.QuadPart <= 0) continue;
+
+		StoreEntry(job.sFilePath, liSize.QuadPart, ftMod, job.pixels.data(),
+			job.nThumbW, job.nThumbH, job.nOrigW, job.nOrigH);
+	}
+}
+
+void CThumbnailCache::StoreEntry(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& lastModTime,
+	const unsigned char* pBGRA, int nThumbWidth, int nThumbHeight, int nOrigWidth, int nOrigHeight) {
+	// Hold the lock across encode + write + eviction so a concurrent TryGet
+	// for the same key never sees a half-written temp file.
+	std::lock_guard<std::mutex> lock(m_csLock);
+
+	int nThumbW = nThumbWidth;
+	int nThumbH = nThumbHeight;
 
 	CString sKey = MakeKey(sFilePath, nFileSize, lastModTime);
 	CString sCacheFile;
@@ -382,7 +465,7 @@ void CThumbnailCache::Put(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& 
 		char szW[16], szH[16], szC[16], szPathHash[32];
 		sprintf_s(szW, "%d", nOrigWidth);
 		sprintf_s(szH, "%d", nOrigHeight);
-		sprintf_s(szC, "%d", nChannels);
+		sprintf_s(szC, "%d", 4); // thumbnail pixels are always 32bpp BGRA
 		// Path-only hash so Invalidate() can find this entry even after an
 		// in-place edit changed the file size/mtime (and thus the cache key).
 		CString sPathHash = MakePathHash(sFilePath);

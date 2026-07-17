@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 // CPU reference for the X pass with an explicit kernel set (one kernel per
 // target column). Each kernel: offset, length, float weights. The source X
@@ -42,6 +43,98 @@ static void CpuRefX(const uint8_t* srcBGRA, uint8_t* outBGRA,
             outBGRA[(y * tgtW + i) * 4 + 3] = 0xFF;
         }
     }
+}
+
+// CPU reference for the Y pass: filters each column of the X result along the
+// row axis. Same kernel/fixed-point conventions as CpuRefX.
+static void CpuRefY(const uint8_t* srcBGRA, uint8_t* outBGRA,
+    int tgtW, int tgtH, int srcH,
+    const int* offsets, const int* lengths, const float* vals, const int* valBases,
+    uint32_t startY_FP, uint32_t incY_FP) {
+    for (int r = 0; r < tgtH; ++r) {
+        uint32_t yFP = startY_FP + (uint32_t)r * incY_FP;
+        int yInt = (int)(yFP >> 16);
+        int off = offsets[r], len = lengths[r], vb = valBases[r];
+        int tapStart = yInt - off;
+        for (int c = 0; c < tgtW; ++c) {
+            float sumB = 0, sumG = 0, sumR = 0;
+            for (int n = 0; n < len; ++n) {
+                float w = vals[vb + n];
+                int sy = std::max(0, std::min(srcH - 1, tapStart + n));
+                const uint8_t* px = srcBGRA + ((size_t)sy * tgtW + c) * 4;
+                sumB += w * px[0];
+                sumG += w * px[1];
+                sumR += w * px[2];
+            }
+            outBGRA[((size_t)r * tgtW + c) * 4 + 0] = (uint8_t)std::max(0, std::min(255, (int)std::round(sumB)));
+            outBGRA[((size_t)r * tgtW + c) * 4 + 1] = (uint8_t)std::max(0, std::min(255, (int)std::round(sumG)));
+            outBGRA[((size_t)r * tgtW + c) * 4 + 2] = (uint8_t)std::max(0, std::min(255, (int)std::round(sumR)));
+            outBGRA[((size_t)r * tgtW + c) * 4 + 3] = 0xFF;
+        }
+    }
+}
+
+// Runs one compute pass with the given shader over an input texture and reads
+// back the (tgtW x tgtH) output. Returns heap BGRA or nullptr.
+static uint8_t* RunPass(ID3D11Device* device, ID3D11DeviceContext* ctx,
+    ID3D11ComputeShader* cs, ID3D11Texture2D* texIn, int tgtW, int tgtH,
+    int cbSrcW, int cbSrcH, int nKernels,
+    const int* offsets, const int* lengths, const float* vals, const int* valBases, int nVals,
+    uint32_t start_FP, uint32_t inc_FP) {
+    ID3D11Texture2D* texOut = gpu_tex::CreateTextureFmt(device, tgtW, tgtH,
+        D3D11_BIND_UNORDERED_ACCESS, false, (D3D11_CPU_ACCESS_FLAG)0, DXGI_FORMAT_R8G8B8A8_UINT);
+    if (!texOut) return nullptr;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{}; srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UINT;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; srvDesc.Texture2D.MipLevels = 1;
+    ID3D11ShaderResourceView* srvIn = nullptr; device->CreateShaderResourceView(texIn, &srvDesc, &srvIn);
+    D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{}; uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UINT;
+    uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D; uavDesc.Texture2D.MipSlice = 0;
+    ID3D11UnorderedAccessView* uavOut = nullptr; device->CreateUnorderedAccessView(texOut, &uavDesc, &uavOut);
+
+    std::vector<int> descs((size_t)nKernels * 3);
+    for (int i = 0; i < nKernels; ++i) {
+        descs[(size_t)i * 3 + 0] = offsets[i];
+        descs[(size_t)i * 3 + 1] = lengths[i];
+        descs[(size_t)i * 3 + 2] = valBases[i];
+    }
+    D3D11_BUFFER_DESC dd{}; dd.ByteWidth = (UINT)(descs.size() * sizeof(int)); dd.Usage = D3D11_USAGE_DEFAULT;
+    dd.BindFlags = D3D11_BIND_SHADER_RESOURCE; dd.StructureByteStride = sizeof(int); dd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    D3D11_SUBRESOURCE_DATA di{}; di.pSysMem = descs.data(); ID3D11Buffer* descBuf = nullptr; device->CreateBuffer(&dd, &di, &descBuf);
+    D3D11_SHADER_RESOURCE_VIEW_DESC dsrv{}; dsrv.Format = DXGI_FORMAT_UNKNOWN; dsrv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+    dsrv.Buffer.NumElements = (UINT)descs.size();
+    ID3D11ShaderResourceView* srvDesc2 = nullptr; device->CreateShaderResourceView(descBuf, &dsrv, &srvDesc2);
+
+    D3D11_BUFFER_DESC vd{}; vd.ByteWidth = (UINT)(nVals * sizeof(float)); vd.Usage = D3D11_USAGE_DEFAULT;
+    vd.BindFlags = D3D11_BIND_SHADER_RESOURCE; vd.StructureByteStride = sizeof(float); vd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    D3D11_SUBRESOURCE_DATA vi{}; vi.pSysMem = vals; ID3D11Buffer* valBuf = nullptr; device->CreateBuffer(&vd, &vi, &valBuf);
+    D3D11_SHADER_RESOURCE_VIEW_DESC vsrv{}; vsrv.Format = DXGI_FORMAT_UNKNOWN; vsrv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+    vsrv.Buffer.NumElements = (UINT)nVals;
+    ID3D11ShaderResourceView* srvVal = nullptr; device->CreateShaderResourceView(valBuf, &vsrv, &srvVal);
+
+    struct { UINT sw, sh, tw, th; } cb0 = { (UINT)cbSrcW, (UINT)cbSrcH, (UINT)tgtW, (UINT)tgtH };
+    D3D11_BUFFER_DESC c0d{}; c0d.ByteWidth = sizeof(cb0); c0d.Usage = D3D11_USAGE_DEFAULT; c0d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_SUBRESOURCE_DATA c0i{}; c0i.pSysMem = &cb0; ID3D11Buffer* cb0Buf = nullptr; device->CreateBuffer(&c0d, &c0i, &cb0Buf);
+    struct { UINT s, inc, p0, p1; } cb1 = { start_FP, inc_FP, 0, 0 };
+    D3D11_BUFFER_DESC c1d{}; c1d.ByteWidth = sizeof(cb1); c1d.Usage = D3D11_USAGE_DEFAULT; c1d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_SUBRESOURCE_DATA c1i{}; c1i.pSysMem = &cb1; ID3D11Buffer* cb1Buf = nullptr; device->CreateBuffer(&c1d, &c1i, &cb1Buf);
+
+    ID3D11ShaderResourceView* srvs[3] = { srvIn, srvDesc2, srvVal };
+    ctx->CSSetShaderResources(0, 3, srvs);
+    ctx->CSSetUnorderedAccessViews(0, 1, &uavOut, nullptr);
+    ID3D11Buffer* cbs[2] = { cb0Buf, cb1Buf }; ctx->CSSetConstantBuffers(0, 2, cbs);
+    ctx->CSSetShader(cs, nullptr, 0);
+    ctx->Dispatch((tgtW + 7) / 8, (tgtH + 7) / 8, 1);
+    ctx->Flush();
+
+    uint8_t* out = (uint8_t*)gpu_tex::ReadbackBGRA(ctx, texOut, tgtW, tgtH);
+
+    ID3D11ShaderResourceView* ns[3] = {}; ctx->CSSetShaderResources(0, 3, ns);
+    ID3D11UnorderedAccessView* nu = nullptr; ctx->CSSetUnorderedAccessViews(0, 1, &nu, nullptr);
+    ID3D11Buffer* ncbs[2] = {}; ctx->CSSetConstantBuffers(0, 2, ncbs); ctx->CSSetShader(nullptr, nullptr, 0);
+    srvIn->Release(); uavOut->Release(); srvDesc2->Release(); srvVal->Release();
+    descBuf->Release(); valBuf->Release(); cb0Buf->Release(); cb1Buf->Release(); texOut->Release();
+    return out;
 }
 
 int main() {
@@ -117,8 +210,51 @@ int main() {
     if (mism == 0) wprintf(L"PASS: %dx%d->%dx%d X-pass matches CPU reference.\n", srcW, srcH, tgtW, tgtH);
     else wprintf(L"FAIL: %d mismatches out of %d\n", mism, tgtW * tgtH * 4);
 
+    // ---- Y pass: filter the X result vertically to (tgtW x tgtH2) ----------
+    // Exercises the dedicated kResampleY_CS shader the production 2-pass
+    // resample uses; also covers border clamping at both band edges.
+    int mismY = 0;
+    const int tgtH2 = 2;
+    ID3D11ComputeShader* csY = gpu_shaders::CompileComputeShader(device, gpu_shaders::kResampleY_CS, "main", "cs_5_0");
+    if (!csY) { wprintf(L"FAIL: Y shader compile\n"); mismY = 1; }
+    else {
+        uint32_t incY = (uint32_t)(((uint64_t)tgtH << 16) / tgtH2) + 1;
+        uint32_t startY = (incY - 65536) >> 1;
+        int offsetsY[tgtH2] = { 1, 1 };
+        int lengthsY[tgtH2] = { 3, 3 };
+        float valsY[6] = { 0.25f,0.5f,0.25f, 0.25f,0.5f,0.25f };
+        int valBasesY[tgtH2] = { 0, 3 };
+
+        uint8_t* refY = new uint8_t[tgtW * tgtH2 * 4];
+        CpuRefY(ref, refY, tgtW, tgtH2, tgtH, offsetsY, lengthsY, valsY, valBasesY, startY, incY);
+
+        // Upload the verified GPU X result as the Y-pass input texture.
+        ID3D11Texture2D* texXIn = gpu_tex::CreateTextureFmt(device, tgtW, tgtH,
+            D3D11_BIND_SHADER_RESOURCE, false, (D3D11_CPU_ACCESS_FLAG)0, DXGI_FORMAT_R8G8B8A8_UINT);
+        uint8_t* gpuOutY = nullptr;
+        if (texXIn) {
+            gpu_tex::UploadBGRA(ctx, texXIn, tgtW, tgtH, gpuOut);
+            gpuOutY = RunPass(device, ctx, csY, texXIn, tgtW, tgtH2, tgtW, tgtH, tgtH2,
+                offsetsY, lengthsY, valsY, valBasesY, 6, startY, incY);
+            texXIn->Release();
+        }
+        if (gpuOutY == nullptr) {
+            wprintf(L"FAIL: Y pass did not produce output\n");
+            mismY = 1;
+        } else {
+            for (int i = 0; i < tgtW * tgtH2 * 4; ++i) {
+                if (gpuOutY[i] != refY[i]) { if (mismY < 5) wprintf(L"  Y mismatch @%d: gpu=%3d ref=%3d\n", i, gpuOutY[i], refY[i]); ++mismY; }
+            }
+            if (mismY == 0) wprintf(L"PASS: %dx%d->%dx%d Y-pass matches CPU reference.\n", tgtW, tgtH, tgtW, tgtH2);
+            else wprintf(L"FAIL: %d Y-pass mismatches out of %d\n", mismY, tgtW * tgtH2 * 4);
+        }
+        delete[] gpuOutY;
+        delete[] refY;
+        csY->Release();
+    }
+
     cs->Release(); srvIn->Release(); uavOut->Release(); srvDesc2->Release(); srvVal->Release();
     descBuf->Release(); valBuf->Release(); cb0Buf->Release(); cb1Buf->Release(); texSrc->Release(); texOut->Release();
     delete[] gpuOut; delete[] src; delete[] ref;
-    return mism == 0 ? 0 : 1;
+    return (mism == 0 && mismY == 0) ? 0 : 1;
 }

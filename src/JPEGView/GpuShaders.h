@@ -61,8 +61,15 @@ extern const char* kApplyLDC32bppSat_CS;
 //   u0: output texture
 //   CB0: srcWidth, srcHeight, tgtWidth, tgtHeight
 //   CB1: nStartX_FP (16.16), nChannels
-// The Y pass reuses this shader with swapped dimensions (caller transposes).
 extern const char* kResampleX_CS;
+
+// ResampleY: vertical 1D FIR pass over the X-pass result. Each thread computes
+// one output pixel (dtid.x = target column, dtid.y = target row) by filtering
+// the column dtid.x of the input along its row (Y) axis. Uses the same kernel
+// descriptor/value structured-buffer layout as kResampleX_CS.
+//   CB0: srcWidth, srcHeight, tgtWidth, tgtHeight (of input/output textures)
+//   CB1: nStartY_FP (16.16), nIncY_FP
+extern const char* kResampleY_CS;
 
 // UnsharpMask: per-pixel sharpening. Reads gray + smoothed-gray (int16),
 // a threshold LUT (int16, 2048 entries, centered), and the source BGRA, then

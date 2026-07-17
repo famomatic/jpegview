@@ -58,6 +58,22 @@ add_gpu_test(GpuGaussTest SOURCES GpuGaussTest.cpp ${_gpu_common} LIBS ${_gpu_li
 # Verify D3D11 device creation without launching the full WTL UI.
 add_gpu_test(GpuDeviceTest SOURCES GpuDeviceTest.cpp "${_gpu_src_dir}/GpuDevice.cpp" LIBS d3d11 dxgi REGISTER_TEST)
 
+# Verify the highway HQ resampling stays correct for every dispatched SIMD
+# lane width (forces SSE2/SSE4 via hwy::SetSupportedTargetsForTest) and the
+# scalar SampleDown_HQ fallback. Catches lane-vs-16-pixel-granularity
+# mismatches that only reproduce on non-AVX2 hardware.
+add_gpu_test(HighwayLaneTest SOURCES HighwayLaneTest.cpp
+    "${_gpu_src_dir}/BasicProcessing.cpp"
+    "${_gpu_src_dir}/ApplyFilterHighway.cpp"
+    "${_gpu_src_dir}/XMMImage.cpp"
+    "${_gpu_src_dir}/ResizeFilter.cpp"
+    "${_gpu_src_dir}/ProcessingThreadPool.cpp"
+    "${_gpu_src_dir}/WorkThread.cpp"
+    LIBS hwy::hwy REGISTER_TEST)
+target_include_directories(HighwayLaneTest PRIVATE "${WTL_INCLUDE_DIR}")
+target_compile_definitions(HighwayLaneTest PRIVATE
+    WIN32 _WINDOWS STRICT UNICODE _UNICODE _CRT_SECURE_NO_DEPRECATE)
+
 # ShaderDiag prints D3DCompile errors for debugging. Dev-only, not a test.
 # Off by default so it never appears in any output tree; enable explicitly
 # during development with -DJPEGVIEW_BUILD_SHADER_DIAG=ON.

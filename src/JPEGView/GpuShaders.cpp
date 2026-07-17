@@ -232,7 +232,7 @@ void main(uint3 dtid : SV_DispatchThreadID) {
 //      incX_FP (16.16 increment per target column)
 const char* kResampleX_CS = R"(
 struct Params { uint srcW; uint srcH; uint tgtW; uint tgtH; };
-struct Fxp { uint startX; uint incX; uint _p0; uint _p1; };
+struct Fxp { uint startX; uint incX; uint rowOff; uint _p1; };
 cbuffer CB0 : register(b0) { Params g; };
 cbuffer CB1 : register(b1) { Fxp f; };
 
@@ -245,8 +245,9 @@ float clamp255(float v) { return max(0.0f, min(255.0f, v)); }
 
 [numthreads(8, 8, 1)]
 void main(uint3 dtid : SV_DispatchThreadID) {
-    // dtid.x = target column, dtid.y = source row (unchanged in X pass)
-    if (dtid.x >= g.tgtW || dtid.y >= g.srcH) return;
+    // dtid.x = target column, dtid.y = output band row. The output band
+    // covers source rows [rowOff, rowOff + tgtH) of the full source texture.
+    if (dtid.x >= g.tgtW || dtid.y >= g.tgtH) return;
 
     // Source X position for this target column (16.16 fixed point).
     uint xFP = f.startX + dtid.x * f.incX;
@@ -263,13 +264,61 @@ void main(uint3 dtid : SV_DispatchThreadID) {
         float w = gKVal[kValueBase + n];
         // Clamp source index to [0, srcW-1] (border handling).
         int sx = clamp(tapStart + n, 0, (int)g.srcW - 1);
-        uint4 px = gInput[uint2(sx, dtid.y)];
+        uint4 px = gInput[uint2(sx, dtid.y + f.rowOff)];
         sumB += w * float(px.x);
         sumG += w * float(px.y);
         sumR += w * float(px.z);
     }
 
     // Round and clamp to 0..255. The CPU adds 255 (0.5 in 2.14) before >>14.
+    uint b = (uint)clamp255(round(sumB));
+    uint gr = (uint)clamp255(round(sumG));
+    uint r = (uint)clamp255(round(sumR));
+    gOutput[dtid.xy] = uint4(b, gr, r, 0xFFu);
+}
+)";
+
+const char* kResampleY_CS = R"(
+struct Params { uint srcW; uint srcH; uint tgtW; uint tgtH; };
+struct Fxp { uint startY; uint incY; uint _p0; uint _p1; };
+cbuffer CB0 : register(b0) { Params g; };
+cbuffer CB1 : register(b1) { Fxp f; };
+
+StructuredBuffer<int> gKDesc : register(t1);
+StructuredBuffer<float> gKVal  : register(t2);
+Texture2D<uint4>    gInput   : register(t0);
+RWTexture2D<uint4> gOutput  : register(u0);
+
+float clamp255(float v) { return max(0.0f, min(255.0f, v)); }
+
+[numthreads(8, 8, 1)]
+void main(uint3 dtid : SV_DispatchThreadID) {
+    // dtid.x = target column, dtid.y = target row. Filters column dtid.x of
+    // the input along its row (Y) axis.
+    if (dtid.x >= g.tgtW || dtid.y >= g.tgtH) return;
+
+    // Source Y position for this target row (16.16 fixed point, relative to
+    // the band of source rows held by the input texture).
+    uint yFP = f.startY + dtid.y * f.incY;
+    int yInt = (int)(yFP >> 16);
+
+    int kOffset = gKDesc[dtid.y * 3 + 0];
+    int kLength = gKDesc[dtid.y * 3 + 1];
+    int kValueBase = gKDesc[dtid.y * 3 + 2];
+    int tapStart = yInt - kOffset;
+
+    float sumB = 0, sumG = 0, sumR = 0;
+    [loop]
+    for (int n = 0; n < kLength; n++) {
+        float w = gKVal[kValueBase + n];
+        // Clamp source row to [0, srcH-1] (border handling).
+        int sy = clamp(tapStart + n, 0, (int)g.srcH - 1);
+        uint4 px = gInput[uint2(dtid.x, sy)];
+        sumB += w * float(px.x);
+        sumG += w * float(px.y);
+        sumR += w * float(px.z);
+    }
+
     uint b = (uint)clamp255(round(sumB));
     uint gr = (uint)clamp255(round(sumG));
     uint r = (uint)clamp255(round(sumR));

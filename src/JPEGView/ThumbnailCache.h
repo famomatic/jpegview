@@ -1,7 +1,11 @@
 #pragma once
 
 #include "Helpers.h"
+#include <condition_variable>
+#include <deque>
 #include <mutex>
+#include <thread>
+#include <vector>
 
 // Forward declaration to avoid heavy include in header
 class CJPEGImage;
@@ -38,6 +42,13 @@ public:
 	void Put(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& lastModTime,
 		CJPEGImage* pThumbnail, int nOrigWidth, int nOrigHeight);
 
+	// Asynchronous variant used from the paint path: copies the 32bpp BGRA
+	// pixel buffer immediately and performs the file stat, PNG encode, disk
+	// write and LRU eviction on a background worker thread, so the calling
+	// (UI) thread never blocks on disk I/O. Does nothing when disabled.
+	void PutAsync(LPCTSTR sFilePath, int nThumbWidth, int nThumbHeight,
+		const void* pBGRA, int nOrigWidth, int nOrigHeight);
+
 	// Removes any cached entry for the given file (e.g. after the image was
 	// edited in place). Safe to call when disabled.
 	void Invalidate(LPCTSTR sFilePath);
@@ -63,6 +74,23 @@ private:
 	// The key is a stable 16-char hex string, safe to use as a file name.
 	CString MakeKey(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& lastModTime) const;
 
+	// PNG-encodes and writes one cache entry, then enforces the size limit.
+	// Takes m_csLock internally. Called from Put() and the async worker.
+	void StoreEntry(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& lastModTime,
+		const unsigned char* pBGRA, int nThumbWidth, int nThumbHeight,
+		int nOrigWidth, int nOrigHeight);
+
+	// One queued PutAsync request (pixels are an owned copy).
+	struct AsyncPutJob {
+		CString sFilePath;
+		int nThumbW;
+		int nThumbH;
+		int nOrigW;
+		int nOrigH;
+		std::vector<unsigned char> pixels;
+	};
+	void WorkerLoop();
+
 	mutable CString m_sCacheDir;
 	bool m_bEnabled;
 	__int64 m_nMaxBytes;
@@ -70,4 +98,11 @@ private:
 	// can be reached from both the UI thread and the read-ahead loader thread,
 	// so Put/TryGet/Invalidate/EnforceSizeLimit must be serialized.
 	mutable std::mutex m_csLock;
+	// Async write worker. Started lazily on the first PutAsync; joined in the
+	// destructor (pending jobs are dropped, an in-flight write completes).
+	std::thread m_worker;
+	std::deque<AsyncPutJob> m_jobs;
+	std::mutex m_csJobs;
+	std::condition_variable m_cvJobs;
+	bool m_bShutdown;
 };

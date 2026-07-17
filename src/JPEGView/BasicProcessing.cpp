@@ -924,9 +924,10 @@ bool CBasicProcessing::RestoreAlphaChannel(CSize fullTargetSize, CPoint fullTarg
 
 	uintfp nIncrementX, nIncrementY;
 	if (fullTargetSize.cx <= sourceSize.cx) {
-		// Downsampling
-		nIncrementX = (uintfp)sourceSize.cx << 16 / fullTargetSize.cx + 1;
-		nIncrementY = (uintfp)sourceSize.cy << 16 / fullTargetSize.cy + 1;
+		// Downsampling. Shift has lower precedence than division: the parens
+		// around the shift are required or this becomes cx << (16/tgt + 1).
+		nIncrementX = ((uintfp)sourceSize.cx << 16) / fullTargetSize.cx + 1;
+		nIncrementY = ((uintfp)sourceSize.cy << 16) / fullTargetSize.cy + 1;
 	} else {
 		// Upsampling
 		nIncrementX = (fullTargetSize.cx == 1) ? 0 : (uintfp)((65536*(uintfp)(sourceSize.cx - 1) + 65535)/(fullTargetSize.cx - 1));
@@ -1721,8 +1722,10 @@ void* CBasicProcessing::SampleDown_HQ(CSize fullTargetSize, CPoint fullTargetOff
 	CResizeFilter filterY(sourceSize.cy, fullTargetSize.cy, dSharpen, eFilter, FilterSIMDType_None);
 	const FilterKernelBlock& kernelsY = filterY.GetFilterKernels();
 
-	uintfp nIncrementX = (uintfp)sourceSize.cx << 16 / fullTargetSize.cx + 1;
-	uintfp nIncrementY = (uintfp)sourceSize.cy << 16 / fullTargetSize.cy + 1;
+	// Parens around the shift are required: shift binds weaker than division,
+	// so without them this evaluates as cx << (16/tgt + 1).
+	uintfp nIncrementX = ((uintfp)sourceSize.cx << 16) / fullTargetSize.cx + 1;
+	uintfp nIncrementY = ((uintfp)sourceSize.cy << 16) / fullTargetSize.cy + 1;
 
 	intfp nIncOffsetX = (intfp)((nIncrementX - 65536) >> 1);
 	intfp nIncOffsetY = (intfp)((nIncrementY - 65536) >> 1);
@@ -1958,14 +1961,12 @@ void* SampleHQ_Core(CSize fullTargetSize, CPoint fullTargetOffset, CSize clipped
 	CSize sourceSize, const void* pPixels, int nChannels, double dSharpen,
 	EFilterType eFilter, bool bUpsampling, uint8* pTarget) {
 
-	// Highway widens to 256-bit (16 int16 lanes) on AVX2 and uses 128-bit (8 lanes)
-	// on SSE2. The packed kernel format stores each tap repeated 8 times (128-bit)
-	// and LoadDup128 broadcasts it to 256-bit at runtime, but the source/dest pixel
-	// buffers are read/written in full N-wide vectors, so the planar buffers must be
-	// padded to the largest lane width (16) to keep AVX2 loads/stores in bounds even
-	// when N is selected at runtime. Using 16 here also keeps the CXMMImage layout
-	// consistent with ApplyFilter_Highway's tempImage (padded to N) and with the
-	// worker-thread strip target buffer (padded to 16 in Sample*_HQ_SIMD).
+	// All planar buffers use a fixed 16-pixel row granularity. ApplyFilter_Highway
+	// caps its vector width at 16 int16 lanes (CappedTag) and pads its output to
+	// the same 16-pixel granularity, so the CXMMImage strides here, the
+	// Rotate/RotateToDIB stride math and the worker-thread strip target buffers
+	// (padded to 16 in Sample*_HQ_SIMD) all stay consistent regardless of which
+	// SIMD target highway dispatches at runtime (SSE2: 8 lanes, AVX2+: 16 lanes).
 	const int nSIMDPixels = 16;
 
 	if (bUpsampling) {

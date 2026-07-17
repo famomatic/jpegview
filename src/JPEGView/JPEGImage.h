@@ -395,11 +395,6 @@ private:
 	int m_nOriginalChannels;
 	bool m_bHasAlpha;
 	CString m_sSourceFile; // source file path, for thumbnail cache keying
-	// Transient state used only inside CreateThumbnailImage() to carry the
-	// resolved source file signature from the cache-lookup to the cache-store.
-	__int64 m_cacheFileSize;
-	FILETIME m_cacheFileModTime;
-	bool m_cacheFileValid;
 	__int64 m_nPixelHash;
 	EImageFormat m_eImageFormat;
 	TJSAMP m_eJPEGChromoSampling;

@@ -208,9 +208,6 @@ void CJPEGImage::InitCommon(EImageFormat eImageFormat, bool bIsAnimation, int nF
 	m_bIsThumbnailImage = bIsThumbnailImage;
 	m_pCachedProcessedHistogram = NULL;
 	m_sSourceFile = _T("");
-	m_cacheFileSize = 0;
-	memset(&m_cacheFileModTime, 0, sizeof(FILETIME));
-	m_cacheFileValid = false;
 	m_bCropped = false;
 	m_bIsDestructivelyProcessed = false;
 	m_bIsProcessedNoParamDB = false;
@@ -1692,19 +1689,27 @@ void CJPEGImage::InvalidateAllCachedPixelData() {
 }
 
 CJPEGImage* CJPEGImage::CreateThumbnailImage() {
-	if (m_pLDC == NULL) {
-		m_pLDC = new CLocalDensityCorr(*this, true);
-	}
-
-	// On-disk thumbnail cache: if this image came from a file, try to restore a
-	// previously cached downsampled copy. The key is derived from path + size +
-	// mtime, so any edit invalidates it automatically. Only large images (the
-	// expensive path that downsamples via the LDC) benefit from caching; small
-	// images already take a cheap full-pixel copy below.
 	// Use 64-bit math: on x64 MAX_IMAGE_DIMENSION is 1,000,000, so the int
 	// product can overflow and produce a wrong (possibly negative) result.
-	const bool bCacheEligible = !m_sSourceFile.IsEmpty() && ((__int64)m_nOrigWidth * m_nOrigHeight >= 120000);
-	if (bCacheEligible) {
+	const bool bLargeImage = (__int64)m_nOrigWidth * m_nOrigHeight >= 120000;
+	// The cache is keyed by file identity (path + size + mtime) only, so it
+	// must represent the image as loaded from the file. In-memory edits
+	// (rotate/mirror/crop/unsharp mask) change the pixels without touching
+	// the file: reading would return a stale pre-edit thumbnail and writing
+	// would poison the cache for future sessions of the unedited file.
+	const bool bPristine = !m_bIsDestructivelyProcessed && !m_bCropped &&
+		m_rotationParams.Rotation == m_nInitialRotation &&
+		m_rotationParams.FreeRotation == 0.0 && m_rotationParams.Flags == RFLAG_None;
+	const bool bCacheEligible = !m_sSourceFile.IsEmpty() && bLargeImage && bPristine;
+
+	// On-disk thumbnail cache: only consult it when building the thumbnail is
+	// actually expensive, i.e. when no LDC exists yet and its point-sampled
+	// image would have to be built first (for a lazy source that reads from
+	// disk). In the common case the constructor has already built the LDC for
+	// the pixel hash, so the PSI is in memory and building the thumbnail is a
+	// sub-millisecond copy - a synchronous cache-file read + PNG decode here
+	// would only stutter the paint that first shows the zoom navigator.
+	if (m_pLDC == NULL && bCacheEligible) {
 		// Resolve current file identity (size + mtime) from disk.
 		HANDLE hFile = ::CreateFile(m_sSourceFile, GENERIC_READ, FILE_SHARE_READ, NULL,
 			OPEN_EXISTING, 0, NULL);
@@ -1717,28 +1722,21 @@ CJPEGImage* CJPEGImage::CreateThumbnailImage() {
 			if (bHaveStat && liSize.QuadPart > 0) {
 				CJPEGImage* pCached = NULL;
 				int nCacheOrigW = 0, nCacheOrigH = 0;
-			if (CThumbnailCache::This().TryGet(m_sSourceFile, liSize.QuadPart, ftMod,
-					pCached, nCacheOrigW, nCacheOrigH)) {
-				return pCached; // cache hit - caller takes ownership
+				if (CThumbnailCache::This().TryGet(m_sSourceFile, liSize.QuadPart, ftMod,
+						pCached, nCacheOrigW, nCacheOrigH)) {
+					return pCached; // cache hit - caller takes ownership
+				}
 			}
-			// Cache miss: remember the signature so we can store the result.
-				// We pass it to the cache after building the thumbnail below.
-				m_cacheFileSize = liSize.QuadPart;
-				m_cacheFileModTime = ftMod;
-				m_cacheFileValid = true;
-			} else {
-				m_cacheFileValid = false;
-			}
-		} else {
-			m_cacheFileValid = false;
 		}
-	} else {
-		m_cacheFileValid = false;
+	}
+
+	if (m_pLDC == NULL) {
+		m_pLDC = new CLocalDensityCorr(*this, true);
 	}
 
 	void* pPixels = NULL;
 	int nWidth, nHeight;
-	if ((__int64)m_nOrigWidth*m_nOrigHeight < 120000) {
+	if (!bLargeImage) {
 		// take a copy of the original pixels
 		nWidth = m_nOrigWidth;
 		nHeight = m_nOrigHeight;
@@ -1769,14 +1767,13 @@ CJPEGImage* CJPEGImage::CreateThumbnailImage() {
 	}
 	CJPEGImage* pThumb = new CJPEGImage(nWidth, nHeight, pPixels, NULL, 4, -1, IF_CLIPBOARD, false, 0, 1, 0, m_pLDC, true);
 
-	// Store the freshly built thumbnail to disk for next time, if we resolved a
-	// valid source file signature above. Pass our original dimensions so the
-	// cache entry is self-describing.
-	if (bCacheEligible && m_cacheFileValid && pThumb != NULL) {
-		CThumbnailCache::This().Put(m_sSourceFile, m_cacheFileSize,
-			m_cacheFileModTime, pThumb, m_nOrigWidth, m_nOrigHeight);
+	// Refresh the on-disk cache for next time. PutAsync copies the pixels and
+	// performs the file stat, PNG encode and disk write on a background
+	// worker, so this (paint) thread never blocks on disk I/O.
+	if (bCacheEligible && pThumb != NULL) {
+		CThumbnailCache::This().PutAsync(m_sSourceFile, nWidth, nHeight,
+			pThumb->OriginalPixels(), m_nOrigWidth, m_nOrigHeight);
 	}
-	m_cacheFileValid = false;
 
 	return pThumb;
 }

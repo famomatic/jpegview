@@ -359,8 +359,9 @@ bool CTiffLazySource::DecodeSingleStrip(int stripIndex, uint8* pDst, int dstStri
 			_TIFFfree(pRGBA);
 			return false;
 		}
-		// libtiff RGBA는 메모리에 ABGR(uint32)로 저장된다.
-		// BGRA 레이아웃으로 변환: A=byte3, B=byte2, G=byte1, R=byte0.
+		// libtiff's RGBA raster packs R into byte 0 (PACK: r | g<<8 | b<<16 |
+		// a<<24, i.e. TIFFGetR = px & 0xFF). Convert to BGRA by swapping the
+		// R and B bytes.
 		// TIFFReadRGBAStrip returns the strip already in top-down order for a
 		// TOPLEFT image (libtiff applies the vertical flip internally based on
 		// the file's orientation tag), so read source rows in order. A previous
@@ -372,9 +373,9 @@ bool CTiffLazySource::DecodeSingleStrip(int stripIndex, uint8* pDst, int dstStri
 			for (int x = 0; x < m_nWidth; x++)
 			{
 				uint32 px = pSrcRow[x];
-				pDstRow[x * 4 + 0] = (uint8)((px >> 0) & 0xFF);  // B (TIFFGetR)
+				pDstRow[x * 4 + 0] = (uint8)((px >> 16) & 0xFF); // B (TIFFGetB)
 				pDstRow[x * 4 + 1] = (uint8)((px >> 8) & 0xFF);  // G (TIFFGetG)
-				pDstRow[x * 4 + 2] = (uint8)((px >> 16) & 0xFF); // R (TIFFGetB)
+				pDstRow[x * 4 + 2] = (uint8)((px >> 0) & 0xFF);  // R (TIFFGetR)
 				pDstRow[x * 4 + 3] = (uint8)((px >> 24) & 0xFF); // A (TIFFGetA)
 			}
 		}
@@ -515,7 +516,8 @@ bool CTiffLazySource::DecodeTile(int tileX, int tileY, uint8* pDst)
 			_TIFFfree(pRGBA);
 			return false;
 		}
-		// libtiff RGBA(ABGR uint32) -> BGRA 변환.
+		// libtiff's RGBA raster packs R into byte 0 (TIFFGetR = px & 0xFF);
+		// convert to BGRA by swapping the R and B bytes.
 		// TIFFReadRGBATile returns the tile already in top-down order for a
 		// TOPLEFT image (libtiff applies the vertical flip internally based on
 		// the file's orientation tag), so read source rows in order.
@@ -526,10 +528,10 @@ bool CTiffLazySource::DecodeTile(int tileX, int tileY, uint8* pDst)
 			for (int x = 0; x < m_nTileWidth; x++)
 			{
 				uint32 px = pSrcRow[x];
-				pDstRow[x * 4 + 0] = (uint8)((px >> 0) & 0xFF);  // B
-				pDstRow[x * 4 + 1] = (uint8)((px >> 8) & 0xFF);  // G
-				pDstRow[x * 4 + 2] = (uint8)((px >> 16) & 0xFF); // R
-				pDstRow[x * 4 + 3] = (uint8)((px >> 24) & 0xFF); // A
+				pDstRow[x * 4 + 0] = (uint8)((px >> 16) & 0xFF); // B (TIFFGetB)
+				pDstRow[x * 4 + 1] = (uint8)((px >> 8) & 0xFF);  // G (TIFFGetG)
+				pDstRow[x * 4 + 2] = (uint8)((px >> 0) & 0xFF);  // R (TIFFGetR)
+				pDstRow[x * 4 + 3] = (uint8)((px >> 24) & 0xFF); // A (TIFFGetA)
 			}
 		}
 		_TIFFfree(pRGBA);
