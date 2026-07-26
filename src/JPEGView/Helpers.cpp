@@ -987,11 +987,11 @@ bool CompositeDIBOnBackground(void* pDIBPixels, int nWidth, int nHeight, EBackgr
 	}
 
 	uint32* pPixels = (uint32*)pDIBPixels;
-	const int nCount = nWidth * nHeight;
+	const __int64 nCount = (__int64)nWidth * nHeight;
 
 	// Fast scan: skip the (common) fully-opaque case where compositing is a no-op.
 	bool bHasTransparency = false;
-	for (int i = 0; i < nCount; i++) {
+	for (__int64 i = 0; i < nCount; i++) {
 		if ((pPixels[i] & 0xFF000000) != 0xFF000000) {
 			bHasTransparency = true;
 			break;
@@ -1005,7 +1005,7 @@ bool CompositeDIBOnBackground(void* pDIBPixels, int nWidth, int nHeight, EBackgr
 	// panning does not make the pattern swim relative to the window.
 	for (int y = 0; y < nHeight; y++) {
 		int nAbsY = nScreenY + y;
-		uint32* pRow = pPixels + y * nWidth;
+		uint32* pRow = pPixels + (size_t)y * nWidth;
 		for (int x = 0; x < nWidth; x++) {
 			int nAbsX = nScreenX + x;
 			pRow[x] = CompositePixelOnBackground(pRow[x], eMode, nAbsX, nAbsY);

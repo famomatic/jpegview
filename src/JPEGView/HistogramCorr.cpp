@@ -52,7 +52,7 @@ CHistogram::CHistogram(const CJPEGImage & image, bool bUseOrigPixels)
 		pSourcePixels = (const uint8*)image.DIBPixels();
 	}
 	
-	int nNumPixels = nWidth * nHeight;
+	__int64 nNumPixels = (__int64)nWidth * nHeight;
 	int nGrid = (int) (0.5 + sqrt(1.0 + nNumPixels/NUM_VALUES));
 	int nPixPerLine = max(1, nWidth / nGrid);
 	int nLines = max(1, nHeight / nGrid);
@@ -113,18 +113,19 @@ CHistogram::CHistogram(const void* pPixels, const CSize& size)
 	m_fNightshot = -1.0f;
 
 	const uint8* pDIBPixels = (const uint8*) pPixels;
-	int nNumPixels = size.cx * size.cy;
-	for (int j = 0; j < nNumPixels; j++) {
-		m_ChannelB[pDIBPixels[0]]++; m_nBMean += pDIBPixels[0];
-		m_ChannelG[pDIBPixels[1]]++; m_nGMean += pDIBPixels[1];
-		m_ChannelR[pDIBPixels[2]]++; m_nRMean += pDIBPixels[2];
+	__int64 nNumPixels = (__int64)size.cx * size.cy;
+	__int64 nBSum = 0, nGSum = 0, nRSum = 0;
+	for (__int64 j = 0; j < nNumPixels; j++) {
+		m_ChannelB[pDIBPixels[0]]++; nBSum += pDIBPixels[0];
+		m_ChannelG[pDIBPixels[1]]++; nGSum += pDIBPixels[1];
+		m_ChannelR[pDIBPixels[2]]++; nRSum += pDIBPixels[2];
 		m_ChannelGrey[(pDIBPixels[0]*128 + pDIBPixels[1]*640 + pDIBPixels[2]*256) >> 10]++;
 		pDIBPixels += 4;
 	}
-	m_nTotalValues = nNumPixels;
-	m_nBMean /= nNumPixels;
-	m_nGMean /= nNumPixels;
-	m_nRMean /= nNumPixels;
+	m_nTotalValues = (int)min(nNumPixels, (__int64)INT_MAX);
+	m_nBMean = (int)(nBSum / nNumPixels);
+	m_nGMean = (int)(nGSum / nNumPixels);
+	m_nRMean = (int)(nRSum / nNumPixels);
 }
 
 CHistogram::CHistogram(const int* pChannelB, const int* pChannelG, const int* pChannelR, const int* pChannelGrey) {

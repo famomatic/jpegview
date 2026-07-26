@@ -118,7 +118,7 @@ cmake --build --preset x64-release --target JPEGView.Setup
 
 CI is driven by GitHub Actions on `windows-2022` runners. The workflows live under [.github/workflows](.github/workflows):
 
-* **CI (build + ctest)** ([ci-test.yml](.github/workflows/ci-test.yml)) - runs on every push/PR to `master`. Configures with CMake + vcpkg, builds the CPU and GPU test targets, and runs `ctest`.
+* **CI (build tests)** ([ci-test.yml](.github/workflows/ci-test.yml)) - runs on every push/PR to `master`. Configures with CMake + vcpkg and builds the CPU and GPU test targets.
 * **Build x64 / Win32 (Release)** ([build-release-x64.yml](.github/workflows/build-release-x64.yml), [build-release-win32.yml](.github/workflows/build-release-win32.yml)) - manual (`workflow_dispatch`) full Release builds that upload artifacts.
 * **Build Test x64 / Win32 (Debug)** ([build-debug-x64.yml](.github/workflows/build-debug-x64.yml), [build-debug-win32.yml](.github/workflows/build-debug-win32.yml)) - manual Debug builds.
 * **Release** ([release.yml](.github/workflows/release.yml)) - triggered by `v*` tags. Builds both x86 and x64 Release + MSI, then creates a draft GitHub Release with portable ZIPs and MSIs attached.

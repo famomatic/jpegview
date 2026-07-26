@@ -17,10 +17,69 @@ New features:
 - Add smart crop (auto-detect and crop image borders)
 - Add favorite/recent folder quick-open
 - Add A/B compare toggle to context menu
+- Add duplicate finder: pHash-based folder scan (8x8 grayscale downsample +
+  Hamming distance grouping) to find visually identical images
+- Add ROI decode for ultra-high-res images: decode only the viewport tiles
+  (EnableROIDecode, ROIDecodeThresholdMP INI settings)
+- Add batch rename dialog with {name}, {ext}, {num}, {date}, {time} tokens,
+  live preview and conflict avoidance (EXIF date preferred)
+- Add color palette extraction: median-cut quantization of 6 dominant colors,
+  click a swatch to copy its hex value
+- Add processing recipe import/export: presets serialize to JSON files for
+  sharing between machines
+- Add A/B diff overlay: pixel-level difference between current and marked
+  image rendered as a heat map
+- Add frame extraction: export all frames of animated PNG/WebP/JXL/AVIF/GIF
+  to individual PNG/BMP/JPEG files
+- Add monitor ICC color management (UseDisplayColorProfile INI): the rendered
+  image is transformed from sRGB to the current monitor's ICC profile via
+  lcms2; save/clipboard/pixel probe keep untransformed sRGB
+- Add HDR display output (Ctrl+H): scRGB FP16 swap chain overlay for EXR and
+  Radiance HDR files on HDR-enabled monitors (HDRPaperWhiteNits INI)
+- Add RGB histogram overlay (H) with shadow/highlight clipping warnings
+- Add XMP rating culling (Ctrl+0..5): read/write xmp:Rating in JPEG APP1 or
+  .xmp sidecar; rating shown in title bar; minimum-rating navigation filter
+- Add type-to-jump (J): incremental filename search in the current folder
+  with prefix/substring/fuzzy matching and Tab cycling
+Bug fixes:
+- Fix TIFF vertical flip: libtiff RGBA readers already return top-down
+  rasters, so the extra row flip produced upside-down images (3 code paths)
+- Fix palette/YCbCr/CMYK TIFF colors and 16/32-bit TIFF showing solid black
+- Fix swapped R/B channels in the TIFF strip/tile fast paths
+- Fix zoom navigator corruption when GPU processing is on: the X-axis
+  resample shader was reused for the Y pass with swapped axes; a dedicated
+  Y-pass shader now mirrors the CPU fixed-point mappings
+- Fix stutter when zooming across the 100% boundary: compute shaders are
+  precompiled on a background thread; thumbnail cache disk I/O moved off the
+  paint thread
+- Fix double-free of raw metadata in the lazy-source destructor
+- Fix sharpen/rotate/trapezoid/resize on partially-loaded (lazy) images
+  passing NULL buffers to the resamplers
+- Fix directory watcher going deaf after the first change notification
+- Fix file list skipping an element after deletion during re-verification
+- Fix pyramid/frame IFD race in multi-page TIFF decoding
+- Fix read-ahead being defeated by LIFO request processing (now FIFO)
+- Fix singleton race and division-by-zero guard in the processing thread pool
+- Fix concurrent EXIF parses corrupting file-scope reader state
+- Fix 32-bit width*height overflows on x64 in batch convert BGRA conversion,
+  PSD/TGA/TIFF byte offsets, alpha scans, and histogram sampling (the
+  overflow class allowed heap corruption on images over ~1 gigapixel)
+- Fix operator-precedence regression in fixed-point resampling increments
+  ((src << 16) / tgt + 1 lost its parentheses)
+- Fix SIMD lane mismatch: SSE2/SSE4 dispatch (8 lanes) now emits the fixed
+  16-pixel channel blocks that Rotate/RotateToDIB expect
 Other changes:
 - Add optional memory usage display in file info panel (ShowMemoryUsage INI)
 - Add ExplorerThumbnailProvider INI setting for future integration
 - Add ShowPixelProbeByDefault INI setting
+- Expose previously hardcoded values as INI settings: zoom behavior
+  (ZoomAdjustsWindow, ZoomStepPercent, ZoomToMouseDefault, MinZoomPercent,
+  MaxZoomPercent, PanSpeed, ShowZoomInTitle), zoom navigator sizes and
+  timing (ZoomNavigatorThumbMaxWidth/NormalWidth/MinWidth,
+  ZoomRefineTimeoutMs, ZoomTextTimeoutMs), slideshow (DefaultSlideShowFPS,
+  SlideShowMinDisplayTimeMs), and processing increments (ContrastIncrement,
+  SharpenIncrement, LDCIncrement, GammaFactor)
+- CI: build workflows for x64/Win32 debug and release, release packaging
 
 [1.5]
 New features:

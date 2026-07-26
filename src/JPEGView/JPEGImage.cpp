@@ -78,8 +78,8 @@ CJPEGImage::CJPEGImage(int nWidth, int nHeight, void* pPixels, void* pEXIFData, 
 		m_nOriginalChannels = 4;
 	} else if (nChannels == 4 && pPixels != NULL) {
 		const uint32* pPix = (const uint32*)pPixels;
-		int nCount = nWidth * nHeight;
-		for (int i = 0; i < nCount; i++) {
+		__int64 nCount = (__int64)nWidth * nHeight;
+		for (__int64 i = 0; i < nCount; i++) {
 			if ((pPix[i] & 0xFF000000) != 0xFF000000) {
 				m_bHasAlpha = true;
 				break;

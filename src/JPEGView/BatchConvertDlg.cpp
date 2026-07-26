@@ -289,7 +289,7 @@ static void* LoadImageToBGRA(LPCTSTR sFileName, int& nWidth, int& nHeight, int& 
 
 	// Ensure BGRA 4-channel
 	if (nBPP == 3) {
-		int nSize = nWidth * nHeight * 4;
+		size_t nSize = (size_t)nWidth * nHeight * 4;
 		uint8* pBGRA = new(std::nothrow) uint8[nSize];
 		if (pBGRA == NULL) {
 			free(pPixels);
@@ -298,8 +298,8 @@ static void* LoadImageToBGRA(LPCTSTR sFileName, int& nWidth, int& nHeight, int& 
 		uint8* pSrc = (uint8*)pPixels;
 		int nSrcRowPadded = (nWidth * 3 + 3) & ~3;
 		for (int y = 0; y < nHeight; y++) {
-			uint8* pS = pSrc + y * nSrcRowPadded;
-			uint8* pD = pBGRA + y * nWidth * 4;
+			uint8* pS = pSrc + (size_t)y * nSrcRowPadded;
+			uint8* pD = pBGRA + (size_t)y * nWidth * 4;
 			for (int x = 0; x < nWidth; x++) {
 				pD[x * 4 + 0] = pS[x * 3 + 0]; // B
 				pD[x * 4 + 1] = pS[x * 3 + 1]; // G
