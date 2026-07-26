@@ -14,4 +14,7 @@
 // Posted to main dialog for asynchronously loading the image with file name CMainDlg::m_sStartupFile
 #define WM_LOAD_FILE_ASYNCH (WM_APP + 24)
 
+// Posted by the update check worker thread. WPARAM is 1 if a newer release exists, 0 otherwise
+#define WM_UPDATE_CHECK_COMPLETED (WM_APP + 25)
+
 #define KEY_MAGIC 2978465

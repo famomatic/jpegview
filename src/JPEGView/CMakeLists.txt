@@ -95,6 +95,7 @@ add_executable(JPEGView WIN32
     TransformPanelCtl.cpp
     UnsharpMaskPanel.cpp
     UnsharpMaskPanelCtl.cpp
+    UpdateCheck.cpp
     UserCommand.cpp
     WEBPWrapper.cpp
     WndButtonPanel.cpp
@@ -174,7 +175,8 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         d3d11
         dxgi
         d3dcompiler
-        d2d1)
+        d2d1
+        winhttp)
 
     # JXR (jxrlib) uses a FindJXR module rather than a config target.
     target_include_directories(JPEGView PRIVATE ${JXR_INCLUDE_DIRS})

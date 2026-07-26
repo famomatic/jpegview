@@ -25,6 +25,7 @@
 #include "NLS.h"
 #include "HelpersGUI.h"
 #include "TimerEventIDs.h"
+#include "UpdateCheck.h"
 #include "FileOpenDialog.h"
 #include "BatchCopyDlg.h"
 #include "BatchConvertDlg.h"
@@ -264,6 +265,7 @@ CMainDlg::CMainDlg(bool bForceFullScreen) {
 	m_bInZooming = false;
 	m_bTemporaryLowQ = false;
 	m_bShowZoomFactor = false;
+	m_bShowUpdateNotification = false;
 	m_bSpanVirtualDesktop = false;
 	m_bPanMouseCursorSet = false;
 	m_storedWindowPlacement.length = sizeof(WINDOWPLACEMENT);
@@ -445,6 +447,10 @@ LRESULT CMainDlg::OnInitDialog(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam
 
 	this->DragAcceptFiles();
 
+	if (CSettingsProvider::This().CheckForUpdates()) {
+		CUpdateCheck::StartCheck(this->m_hWnd, WM_UPDATE_CHECK_COMPLETED);
+	}
+
 	return TRUE;
 }
 
@@ -607,6 +613,15 @@ LRESULT CMainDlg::OnPaint(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, B
 		dc.SetTextColor(CSettingsProvider::This().ColorGUI());
 		HelpersGUI::SelectDefaultFileNameFont(dc);
 		HelpersGUI::DrawTextBordered(dc, buff, GetZoomTextRect(imageProcessingArea), DT_RIGHT);
+	}
+
+	// Show update-available notification
+	if (m_bShowUpdateNotification && !m_sUpdateNotification.IsEmpty()) {
+		dc.SetTextColor(CSettingsProvider::This().ColorGUI());
+		HelpersGUI::SelectDefaultFileNameFont(dc);
+		CRect updateTextRect(m_clientRect.left, m_clientRect.top + HelpersGUI::ScaleToScreen(8),
+			m_clientRect.right, m_clientRect.top + HelpersGUI::ScaleToScreen(40));
+		HelpersGUI::DrawTextBordered(dc, m_sUpdateNotification, updateTextRect, DT_CENTER);
 	}
 
 	// let crop controller and panels paint its stuff
@@ -815,6 +830,17 @@ LRESULT CMainDlg::OnDisplayChange(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lPa
 	CDisplayColorProfile::Invalidate();
 	this->Invalidate(FALSE);
 	bHandled = FALSE;
+	return 0;
+}
+
+LRESULT CMainDlg::OnUpdateCheckCompleted(UINT /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/, BOOL& /*bHandled*/) {
+	if (wParam != 0) {
+		CString sLatest = CUpdateCheck::GetLatestVersion();
+		m_sUpdateNotification.Format(_T("JPEGView %s is available: github.com/famomatic/jpegview/releases"), (LPCTSTR)sLatest);
+		m_bShowUpdateNotification = true;
+		::SetTimer(this->m_hWnd, UPDATE_TEXT_TIMER_EVENT_ID, 10000, NULL);
+		this->Invalidate(FALSE);
+	}
 	return 0;
 }
 
@@ -1196,6 +1222,10 @@ LRESULT CMainDlg::OnTimer(UINT /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/, BOOL&
 		m_pZoomNavigatorCtl->InvalidateZoomNavigatorRect();
 		CRect imageProcArea = m_pImageProcPanelCtl->PanelRect();
 		this->InvalidateRect(GetZoomTextRect(imageProcArea), FALSE);
+	} else if (wParam == UPDATE_TEXT_TIMER_EVENT_ID) {
+		::KillTimer(this->m_hWnd, UPDATE_TEXT_TIMER_EVENT_ID);
+		m_bShowUpdateNotification = false;
+		this->Invalidate(FALSE);
 	} else {
 		if (!m_pCropCtl->OnTimer((int)wParam)) {
 			m_pPanelMgr->OnTimer((int)wParam);

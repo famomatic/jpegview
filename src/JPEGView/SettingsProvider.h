@@ -156,6 +156,7 @@ public:
 	int  HEIFSaveQuality() { return m_nHEIFSaveQuality; }
 	int  BatchConvertQuality() { return m_nBatchConvertQuality; }
 	bool ShowPixelProbeByDefault() { return m_bShowPixelProbeByDefault; }
+	bool CheckForUpdates() { return m_bCheckForUpdates; }
 	int  MaxZoomHistory() { return m_nMaxZoomHistory; }
 
 	// Region-of-interest (ROI) decode: for ultra-high-res images backed by a
@@ -447,6 +448,7 @@ private:
 	int  m_nHEIFSaveQuality;        // quality for HEIF save (0-100)
 	int  m_nBatchConvertQuality;    // default quality for batch convert
 	bool m_bShowPixelProbeByDefault; // show pixel probe on startup
+	bool m_bCheckForUpdates;        // query GitHub releases for a newer version on startup
 	bool m_bEnableROIDecode;          // decode only viewport for ultra-high-res
 	int  m_nROIDecodeThresholdMP;     // megapixel threshold for ROI decode
 	int  m_nMaxZoomHistory;         // max zoom/pan history entries (0=disable)

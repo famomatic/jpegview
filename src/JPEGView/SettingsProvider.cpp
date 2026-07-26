@@ -434,6 +434,7 @@ CSettingsProvider::CSettingsProvider(void) {
 	m_nHEIFSaveQuality = GetInt(_T("HEIFSaveQuality"), 80, 0, 100);
 	m_nBatchConvertQuality = GetInt(_T("BatchConvertQuality"), 85, 0, 100);
 	m_bShowPixelProbeByDefault = GetBool(_T("ShowPixelProbeByDefault"), false);
+	m_bCheckForUpdates = GetBool(_T("CheckForUpdates"), false);
 	m_nMaxZoomHistory = GetInt(_T("MaxZoomHistory"), 20, 0, 100);
 
 }
