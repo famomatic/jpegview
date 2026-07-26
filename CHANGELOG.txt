@@ -41,6 +41,9 @@ New features:
   .xmp sidecar; rating shown in title bar; minimum-rating navigation filter
 - Add type-to-jump (J): incremental filename search in the current folder
   with prefix/substring/fuzzy matching and Tab cycling
+- Add optional update check (CheckForUpdates INI, off by default): queries
+  the GitHub releases API on startup and shows a notification when a newer
+  version is available
 Bug fixes:
 - Fix TIFF vertical flip: libtiff RGBA readers already return top-down
   rasters, so the extra row flip produced upside-down images (3 code paths)
