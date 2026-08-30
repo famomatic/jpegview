@@ -19,6 +19,9 @@ public:
 	// Destroys the HDR overlay window and all GPU resources
 	static void Hide();
 
+	// Resizes the overlay and swap chain to the current parent client area.
+	static void ResizeToParent();
+
 	// Returns if the HDR overlay is currently shown
 	static bool IsActive();
 

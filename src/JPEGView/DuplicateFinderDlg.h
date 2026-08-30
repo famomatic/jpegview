@@ -39,6 +39,9 @@ private:
 		CString sPath;      // full path
 		CString sTitle;     // file name only
 		unsigned long long uHash;        // perceptual hash
+		unsigned int uAverageColor;
+		double dAspectRatio;
+		bool bHashValid;
 		int nGroup;          // duplicate group index, -1 if unique
 		bool bIsDup;         // true if part of a duplicate group
 	};
@@ -54,8 +57,11 @@ private:
 	CStatic m_lblStatus;
 
 	bool m_bScanning;
+	bool m_bCancelRequested;
 
 	void PopulateList();
-	unsigned long long ComputePHash(LPCTSTR sFileName);
+	bool ComputePHash(LPCTSTR sFileName, unsigned long long& uHash,
+		unsigned int& uAverageColor, double& dAspectRatio);
 	int HammingDistance(unsigned long long a, unsigned long long b);
+	bool PumpMessages();
 };

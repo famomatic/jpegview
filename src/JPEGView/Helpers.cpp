@@ -1,4 +1,5 @@
 #include "StdAfx.h"
+#include <algorithm>
 #include "Helpers.h"
 #include "immintrin.h"
 #include "NLS.h"
@@ -360,43 +361,41 @@ void CalcCRCTable(unsigned int crc_table[256]) {
 }
 
 void* FindJPEGMarker(void* pJPEGStream, int nStreamLength, unsigned char nMarker) {
-	uint8* pStream = (uint8*) pJPEGStream;
+	uint8* pStream = static_cast<uint8*>(pJPEGStream);
 	if (pStream == NULL || nStreamLength < 3 || pStream[0] != 0xFF || pStream[1] != 0xD8) {
 		return NULL; // not a JPEG
 	}
-	int nIndex = 2;
-	do {
-		if (pStream[nIndex] == 0xFF) {
-			// block header found, skip padding bytes
-			while (pStream[nIndex] == 0xFF && nIndex < nStreamLength) nIndex++;
-			if (pStream[nIndex] == 0 || pStream[nIndex] == nMarker) {
-				break; // 0xFF 0x00 is part of pixel block, break
-			} else {
-				// it's a block marker, read length of block and skip the block
-				nIndex++;
-				if (nIndex+1 < nStreamLength) {
-					nIndex += pStream[nIndex]*256 + pStream[nIndex+1];
-				} else {
-					nIndex = nStreamLength;
-				}
-			}
-		} else {
-			break; // block with pixel data found, start hashing from here
+	size_t index = 2;
+	const size_t length = static_cast<size_t>(nStreamLength);
+	while (index < length) {
+		if (pStream[index] != 0xFF) {
+			return nMarker == 0 ? pStream + index : NULL;
 		}
-	} while (nIndex < nStreamLength);
-
-	if (nMarker == 0 || (pStream[nIndex] == nMarker && pStream[nIndex-1] == 0xFF)) {
-		return &(pStream[nIndex-1]); // place on marker start
-	} else {
-		return NULL;
+		const size_t markerStart = index;
+		while (index < length && pStream[index] == 0xFF) ++index;
+		if (index >= length) return NULL;
+		const uint8 marker = pStream[index++];
+		if (marker == 0x00) return nMarker == 0 ? pStream + markerStart : NULL;
+		if (marker == nMarker) return pStream + markerStart;
+		if (marker == 0xD9) return NULL;
+		if (marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) continue;
+		if (index + 2 > length) return NULL;
+		const size_t segmentLength = static_cast<size_t>(pStream[index]) * 256 + pStream[index + 1];
+		if (segmentLength < 2 || segmentLength > length - index) return NULL;
+		index += segmentLength;
+		if (marker == 0xDA) return nMarker == 0 && index < length ? pStream + index : NULL;
 	}
+	return NULL;
 }
 
 void* FindEXIFBlock(void* pJPEGStream, int nStreamLength) {
 	uint8* pEXIFBlock = (uint8*)Helpers::FindJPEGMarker(pJPEGStream, nStreamLength, 0xE1);
-	if (pEXIFBlock != NULL && strncmp((const char*)(pEXIFBlock + 4), "Exif", 4) != 0) {
-		return NULL;
-	}
+	if (pEXIFBlock == NULL) return NULL;
+	const ptrdiff_t offset = pEXIFBlock - static_cast<uint8*>(pJPEGStream);
+	if (offset < 0 || offset + 8 > nStreamLength) return NULL;
+	const size_t segmentLength = static_cast<size_t>(pEXIFBlock[2]) * 256 + pEXIFBlock[3];
+	if (segmentLength < 8 || segmentLength > static_cast<size_t>(nStreamLength - offset - 2) ||
+		memcmp(pEXIFBlock + 4, "Exif", 4) != 0) return NULL;
 	return pEXIFBlock;
 }
 
@@ -490,7 +489,9 @@ CString GetJPEGComment(void* pJPEGStream, int nStreamLength) {
 		}
 	}
 	// The Intel lib puts this useless comment into each JPEG it writes - filter this out as nobody is interested in that...
-	if (nCommentLen > 20 && strstr((char*)pComment, "Intel(R) JPEG Library") != NULL) {
+	static const char intelComment[] = "Intel(R) JPEG Library";
+	if (nCommentLen >= static_cast<int>(sizeof(intelComment) - 1) &&
+		std::search(pComment, pComment + nCommentLen, intelComment, intelComment + sizeof(intelComment) - 1) != pComment + nCommentLen) {
 		return CString("");
 	}
 
@@ -508,7 +509,7 @@ void ClearJPEGComment(void* pJPEGStream, int nStreamLength) {
 		return;
 	}
 	pCommentSeg += 2;
-	if ((uint8*)pJPEGStream + nStreamLength > pCommentSeg + nCommentLen) {
+	if ((uint8*)pJPEGStream + nStreamLength >= pCommentSeg + nCommentLen) {
 		memset(pCommentSeg, 0, nCommentLen);
 	}
 }

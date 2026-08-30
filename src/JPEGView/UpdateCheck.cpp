@@ -21,9 +21,19 @@ namespace {
 static volatile LONG s_nCheckRunning = 0;
 static CComAutoCriticalSection s_csLatestVersion;
 static CString s_sLatestVersion;
+static CComAutoCriticalSection s_csThread;
+static HANDLE s_hCheckThread = NULL;
+static HWND s_hNotifyWindow = NULL;
 
 void CUpdateCheck::StartCheck(HWND hWndNotify, UINT nMessage) {
+	if (!::IsWindow(hWndNotify)) return;
+	s_csThread.Lock();
+	if (s_hCheckThread != NULL && ::WaitForSingleObject(s_hCheckThread, 0) == WAIT_OBJECT_0) {
+		::CloseHandle(s_hCheckThread);
+		s_hCheckThread = NULL;
+	}
 	if (::InterlockedCompareExchange(&s_nCheckRunning, 1, 0) != 0) {
+		s_csThread.Unlock();
 		return;
 	}
 	CheckParam* pParam = new CheckParam { hWndNotify, nMessage };
@@ -31,9 +41,27 @@ void CUpdateCheck::StartCheck(HWND hWndNotify, UINT nMessage) {
 	if (hThread == NULL) {
 		delete pParam;
 		::InterlockedExchange(&s_nCheckRunning, 0);
+		s_csThread.Unlock();
 		return;
 	}
-	::CloseHandle(hThread);
+	s_hNotifyWindow = hWndNotify;
+	s_hCheckThread = hThread;
+	s_csThread.Unlock();
+}
+
+void CUpdateCheck::Shutdown(HWND hWndNotify) {
+	HANDLE thread = NULL;
+	s_csThread.Lock();
+	if (s_hNotifyWindow == hWndNotify) s_hNotifyWindow = NULL;
+	thread = s_hCheckThread;
+	s_csThread.Unlock();
+	if (thread != NULL) ::WaitForSingleObject(thread, INFINITE);
+	s_csThread.Lock();
+	if (s_hCheckThread == thread && thread != NULL) {
+		::CloseHandle(s_hCheckThread);
+		s_hCheckThread = NULL;
+	}
+	s_csThread.Unlock();
 }
 
 CString CUpdateCheck::GetLatestVersion() {
@@ -51,7 +79,10 @@ unsigned int __stdcall CUpdateCheck::CheckThreadProc(void* pParam) {
 		s_sLatestVersion = sTag;
 		s_csLatestVersion.Unlock();
 		bool bNewer = IsNewer(sTag, CString(JPEGVIEW_VERSION));
-		::PostMessage(p->hWndNotify, p->nMessage, bNewer ? 1 : 0, 0);
+		s_csThread.Lock();
+		const bool canNotify = s_hNotifyWindow == p->hWndNotify && ::IsWindow(p->hWndNotify);
+		if (canNotify) ::PostMessage(p->hWndNotify, p->nMessage, bNewer ? 1 : 0, 0);
+		s_csThread.Unlock();
 	}
 	delete p;
 	::InterlockedExchange(&s_nCheckRunning, 0);
@@ -71,7 +102,7 @@ bool CUpdateCheck::FetchLatestTag(CString& sTag) {
 	if (hSession == NULL) {
 		return false;
 	}
-	::WinHttpSetTimeouts(hSession, 10000, 10000, 10000, 10000);
+	::WinHttpSetTimeouts(hSession, 5000, 5000, 5000, 5000);
 	HINTERNET hConnect = ::WinHttpConnect(hSession, UPDATE_CHECK_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0);
 	if (hConnect != NULL) {
 		HINTERNET hRequest = ::WinHttpOpenRequest(hConnect, L"GET", UPDATE_CHECK_PATH,
@@ -85,15 +116,18 @@ bool CUpdateCheck::FetchLatestTag(CString& sTag) {
 				::WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
 					WINHTTP_HEADER_NAME_BY_INDEX, &nStatus, &nStatusSize, WINHTTP_NO_HEADER_INDEX);
 				if (nStatus == 200) {
+					bool complete = true;
 					DWORD nAvailable = 0;
 					while (::WinHttpQueryDataAvailable(hRequest, &nAvailable) && nAvailable > 0) {
 						if (body.size() + nAvailable > MAX_RESPONSE_BYTES) {
+							complete = false;
 							break;
 						}
 						size_t nOffset = body.size();
 						body.resize(nOffset + nAvailable);
 						DWORD nRead = 0;
 						if (!::WinHttpReadData(hRequest, &body[nOffset], nAvailable, &nRead)) {
+							complete = false;
 							break;
 						}
 						body.resize(nOffset + nRead);
@@ -101,7 +135,7 @@ bool CUpdateCheck::FetchLatestTag(CString& sTag) {
 							break;
 						}
 					}
-					bSuccess = !body.empty();
+					bSuccess = complete && !body.empty();
 				}
 			}
 			::WinHttpCloseHandle(hRequest);
@@ -148,7 +182,9 @@ void CUpdateCheck::ParseVersion(LPCTSTR sVersion, int nParts[4]) {
 	}
 	for (int i = 0; i < 4 && *p != 0; i++) {
 		while (*p >= _T('0') && *p <= _T('9')) {
-			nParts[i] = nParts[i] * 10 + (*p - _T('0'));
+			const int digit = *p - _T('0');
+			if (nParts[i] > (INT_MAX - digit) / 10) nParts[i] = INT_MAX;
+			else nParts[i] = nParts[i] * 10 + digit;
 			p++;
 		}
 		if (*p != _T('.')) {

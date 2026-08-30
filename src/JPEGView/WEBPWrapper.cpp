@@ -36,6 +36,7 @@ void* WebpReaderWriter::ReadImage(int& width,
 	nchannels = 4;
 	outOfMemory = false;
 	exif_chunk = NULL;
+	if (buffer == NULL || sizebytes <= 0) return NULL;
 
 	if (!cache.decoder || !cache.data.bytes) {
 		if (!WebPGetInfo((const uint8_t*)buffer, sizebytes, &width, &height))
@@ -54,12 +55,14 @@ void* WebpReaderWriter::ReadImage(int& width,
 		data.bytes = (const uint8_t*)buffer;
 		data.size = sizebytes;
 		WebPDemuxer* demuxer = WebPDemux(&data);
-		WebPChunkIterator chunk_iter;
+		WebPChunkIterator chunk_iter = {};
 		void* transform = NULL;
-		
-		if (WebPDemuxGetChunk(demuxer, "ICCP", 1, &chunk_iter))
+		if (demuxer == NULL) return NULL;
+
+		if (WebPDemuxGetChunk(demuxer, "ICCP", 1, &chunk_iter)) {
 			transform = ICCProfileTransform::CreateTransform(chunk_iter.chunk.bytes, chunk_iter.chunk.size, ICCProfileTransform::FORMAT_BGRA);
-		WebPDemuxReleaseChunkIterator(&chunk_iter);
+			WebPDemuxReleaseChunkIterator(&chunk_iter);
+		}
 		if (WebPDemuxGetChunk(demuxer, "EXIF", 1, &chunk_iter)) {
 			WebPData exif = chunk_iter.chunk;
 			if (exif.size > 8 && exif.size < 65528 && exif.bytes != NULL) {
@@ -70,20 +73,30 @@ void* WebpReaderWriter::ReadImage(int& width,
 					memcpy((uint8_t*)exif_chunk + 10, exif.bytes, exif.size);
 				}
 			}
+			WebPDemuxReleaseChunkIterator(&chunk_iter);
 		}
-		WebPDemuxReleaseChunkIterator(&chunk_iter);
 		WebPDemuxDelete(demuxer);
 
 		has_animation = features.has_animation;
 		if (!has_animation) {
-			int nStride = width * nchannels;
-			int size = height * nStride;
-			pPixelData = new(std::nothrow) unsigned char[size];
-			if (pPixelData == NULL) {
+			if (width > INT_MAX / nchannels || static_cast<size_t>(height) > SIZE_MAX / (static_cast<size_t>(width) * nchannels)) {
+				ICCProfileTransform::DeleteTransform(transform);
 				outOfMemory = true;
 				return NULL;
 			}
-			WebPDecodeBGRAInto((const uint8_t*)buffer, sizebytes, pPixelData, size, nStride);
+			int nStride = width * nchannels;
+			size_t size = static_cast<size_t>(height) * nStride;
+			pPixelData = new(std::nothrow) unsigned char[size];
+			if (pPixelData == NULL) {
+				ICCProfileTransform::DeleteTransform(transform);
+				outOfMemory = true;
+				return NULL;
+			}
+			if (WebPDecodeBGRAInto((const uint8_t*)buffer, sizebytes, pPixelData, size, nStride) == NULL) {
+				delete[] pPixelData;
+				ICCProfileTransform::DeleteTransform(transform);
+				return NULL;
+			}
 
 			// ICCP transform in place
 			ICCProfileTransform::DoTransform(transform, pPixelData, pPixelData, width, height);
@@ -95,21 +108,24 @@ void* WebpReaderWriter::ReadImage(int& width,
 		// Cache WebP data and decoder to keep track of where we are in the file
 		DeleteCache();
 		WebPAnimDecoderOptions anim_config;
-		WebPAnimDecoderOptionsInit(&anim_config);
+		if (!WebPAnimDecoderOptionsInit(&anim_config)) { ICCProfileTransform::DeleteTransform(transform); return NULL; }
 		anim_config.color_mode = MODE_BGRA;
-		uint8_t* cached_webp_bytes = new uint8_t[sizebytes];
-		memcpy(cached_webp_bytes, buffer, sizebytes);
-		cache.data.bytes = cached_webp_bytes;
-		cache.data.size = sizebytes;
+		WebPDataInit(&cache.data);
+		if (!WebPDataCopy(&data, &cache.data)) {
+			ICCProfileTransform::DeleteTransform(transform);
+			outOfMemory = true;
+			return NULL;
+		}
 		cache.decoder = WebPAnimDecoderNew(&cache.data, &anim_config);
 		cache.width = width;
 		cache.height = height;
 		cache.transform = transform;
+		if (cache.decoder == NULL) { DeleteCache(); return NULL; }
 	}
 	WebPAnimDecoder* decoder = cache.decoder;
-	WebPData webp_data = cache.data;
 	width = cache.width;
 	height = cache.height;
+	has_animation = true;
 
 	if (decoder == NULL)
 		return NULL;
@@ -132,7 +148,12 @@ void* WebpReaderWriter::ReadImage(int& width,
 	frame_time = timestamp - cache.prev_frame_timestamp;
 	cache.prev_frame_timestamp = timestamp;
 
-	pPixelData = new(std::nothrow) unsigned char[width * height * nchannels];
+	if (width <= 0 || height <= 0 || static_cast<size_t>(width) > SIZE_MAX / static_cast<size_t>(height) / nchannels) {
+		outOfMemory = true;
+		return NULL;
+	}
+	const size_t pixelBytes = static_cast<size_t>(width) * height * nchannels;
+	pPixelData = new(std::nothrow) unsigned char[pixelBytes];
 	if (pPixelData == NULL) {
 		outOfMemory = true;
 		return NULL;
@@ -141,7 +162,7 @@ void* WebpReaderWriter::ReadImage(int& width,
 	// Try copying with ICCP transform
 	if (!ICCProfileTransform::DoTransform(cache.transform, buf, pPixelData, width, height)) {
 		// Copy frame to output buffer directly otherwise
-		memcpy(pPixelData, buf, width * height * nchannels);
+		memcpy(pPixelData, buf, pixelBytes);
 	}
 
 	return pPixelData;
@@ -167,6 +188,20 @@ void* WebpReaderWriter::Compress(const void* source,
 		len = WebPEncodeLosslessBGR((uint8*)source, width, height, Helpers::DoPadding(width * 3, 4), &pOutput);
 	else
 		len = WebPEncodeBGR((uint8*)source, width, height, Helpers::DoPadding(width * 3, 4), (float)quality, &pOutput);
+	return pOutput;
+}
+
+void* WebpReaderWriter::CompressBGRA(const void* source, int width, int height,
+	size_t& len, int quality, bool lossless) {
+	uint8* pOutput = NULL;
+	if (source == NULL || width <= 0 || height <= 0) {
+		len = 0;
+		return NULL;
+	}
+	if (lossless)
+		len = WebPEncodeLosslessBGRA(static_cast<const uint8*>(source), width, height, width * 4, &pOutput);
+	else
+		len = WebPEncodeBGRA(static_cast<const uint8*>(source), width, height, width * 4, static_cast<float>(quality), &pOutput);
 	return pOutput;
 }
 

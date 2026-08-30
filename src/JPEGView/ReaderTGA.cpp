@@ -4,6 +4,7 @@
 #include "Helpers.h"
 #include "BasicProcessing.h"
 #include "MaxImageDef.h"
+#include <memory>
 
 // The TGA reader has been adapted and extended from the TGA reader used in an example of the BOINC project
 // http://www.filewatcher.com/p/boinc-server-maker_7.0.27+dfsg-5_armhf.deb.5191030/usr/share/doc/boinc-server-maker/examples/tgalib.h.html
@@ -17,20 +18,7 @@
 #define TGA_RLE_RGB		10		// This tells us that the targa is Run-Length Encoded (RLE) RGB file
 #define TGA_RLE_MONO	11		// This tells us that the targa is Run-Length Encoded (RLE) monochrome file
 
-#define ALPHA_OPAQUE 0xFF000000 // Used for masking out the alpha channel from a 32 bit RGBA pixel
-
-// Checks if all alpha values in a 32 bit image are zero. If yes the alpha channel should be ignored as the image
-// would just be black.
-static bool IsAlphaChannelValid(int width, int height, uint32* pImageData)
-{
-	uint32 pixel = 0;
-	for (__int64 i = 0; i < (__int64)width*height; i++)
-	{
-		pixel = pixel | (*pImageData & ALPHA_OPAQUE);
-		pImageData++;
-	}
-	return pixel != 0;
-}
+#define ALPHA_OPAQUE 0xFF000000
 
 
 CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundColor, bool& bOutOfMemory) {
@@ -42,8 +30,8 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 	bOutOfMemory = false;
 
 	WORD width = 0, height = 0;			// The dimensions of the image
-	WORD colormapStart = 0;             // Start of color map after header (in bytes)
-	WORD colormapLen = 0;               // Length of color map in bytes
+	WORD colormapStart = 0;             // First color-map entry index
+	WORD colormapLen = 0;               // Number of color-map entries
 	byte colormapBits = 0;              // Bits per color map entry
 	byte length = 0;					// The length in bytes to the pixels
 	byte imageType = 0;					// The image type (RLE, RGB, Alpha...)
@@ -59,33 +47,36 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 	{
 		return NULL;
 	}
+	std::unique_ptr<FILE, decltype(&fclose)> fileGuard(pFile, &fclose);
+	auto readExact = [pFile](void* target, size_t bytes) {
+		return bytes == 0 || fread(target, 1, bytes, pFile) == bytes;
+	};
 
 	// Read in the length in bytes from the header to the pixel data
-	fread(&length, sizeof(byte), 1, pFile);
+	if (!readExact(&length, sizeof(length))) return NULL;
 	
 	// Jump over one byte
-	fseek(pFile,1,SEEK_CUR); 
+	if (fseek(pFile, 1, SEEK_CUR) != 0) return NULL;
 
 	// Read in the imageType (RLE, RGB, etc...)
-	fread(&imageType, sizeof(byte), 1, pFile);
+	if (!readExact(&imageType, sizeof(imageType))) return NULL;
 
 	bool isIndexed = imageType == TGA_INDEXED || imageType == TGA_RLE_INDEXED;
 
 	// Read in palette info
-	fread(&colormapStart, sizeof(WORD), 1, pFile);
-	fread(&colormapLen, sizeof(WORD), 1, pFile);
-	fread(&colormapBits, sizeof(byte), 1, pFile);
+	if (!readExact(&colormapStart, sizeof(colormapStart)) ||
+		!readExact(&colormapLen, sizeof(colormapLen)) ||
+		!readExact(&colormapBits, sizeof(colormapBits))) return NULL;
 	
 	// Skip past general information we don't care about
-	fseek(pFile, 4, SEEK_CUR); 
+	if (fseek(pFile, 4, SEEK_CUR) != 0) return NULL;
 
 	// Read the width, height and bits per pixel (16, 24 or 32)
-	fread(&width,  sizeof(WORD), 1, pFile);
-	fread(&height, sizeof(WORD), 1, pFile);
-	fread(&bits,   sizeof(byte), 1, pFile);
-	fread(&attributes, sizeof(byte), 1, pFile);
+	if (!readExact(&width, sizeof(width)) || !readExact(&height, sizeof(height)) ||
+		!readExact(&bits, sizeof(bits)) || !readExact(&attributes, sizeof(attributes))) return NULL;
 
 	bool flipVertically = ((attributes >> 5) & 1) == 0;
+	bool flipHorizontally = (attributes & 0x10) != 0;
 
 	// check preconditions: 
 	// - image size valid
@@ -99,7 +90,6 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 		((imageType == TGA_MONO || imageType == TGA_RLE_MONO) && bits != 8) ||
 		(isIndexed && (colormapStart != 0 || colormapLen != 256 || colormapBits != 24)))
 	{
-		fclose(pFile);
 		return NULL;
 	}
 
@@ -111,26 +101,26 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 	// product would wrap and under-allocate, causing a heap overflow below.
 	__int64 numberOfBytesRequired = (__int64)targetStride * height;
 
-	if ((double)width * height > MAX_IMAGE_PIXELS)
+	if ((double)width * height > MAX_IMAGE_PIXELS ||
+		static_cast<unsigned long long>(numberOfBytesRequired) > SIZE_MAX)
 	{
 		bOutOfMemory = true;
-		fclose(pFile);
 		return NULL;
 	}
 	
 	// Allocate memory which will hold our image data
-	byte* pImageData = new(std::nothrow) byte[numberOfBytesRequired];
-	if (pImageData == NULL)
+	auto imageData = std::unique_ptr<byte[]>(new(std::nothrow) byte[static_cast<size_t>(numberOfBytesRequired)]);
+	if (!imageData)
 	{
 		bOutOfMemory = true;
-		fclose(pFile);
 		return NULL;
 	}
+	byte* pImageData = imageData.get();
+	memset(pImageData, 0, static_cast<size_t>(numberOfBytesRequired));
 
 	// Now we move the file pointer to the pixel data
 	if (fseek(pFile, length, SEEK_CUR) != 0)
 	{
-		fclose(pFile);
 		return NULL;
 	}
 
@@ -138,7 +128,7 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 	byte palette[768];
 	if (isIndexed)
 	{  
-		fread(&palette, 768, 1, pFile);
+		if (!readExact(palette, sizeof(palette))) return NULL;
 	}
 
 	byte* pImage = pImageData;
@@ -152,7 +142,7 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 			for(int x = 0; x < width; x++)
 			{
 				byte grey;
-				fread(&grey, sizeof(byte), 1, pFile);
+				if (!readExact(&grey, sizeof(grey))) return NULL;
 				*pLine++ = grey;
 				*pLine++ = grey;
 				*pLine++ = grey;
@@ -168,7 +158,7 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 			for(int x = 0; x < width; x++)
 			{
 				byte index;
-				fread(&index, sizeof(byte), 1, pFile);
+				if (!readExact(&index, sizeof(index))) return NULL;
 				*pLine++ = palette[index*3];
 				*pLine++ = palette[index*3 + 1];
 				*pLine++ = palette[index*3 + 2];
@@ -189,7 +179,7 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 			// Load in all the pixel data line by line
 			for(int y = 0; y < height; y++)
 			{
-				fread(pImage, stride, 1, pFile);
+				if (!readExact(pImage, static_cast<size_t>(stride))) return NULL;
 				pImage += targetStride;
 			}
 		}
@@ -211,7 +201,7 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 				for(int i = 0; i < width; i++)
 				{
 					// Read in the current pixel
-					fread(&pixel, sizeof(unsigned short), 1, pFile);
+					if (!readExact(&pixel, sizeof(pixel))) return NULL;
 				
 					// To convert a 16-bit pixel into an R, G, B, we need to
 					// do some masking and such to isolate each color value.
@@ -255,7 +245,7 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 		// 64-bit byte offset into pImage: targetStride*height can exceed INT_MAX
 		// for large images, so a 32-bit offset would wrap and write out of bounds.
 		__int64 colorsRead = 0;
-		channels = bits / 8;
+		channels = bits <= 16 ? 2 : bits / 8;
 		int x = 0;
 		int padding = targetStride - targetChannels * width;
 
@@ -268,7 +258,7 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 		while(i < numPixels)
 		{
 			// Read in the current color count + 1
-			fread(&rleID, sizeof(byte), 1, pFile);
+			if (!readExact(&rleID, sizeof(rleID))) return NULL;
 			
 			// Check if we don't have an encoded string of colors
 			bool useSameColor;
@@ -286,7 +276,7 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 				useSameColor = true;
 
 				// Read in the current color, which is the same for a while
-				fread(pColors, sizeof(byte) * channels, 1, pFile);
+				if (!readExact(pColors, static_cast<size_t>(channels))) return NULL;
 			}
 
 			// Go through and read all the unique colors found
@@ -295,12 +285,12 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 				if (!useSameColor)
 				{
 					// Read in the current color
-					fread(pColors, sizeof(byte) * channels, 1, pFile);
+					if (!readExact(pColors, static_cast<size_t>(channels))) return NULL;
 				}
 
 				if(bits == 32)
 				{
-					*((uint32*)(pImage + colorsRead)) = *((uint32*)pColors);
+					memcpy(pImage + colorsRead, pColors, sizeof(uint32));
 				}
 				else
 				{
@@ -317,6 +307,11 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 							pImage[colorsRead + 1] = pColors[0];
 							pImage[colorsRead + 2] = pColors[0];
 						}
+					} else if (bits == 15 || bits == 16) {
+						const uint16 pixel = static_cast<uint16>(pColors[0] | (pColors[1] << 8));
+						pImage[colorsRead + 0] = static_cast<byte>(((pixel & 0x1F) * 255 + 15) / 31);
+						pImage[colorsRead + 1] = static_cast<byte>((((pixel >> 5) & 0x1F) * 255 + 15) / 31);
+						pImage[colorsRead + 2] = static_cast<byte>((((pixel >> 10) & 0x1F) * 255 + 15) / 31);
 					} else {
 						pImage[colorsRead + 0] = pColors[0];
 						pImage[colorsRead + 1] = pColors[1];
@@ -342,20 +337,25 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 		} // end of RLE pixel loop
 	}
 
-	// Close the file pointer that opened the file
-	fclose(pFile);
-
 	// If image needs to be flipped, do this inplace
 	if (flipVertically)
 	{
 		CBasicProcessing::MirrorVInplace(width, height, targetStride, pImageData);
+	}
+	if (flipHorizontally) {
+		for (int y = 0; y < height; ++y) {
+			byte* row = pImageData + static_cast<size_t>(y) * targetStride;
+			for (int x = 0; x < width / 2; ++x) {
+				for (int c = 0; c < targetChannels; ++c) std::swap(row[x * targetChannels + c], row[(width - 1 - x) * targetChannels + c]);
+			}
+		}
 	}
 
 	// 32 bit image - check alpha channel for validity and multiply RGB with alpha if valid
 	if (targetChannels == 4)
 	{
 		uint32* pImage32 = (uint32*)pImageData;
-		if (IsAlphaChannelValid(width, height, (uint32*)pImageData))
+		if ((attributes & 0x0F) != 0)
 		{
 			// Alpha channel is valid - preserve it. Background is composited at render time.
 		}
@@ -372,7 +372,7 @@ CJPEGImage* CReaderTGA::ReadTgaImage(LPCTSTR strFileName, COLORREF backgroundCol
 		}
 	}
 
-	CJPEGImage* pTargetImage = new CJPEGImage(width, height, pImageData, NULL, targetChannels, 
+	CJPEGImage* pTargetImage = new CJPEGImage(width, height, imageData.release(), NULL, targetChannels,
 		0, IF_TGA, false, 0, 1, 0);
 
 	return pTargetImage;

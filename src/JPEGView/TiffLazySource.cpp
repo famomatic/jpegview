@@ -57,6 +57,7 @@ void CTiffLazySource::Release()
 
 	delete m_pRawMetadata;
 	m_pRawMetadata = nullptr;
+	m_singlePixelCache.clear();
 }
 
 CTiffLazySource* CTiffLazySource::Create(LPCTSTR strFileName, int nFrameIndex, bool& bOutOfMemory)
@@ -118,9 +119,10 @@ bool CTiffLazySource::OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex)
 	m_nBaseHeight = m_nHeight;
 	m_nBitsPerSample = bitsPerSample;
 	m_nChannels = samplesPerPixel;
+	m_nCurrentFrame = nFrameIndex;
 
 	// 타일 vs 스트라이프 확인.
-	if (!UpdateDirectoryLayout())
+	if (!UpdateDirectoryLayout() || !UpdateDirectoryFormat())
 		return false;
 
 	// 알파 채널 감지.
@@ -136,6 +138,7 @@ bool CTiffLazySource::OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex)
 		 m_photometric == PHOTOMETRIC_MINISWHITE ||
 		 (m_photometric == PHOTOMETRIC_MINISBLACK && samplesPerPixel == 1) ||
 		 m_photometric == PHOTOMETRIC_YCBCR ||
+		 m_photometric == PHOTOMETRIC_SEPARATED ||
 		 // The manual 8-bit path (ConvertStripToBGRA) assumes interleaved
 		 // (contig) samples. For separate planar config each strip holds a
 		 // single sample plane, so route it through libtiff's RGBA reader,
@@ -143,17 +146,7 @@ bool CTiffLazySource::OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex)
 		 m_planarConfig == PLANARCONFIG_SEPARATE);
 
 	// ICC 프로파일 읽기.
-	uint32 iccSize = 0;
-	uint8* iccData = nullptr;
-	if (TIFFGetField(m_tif, TIFFTAG_ICCPROFILE, &iccSize, &iccData) == 1 && iccSize > 0 && iccData != nullptr)
-	{
-		m_pICCProfile = new (std::nothrow) uint8[iccSize];
-		if (m_pICCProfile != nullptr)
-		{
-			memcpy(m_pICCProfile, iccData, iccSize);
-			m_nICCSize = iccSize;
-		}
-	}
+	UpdateICCProfile();
 
 	// 프레임 수 계산.
 	// Use TIFFNumberOfDirectories() instead of manually iterating every IFD.
@@ -218,6 +211,59 @@ bool CTiffLazySource::UpdateDirectoryLayout()
 	return m_nRowsPerStrip > 0 && m_nStripsPerImage > 0;
 }
 
+bool CTiffLazySource::UpdateDirectoryFormat()
+{
+	uint16 bitsPerSample = 1, samplesPerPixel = 1;
+	TiffGetOrDefault(m_tif, TIFFTAG_BITSPERSAMPLE, bitsPerSample, static_cast<uint16>(1));
+	TiffGetOrDefault(m_tif, TIFFTAG_SAMPLESPERPIXEL, samplesPerPixel, static_cast<uint16>(1));
+	TiffGetOrDefault(m_tif, TIFFTAG_PHOTOMETRIC, m_photometric, static_cast<uint16>(0));
+	TiffGetOrDefault(m_tif, TIFFTAG_PLANARCONFIG, m_planarConfig, static_cast<uint16>(PLANARCONFIG_CONTIG));
+	TiffGetOrDefault(m_tif, TIFFTAG_SAMPLEFORMAT, m_sampleFormat, static_cast<uint16>(SAMPLEFORMAT_UINT));
+	TiffGetOrDefault(m_tif, TIFFTAG_COMPRESSION, m_compression, static_cast<uint16>(COMPRESSION_NONE));
+	if (samplesPerPixel == 0 || samplesPerPixel > 4 ||
+		(bitsPerSample != 1 && bitsPerSample != 2 && bitsPerSample != 4 &&
+		 bitsPerSample != 8 && bitsPerSample != 16))
+		return false;
+
+	uint16 extraSamples = 0;
+	uint16* extraSampleTypes = nullptr;
+	if (TIFFGetField(m_tif, TIFFTAG_EXTRASAMPLES, &extraSamples, &extraSampleTypes) != 1)
+		extraSamples = 0;
+	m_nBitsPerSample = bitsPerSample;
+	m_nChannels = samplesPerPixel;
+	m_bHasAlpha = extraSamples > 0;
+	m_bUseRGBA = bitsPerSample == 8 &&
+		(m_photometric == PHOTOMETRIC_PALETTE ||
+		 m_photometric == PHOTOMETRIC_MINISWHITE ||
+		 (m_photometric == PHOTOMETRIC_MINISBLACK && samplesPerPixel == 1) ||
+		 m_photometric == PHOTOMETRIC_YCBCR ||
+		 m_photometric == PHOTOMETRIC_SEPARATED ||
+		 m_planarConfig == PLANARCONFIG_SEPARATE);
+	return true;
+}
+
+void CTiffLazySource::UpdateICCProfile()
+{
+	uint32 iccSize = 0;
+	uint8* iccData = nullptr;
+	uint8* replacement = nullptr;
+	constexpr uint32 kMaxICCProfileSize = 64U * 1024U * 1024U;
+	if (TIFFGetField(m_tif, TIFFTAG_ICCPROFILE, &iccSize, &iccData) == 1 &&
+		iccSize > 0 && iccSize <= kMaxICCProfileSize && iccData != nullptr) {
+		replacement = new (std::nothrow) uint8[iccSize];
+		if (replacement != nullptr)
+			memcpy(replacement, iccData, iccSize);
+		else
+			iccSize = 0;
+	} else {
+		iccSize = 0;
+	}
+	delete[] m_pICCProfile;
+	m_pICCProfile = replacement;
+	m_nICCSize = iccSize;
+}
+
+#if 0
 int CTiffLazySource::DetectPyramidLevels()
 {
 	// IFD를 순회하며 크기가 점점 작아지는지 검사.
@@ -280,6 +326,38 @@ int CTiffLazySource::DetectPyramidLevels()
 
 	return levels;
 }
+#endif
+
+int CTiffLazySource::DetectPyramidLevels()
+{
+	// Reduced resolutions belong in SUBIFDs. Treating the next top-level IFD
+	// as a level confuses ordinary multi-page documents with image pyramids.
+	m_pyramidIFDOffsets.clear();
+	const tdir_t originalDirectory = TIFFCurrentDirectory(m_tif);
+	uint16 count = 0;
+	uint64* offsets = nullptr;
+	if (TIFFGetField(m_tif, TIFFTAG_SUBIFD, &count, &offsets) != 1 || count == 0 || offsets == nullptr)
+		return 1;
+	std::vector<uint64> candidates(offsets, offsets + count);
+	uint32 previousWidth = static_cast<uint32>(m_nBaseWidth);
+	uint32 previousHeight = static_cast<uint32>(m_nBaseHeight);
+	for (uint64 offset : candidates) {
+		if (offset == 0 || TIFFSetSubDirectory(m_tif, offset) != 1) break;
+		uint32 width = 0, height = 0;
+		TiffGetOrDefault(m_tif, TIFFTAG_IMAGEWIDTH, width, static_cast<uint32>(0));
+		TiffGetOrDefault(m_tif, TIFFTAG_IMAGELENGTH, height, static_cast<uint32>(0));
+		if (width == 0 || height == 0 || width > previousWidth || height > previousHeight ||
+			(width == previousWidth && height == previousHeight)) break;
+		m_pyramidIFDOffsets.push_back(offset);
+		previousWidth = width;
+		previousHeight = height;
+	}
+	if (TIFFSetDirectory(m_tif, originalDirectory) != 1) {
+		m_pyramidIFDOffsets.clear();
+		return 1;
+	}
+	return 1 + static_cast<int>(m_pyramidIFDOffsets.size());
+}
 
 bool CTiffLazySource::SetPyramidLevel(int level)
 {
@@ -296,18 +374,24 @@ bool CTiffLazySource::SetPyramidLevel(int level)
 	if (level < 0 || level >= m_nPyramidLevels)
 		return false;
 
-	if (m_pyramidIFDs.empty())
+	if (m_pyramidIFDOffsets.empty())
 		return (level == 0);
 
-	tdir_t targetDir = (tdir_t)m_pyramidIFDs[level];
-	tdir_t previousDir = TIFFCurrentDirectory(m_tif);
-	if (TIFFSetDirectory(m_tif, targetDir) == 0)
+	const int previousLevel = m_nCurrentPyramidLevel;
+	const bool directorySet = level == 0
+		? TIFFSetDirectory(m_tif, static_cast<tdir_t>(m_nCurrentFrame)) != 0
+		: TIFFSetSubDirectory(m_tif, m_pyramidIFDOffsets[static_cast<size_t>(level - 1)]) != 0;
+	if (!directorySet)
 		return false;
 
 	// 레벨 전환 후 메타데이터 갱신.
-	if (!UpdateDirectoryLayout()) {
-		TIFFSetDirectory(m_tif, previousDir);
+	if (!UpdateDirectoryLayout() || !UpdateDirectoryFormat()) {
+		if (previousLevel == 0)
+			TIFFSetDirectory(m_tif, static_cast<tdir_t>(m_nCurrentFrame));
+		else
+			TIFFSetSubDirectory(m_tif, m_pyramidIFDOffsets[static_cast<size_t>(previousLevel - 1)]);
 		UpdateDirectoryLayout();
+		UpdateDirectoryFormat();
 		return false;
 	}
 
@@ -326,18 +410,24 @@ bool CTiffLazySource::SetFrame(int nFrame)
 		return false;
 	if (nFrame == m_nCurrentFrame)
 		return true;
-	tdir_t previousDir = TIFFCurrentDirectory(m_tif);
+	const int previousFrame = m_nCurrentFrame;
+	const int previousLevel = m_nCurrentPyramidLevel;
 	if (TIFFSetDirectory(m_tif, (tdir_t)nFrame) == 0)
 		return false;
-	if (!UpdateDirectoryLayout()) {
-		TIFFSetDirectory(m_tif, previousDir);
+	if (!UpdateDirectoryLayout() || !UpdateDirectoryFormat()) {
+		TIFFSetDirectory(m_tif, static_cast<tdir_t>(previousFrame));
+		if (previousLevel > 0 && previousLevel <= static_cast<int>(m_pyramidIFDOffsets.size()))
+			TIFFSetSubDirectory(m_tif, m_pyramidIFDOffsets[static_cast<size_t>(previousLevel - 1)]);
 		UpdateDirectoryLayout();
+		UpdateDirectoryFormat();
 		return false;
 	}
 	m_nBaseWidth = m_nWidth;
 	m_nBaseHeight = m_nHeight;
 	m_nCurrentFrame = nFrame;
 	m_nCurrentPyramidLevel = 0;
+	UpdateICCProfile();
+	m_nPyramidLevels = DetectPyramidLevels();
 	InvalidateSinglePixelCache();
 	return true;
 }

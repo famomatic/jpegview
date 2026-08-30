@@ -125,37 +125,15 @@ public:
 
 // ---- Factory ------------------------------------------------------------
 
-std::unique_ptr<IImageProcessor>& CImageProcessorFactory::ActiveBackend() {
-    static std::unique_ptr<IImageProcessor> s_pBackend;
-    return s_pBackend;
-}
-
-std::mutex& CImageProcessorFactory::BackendMutex() {
-	static std::mutex s_mutex;
-	return s_mutex;
-}
-
 IImageProcessor& CImageProcessorFactory::Get() {
-	std::lock_guard<std::mutex> lock(BackendMutex());
-    auto& pSlot = ActiveBackend();
-    if (!pSlot) {
-        // Select the GPU backend when requested and available. Any failure
-        // leaves the CPU backend in place so the viewer always renders.
-        if (IsGpuRequested() && CGpuDevice::Instance().IsAvailable()) {
-            pSlot = std::make_unique<GpuImageProcessor>();
-        } else {
-            pSlot = std::make_unique<CpuImageProcessor>();
-        }
-    }
-    return *pSlot;
-}
-
-void CImageProcessorFactory::SetBackend(std::unique_ptr<IImageProcessor> pBackend) {
-	std::lock_guard<std::mutex> lock(BackendMutex());
-    ActiveBackend() = std::move(pBackend);
-}
-
-void CImageProcessorFactory::Shutdown() {
-	std::lock_guard<std::mutex> lock(BackendMutex());
-    ActiveBackend().reset();
+	// The backend is immutable after first use. Returning a reference to a
+	// replaceable unique_ptr allowed another thread to destroy it immediately
+	// after Get() released its mutex. Process-lifetime ownership makes every
+	// reference stable and avoids static-destruction ordering during shutdown.
+	static IImageProcessor* const backend = []() -> IImageProcessor* {
+		if (IsGpuRequested() && CGpuDevice::Instance().IsAvailable())
+			return new GpuImageProcessor();
+		return new CpuImageProcessor();
+	}();
+	return *backend;
 }

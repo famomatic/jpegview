@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(JPEGView VERSION 1.3.46.0 LANGUAGES CXX
+project(JPEGView VERSION 1.6.0.0 LANGUAGES CXX
     DESCRIPTION "A fast image viewer with editing capabilities")
 
 set(CMAKE_CXX_STANDARD 20)

@@ -31,7 +31,6 @@ CAppModule _Module;
 // pool threads, i.e. single-threaded strip processing - exactly the
 // deterministic behavior this test wants. The object is never dereferenced
 // beyond trivially-readable POD members.
-CSettingsProvider* CSettingsProvider::sm_instance = NULL;
 CSettingsProvider& CSettingsProvider::This() {
     static char buf[sizeof(CSettingsProvider)] = { 0 };
     return *reinterpret_cast<CSettingsProvider*>(buf);

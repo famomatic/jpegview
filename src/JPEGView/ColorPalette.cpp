@@ -56,11 +56,12 @@ std::vector<CColorPalette::SColor> CColorPalette::Extract(const void* pPixelsBGR
 	// Downsample so we never process more than ~10000 pixels.
 	// 64-bit count: nWidth*nHeight overflows a 32-bit int for large images,
 	// which would make the reserve() below allocate a bogus (huge) size.
-	size_t nTotalPixels = (size_t)nWidth * nHeight;
+	if (static_cast<size_t>(nWidth) > SIZE_MAX / static_cast<size_t>(nHeight)) return result;
+	size_t nTotalPixels = static_cast<size_t>(nWidth) * nHeight;
 	size_t nMaxSamples = 10000;
 	int nStep = 1;
 	if (nTotalPixels > nMaxSamples) {
-		nStep = (int)((double)nTotalPixels / nMaxSamples + 0.5);
+		nStep = static_cast<int>((nTotalPixels - 1) / nMaxSamples + 1);
 		if (nStep < 1) nStep = 1;
 	}
 
@@ -78,7 +79,7 @@ std::vector<CColorPalette::SColor> CColorPalette::Extract(const void* pPixelsBGR
 	// split the box with the largest channel range until we reach nMaxColors.
 	std::vector<ColorBox> boxes;
 	ColorBox initial;
-	initial.pixels = samples;
+	initial.pixels = std::move(samples);
 	initial.ComputeBounds();
 	boxes.push_back(initial);
 
@@ -101,25 +102,24 @@ std::vector<CColorPalette::SColor> CColorPalette::Extract(const void* pPixelsBGR
 		ColorBox& box = boxes[nBestIdx];
 		int channel = box.LongestChannel();
 
-		// Sort by the longest channel and split at the median.
+		// Partition at the median in linear time; a full sort is unnecessary.
+		const size_t mid = box.pixels.size() / 2;
+		auto middle = box.pixels.begin() + mid;
 		if (channel == 0) {
-			std::sort(box.pixels.begin(), box.pixels.end(), [](const PixelBGRA& a, const PixelBGRA& b) { return a.r < b.r; });
+			std::nth_element(box.pixels.begin(), middle, box.pixels.end(), [](const PixelBGRA& a, const PixelBGRA& b) { return a.r < b.r; });
 		} else if (channel == 1) {
-			std::sort(box.pixels.begin(), box.pixels.end(), [](const PixelBGRA& a, const PixelBGRA& b) { return a.g < b.g; });
+			std::nth_element(box.pixels.begin(), middle, box.pixels.end(), [](const PixelBGRA& a, const PixelBGRA& b) { return a.g < b.g; });
 		} else {
-			std::sort(box.pixels.begin(), box.pixels.end(), [](const PixelBGRA& a, const PixelBGRA& b) { return a.b < b.b; });
+			std::nth_element(box.pixels.begin(), middle, box.pixels.end(), [](const PixelBGRA& a, const PixelBGRA& b) { return a.b < b.b; });
 		}
 
-		size_t mid = box.pixels.size() / 2;
-		ColorBox left, right;
-		left.pixels.assign(box.pixels.begin(), box.pixels.begin() + mid);
-		right.pixels.assign(box.pixels.begin() + mid, box.pixels.end());
-		left.ComputeBounds();
+		ColorBox right;
+		right.pixels.assign(std::make_move_iterator(middle), std::make_move_iterator(box.pixels.end()));
+		box.pixels.erase(middle, box.pixels.end());
+		box.ComputeBounds();
 		right.ComputeBounds();
 
-		// Replace the original box with the two halves.
-		boxes[nBestIdx] = left;
-		boxes.push_back(right);
+		boxes.push_back(std::move(right));
 	}
 
 	// Build the result: average color of each box + the box's pixel count.

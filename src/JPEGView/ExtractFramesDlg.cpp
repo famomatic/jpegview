@@ -10,10 +10,13 @@
 #include "ProcessParams.h"
 #include <gdiplus.h>
 #include <cstdio>
+#include <memory>
 
 CExtractFramesDlg::CExtractFramesDlg(LPCTSTR sFileName, int nFrameCount)
 	: m_sFileName(sFileName)
 	, m_nFrameCount(nFrameCount)
+	, m_bExtracting(false)
+	, m_bCancelRequested(false)
 {
 }
 
@@ -55,11 +58,23 @@ LRESULT CExtractFramesDlg::OnInitDialog(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM
 }
 
 LRESULT CExtractFramesDlg::OnClose(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, BOOL& /*bHandled*/) {
+	if (m_bExtracting) {
+		m_bCancelRequested = true;
+		m_btnCancel.EnableWindow(FALSE);
+		m_lblStatus.SetWindowText(_T("Cancelling..."));
+		return 0;
+	}
 	EndDialog(IDCANCEL);
 	return 0;
 }
 
 LRESULT CExtractFramesDlg::OnCancel(WORD /*wNotifyCode*/, WORD wID, HWND /*hWndCtl*/, BOOL& /*bHandled*/) {
+	if (m_bExtracting) {
+		m_bCancelRequested = true;
+		m_btnCancel.EnableWindow(FALSE);
+		m_lblStatus.SetWindowText(_T("Cancelling..."));
+		return 0;
+	}
 	EndDialog(wID);
 	return 0;
 }
@@ -87,6 +102,8 @@ LRESULT CExtractFramesDlg::OnBrowse(WORD /*wNotifyCode*/, WORD /*wID*/, HWND /*h
 }
 
 LRESULT CExtractFramesDlg::OnExtract(WORD /*wNotifyCode*/, WORD wID, HWND /*hWndCtl*/, BOOL& /*bHandled*/) {
+	if (m_bExtracting || m_nFrameCount <= 0)
+		return 0;
 	m_edtDest.GetWindowText(m_sDestFolder);
 	if (!m_sDestFolder.IsEmpty()) {
 		TCHAR last = m_sDestFolder[m_sDestFolder.GetLength() - 1];
@@ -118,13 +135,41 @@ LRESULT CExtractFramesDlg::OnExtract(WORD /*wNotifyCode*/, WORD wID, HWND /*hWnd
 	int nTemp = m_nFrameCount;
 	while (nTemp >= 1000) { nPad++; nTemp /= 10; }
 
+	HANDLE hFile = ::CreateFile(m_sFileName, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+	LARGE_INTEGER fileSize = {};
+	if (hFile == INVALID_HANDLE_VALUE || !::GetFileSizeEx(hFile, &fileSize) ||
+		fileSize.QuadPart <= 0 || fileSize.QuadPart > INT_MAX) {
+		if (hFile != INVALID_HANDLE_VALUE) ::CloseHandle(hFile);
+		::MessageBox(m_hWnd, _T("The source file cannot be read or is too large."), _T("Extract Frames"), MB_OK | MB_ICONWARNING);
+		return 0;
+	}
+	std::unique_ptr<uint8[]> fileData(new(std::nothrow) uint8[static_cast<size_t>(fileSize.QuadPart)]);
+	DWORD nRead = 0;
+	const DWORD fileBytes = static_cast<DWORD>(fileSize.QuadPart);
+	const BOOL readOK = fileData != NULL && ::ReadFile(hFile, fileData.get(), fileBytes, &nRead, NULL);
+	::CloseHandle(hFile);
+	if (!readOK || nRead != fileBytes) {
+		::MessageBox(m_hWnd, _T("Failed to read the complete source file."), _T("Extract Frames"), MB_OK | MB_ICONWARNING);
+		return 0;
+	}
+
+	m_bExtracting = true;
+	m_bCancelRequested = false;
 	m_btnExtract.EnableWindow(FALSE);
+	m_btnBrowse.EnableWindow(FALSE);
+	m_cbFormat.EnableWindow(FALSE);
+	m_edtDest.EnableWindow(FALSE);
+	int nExtracted = 0;
+	int nFailed = 0;
 
 	for (int i = 0; i < m_nFrameCount; i++) {
+		if (m_bCancelRequested) break;
 		CString sFrame;
 		sFrame.Format(_T("_%0*d"), nPad, i);
 
-		bool bOk = ExtractFrame(i, m_sDestFolder, sBaseName + sFrame, sExt);
+		bool bOk = ExtractFrame(i, m_sDestFolder, sBaseName + sFrame, sExt, fileData.get(), static_cast<int>(nRead));
+		if (bOk) nExtracted++; else nFailed++;
 
 		m_progress.SetPos(i + 1);
 		CString sStatus;
@@ -134,8 +179,15 @@ LRESULT CExtractFramesDlg::OnExtract(WORD /*wNotifyCode*/, WORD wID, HWND /*hWnd
 		// Pump messages to keep the dialog responsive.
 		MSG msg;
 		while (::PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-			::TranslateMessage(&msg);
-			::DispatchMessage(&msg);
+			if (msg.message == WM_QUIT) {
+				::PostQuitMessage(static_cast<int>(msg.wParam));
+				m_bCancelRequested = true;
+				break;
+			}
+			if (!::IsDialogMessage(m_hWnd, &msg)) {
+				::TranslateMessage(&msg);
+				::DispatchMessage(&msg);
+			}
 		}
 	}
 
@@ -148,11 +200,20 @@ LRESULT CExtractFramesDlg::OnExtract(WORD /*wNotifyCode*/, WORD wID, HWND /*hWnd
 	else if (sLowerName.Right(4) == _T(".jxl")) JxlReader::DeleteCache();
 	else if (sLowerName.Right(4) == _T(".png") || sLowerName.Right(5) == _T(".apng")) PngReader::DeleteCache();
 
+	m_bExtracting = false;
+	if (m_bCancelRequested) {
+		EndDialog(IDCANCEL);
+		return 0;
+	}
 	m_btnExtract.EnableWindow(TRUE);
+	m_btnBrowse.EnableWindow(TRUE);
+	m_btnCancel.EnableWindow(TRUE);
+	m_cbFormat.EnableWindow(TRUE);
+	m_edtDest.EnableWindow(TRUE);
 
 	CString sDone;
-	sDone.Format(_T("Extracted %d frame(s) to:\n%s"), m_nFrameCount, m_sDestFolder.GetString());
-	::MessageBox(m_hWnd, sDone, _T("Extract Frames"), MB_OK | MB_ICONINFORMATION);
+	sDone.Format(_T("Extracted %d frame(s); %d failed.\n%s"), nExtracted, nFailed, m_sDestFolder.GetString());
+	::MessageBox(m_hWnd, sDone, _T("Extract Frames"), MB_OK | (nFailed == 0 ? MB_ICONINFORMATION : MB_ICONWARNING));
 
 	EndDialog(wID);
 	return 0;
@@ -165,7 +226,8 @@ static int GetEncoderClsidLocal(const WCHAR* format, CLSID* pClsid) {
 	Gdiplus::GetImageEncodersSize(&num, &size);
 	if (size == 0) return -1;
 	Gdiplus::ImageCodecInfo* pImageCodecInfo = (Gdiplus::ImageCodecInfo*)(malloc(size));
-	Gdiplus::GetImageEncoders(num, size, pImageCodecInfo);
+	if (pImageCodecInfo == NULL) return -1;
+	if (Gdiplus::GetImageEncoders(num, size, pImageCodecInfo) != Gdiplus::Ok) { free(pImageCodecInfo); return -1; }
 	for (UINT j = 0; j < num; ++j) {
 		if (wcscmp(pImageCodecInfo[j].MimeType, format) == 0) {
 			*pClsid = pImageCodecInfo[j].Clsid;
@@ -180,7 +242,8 @@ static int GetEncoderClsidLocal(const WCHAR* format, CLSID* pClsid) {
 // Save a 32-bit BGRA pixel buffer to a file using GDI+.
 // This avoids pulling in the full SaveImage pipeline for each frame.
 static bool SavePixelsToFile(uint8* pPixels, int nWidth, int nHeight, int nChannels, LPCTSTR sOutPath, int nFmt) {
-	if (pPixels == NULL) return false;
+	if (pPixels == NULL || nWidth <= 0 || nHeight <= 0 || (nChannels != 3 && nChannels != 4) ||
+		nWidth > (INT_MAX - 3) / nChannels) return false;
 
 	// GDI+ expects BGR (24bpp) or BGRA (32bpp). JPEGView pixels are BGRA or BGR.
 	Gdiplus::PixelFormat pf = (nChannels == 4) ? PixelFormat32bppARGB : PixelFormat24bppRGB;
@@ -208,23 +271,28 @@ static bool SavePixelsToFile(uint8* pPixels, int nWidth, int nHeight, int nChann
 
 	if (!bGotClsid) { delete pBitmap; return false; }
 
-	Gdiplus::Status status = pBitmap->Save(sOutPath, &clsid, NULL);
+	static volatile LONG sequence = 0;
+	CString tempPath;
+	tempPath.Format(_T("%s.jvtmp.%lu.%ld"), sOutPath, ::GetCurrentProcessId(), ::InterlockedIncrement(&sequence));
+	Gdiplus::Status status = pBitmap->Save(tempPath, &clsid, NULL);
 	delete pBitmap;
-	return (status == Gdiplus::Ok);
+	if (status != Gdiplus::Ok) { ::DeleteFile(tempPath); return false; }
+	HANDLE temp = ::CreateFile(tempPath, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	const bool flushed = temp != INVALID_HANDLE_VALUE && ::FlushFileBuffers(temp) != FALSE;
+	if (temp != INVALID_HANDLE_VALUE) ::CloseHandle(temp);
+	bool committed = false;
+	if (flushed) {
+		committed = ::GetFileAttributes(sOutPath) != INVALID_FILE_ATTRIBUTES
+			? ::ReplaceFile(sOutPath, tempPath, NULL, REPLACEFILE_WRITE_THROUGH, NULL, NULL) != FALSE
+			: ::MoveFileEx(tempPath, sOutPath, MOVEFILE_WRITE_THROUGH) != FALSE;
+	}
+	if (!committed) ::DeleteFile(tempPath);
+	return committed;
 }
 
-bool CExtractFramesDlg::ExtractFrame(int nFrameIndex, LPCTSTR sDestFolder, LPCTSTR sBaseName, LPCTSTR sExt) {
-	// Read the file into memory.
-	HANDLE hFile = ::CreateFile(m_sFileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (hFile == INVALID_HANDLE_VALUE) return false;
-	DWORD nSize = ::GetFileSize(hFile, NULL);
-	if (nSize == 0 || nSize == INVALID_FILE_SIZE) { ::CloseHandle(hFile); return false; }
-	uint8* pBuffer = new uint8[nSize];
-	DWORD nRead = 0;
-	BOOL bOk = ::ReadFile(hFile, pBuffer, nSize, &nRead, NULL);
-	::CloseHandle(hFile);
-	if (!bOk || nRead == 0) { delete[] pBuffer; return false; }
-
+bool CExtractFramesDlg::ExtractFrame(int nFrameIndex, LPCTSTR sDestFolder, LPCTSTR sBaseName, LPCTSTR sExt,
+	const uint8* pBuffer, int nRead) {
+	if (pBuffer == NULL || nRead <= 0) return false;
 	// Determine format from extension and call the appropriate wrapper.
 	CString sLower = m_sFileName;
 	sLower.MakeLower();
@@ -251,7 +319,8 @@ bool CExtractFramesDlg::ExtractFrame(int nFrameIndex, LPCTSTR sDestFolder, LPCTS
 		pPixels = (uint8*)AvifReader::ReadImage(nWidth, nHeight, nBPP, bHasAnim, nFrameIndex, nFrameCount, nFrameTime, pEXIFData, bOOM, pBuffer, nRead);
 		AvifReader::DeleteCache();
 	} else if (sLower.Right(4) == _T(".png") || sLower.Right(5) == _T(".apng")) {
-		pPixels = (uint8*)PngReader::ReadImage(nWidth, nHeight, nBPP, bHasAnim, nFrameCount, nFrameTime, pEXIFData, bOOM, pBuffer, nRead);
+		pPixels = (uint8*)PngReader::ReadImage(nWidth, nHeight, nBPP, bHasAnim, nFrameCount, nFrameTime, pEXIFData, bOOM,
+			const_cast<uint8*>(pBuffer), nRead);
 	} else {
 		// For GIF and other formats, use GDI+ to load each frame.
 		Gdiplus::Bitmap* pBitmap = Gdiplus::Bitmap::FromFile(m_sFileName);
@@ -266,13 +335,17 @@ bool CExtractFramesDlg::ExtractFrame(int nFrameIndex, LPCTSTR sDestFolder, LPCTS
 				Gdiplus::BitmapData bmpData;
 				Gdiplus::Rect rect(0, 0, nWidth, nHeight);
 				if (pBitmap->LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &bmpData) == Gdiplus::Ok) {
-					int nRowPadded = bmpData.Stride;
-					// 64-bit size: stride*height overflows a 32-bit int for very
-					// large frames, under-allocating before the memcpy.
-					__int64 nBufSize = (__int64)nRowPadded * nHeight;
-					pPixels = new uint8[nBufSize];
-					memcpy(pPixels, bmpData.Scan0, (size_t)nBufSize);
-					nBPP = 4;
+					const size_t rowBytes = static_cast<size_t>(nWidth) * 4;
+					if (static_cast<size_t>(nHeight) <= SIZE_MAX / rowBytes) {
+						pPixels = new(std::nothrow) uint8[rowBytes * nHeight];
+						if (pPixels != NULL) {
+							for (int y = 0; y < nHeight; y++) {
+								const uint8* src = static_cast<const uint8*>(bmpData.Scan0) + static_cast<ptrdiff_t>(y) * bmpData.Stride;
+								memcpy(pPixels + static_cast<size_t>(y) * rowBytes, src, rowBytes);
+							}
+							nBPP = 4;
+						}
+					}
 					pBitmap->UnlockBits(&bmpData);
 				}
 			}
@@ -281,7 +354,6 @@ bool CExtractFramesDlg::ExtractFrame(int nFrameIndex, LPCTSTR sDestFolder, LPCTS
 	}
 
 	if (pEXIFData != NULL) free(pEXIFData);
-	delete[] pBuffer;
 
 	if (pPixels == NULL) return false;
 

@@ -9,6 +9,8 @@ class CUpdateCheck {
 public:
 	// Starts the asynchronous check. No-op if a check is already running.
 	static void StartCheck(HWND hWndNotify, UINT nMessage);
+	// Prevents further notifications to the window and joins an in-flight check.
+	static void Shutdown(HWND hWndNotify);
 
 	// Latest release tag found by the last successful check, e.g. "v1.7".
 	// Valid after the notification message has been received.

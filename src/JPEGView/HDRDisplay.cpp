@@ -68,6 +68,20 @@ void ReleaseAll() {
 	SafeRelease(s_pDevice);
 }
 
+bool ResizeBackBuffer(int width, int height) {
+	if (s_pSwapChain == NULL || s_pDevice == NULL || width <= 0 || height <= 0) return false;
+	if (s_pContext != NULL) s_pContext->OMSetRenderTargets(0, NULL, NULL);
+	SafeRelease(s_pRTV);
+	if (FAILED(s_pSwapChain->ResizeBuffers(0, static_cast<UINT>(width), static_cast<UINT>(height), DXGI_FORMAT_UNKNOWN, 0)))
+		return false;
+	ID3D11Texture2D* backBuffer = NULL;
+	const HRESULT getResult = s_pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&backBuffer));
+	if (FAILED(getResult)) return false;
+	const HRESULT viewResult = s_pDevice->CreateRenderTargetView(backBuffer, NULL, &s_pRTV);
+	backBuffer->Release();
+	return SUCCEEDED(viewResult);
+}
+
 void RenderFrame() {
 	if (s_pContext == NULL || s_pRTV == NULL || s_pImageSRV == NULL || s_hWndOverlay == NULL) {
 		return;
@@ -108,6 +122,9 @@ void RenderFrame() {
 
 LRESULT CALLBACK HDROverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 	switch (uMsg) {
+		case WM_SIZE:
+			if (wParam != SIZE_MINIMIZED && ResizeBackBuffer(LOWORD(lParam), HIWORD(lParam))) RenderFrame();
+			return 0;
 		case WM_PAINT: {
 			PAINTSTRUCT ps;
 			::BeginPaint(hWnd, &ps);
@@ -120,17 +137,34 @@ LRESULT CALLBACK HDROverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 		case WM_SYSKEYDOWN:
 		case WM_SYSKEYUP:
 		case WM_MOUSEWHEEL:
+		case WM_MOUSEHWHEEL:
+		case WM_MOUSEMOVE:
+		case WM_LBUTTONUP:
+		case WM_LBUTTONDBLCLK:
+		case WM_RBUTTONDOWN:
+		case WM_RBUTTONUP:
+		case WM_RBUTTONDBLCLK:
+		case WM_MBUTTONDOWN:
+		case WM_MBUTTONUP:
+		case WM_MBUTTONDBLCLK:
+		case WM_XBUTTONDOWN:
+		case WM_XBUTTONUP:
+		case WM_XBUTTONDBLCLK:
+		case WM_CONTEXTMENU:
 			// forward input to the main window so shortcuts keep working
 			if (s_hWndParent != NULL) {
 				return ::SendMessage(s_hWndParent, uMsg, wParam, lParam);
 			}
 			return 0;
 		case WM_LBUTTONDOWN:
-		case WM_SETFOCUS:
 			// keep focus at the parent so its keyboard handling stays intact
 			if (s_hWndParent != NULL) {
 				::SetFocus(s_hWndParent);
+				return ::SendMessage(s_hWndParent, uMsg, wParam, lParam);
 			}
+			return 0;
+		case WM_SETFOCUS:
+			if (s_hWndParent != NULL) ::SetFocus(s_hWndParent);
 			return 0;
 	}
 	return ::DefWindowProc(hWnd, uMsg, wParam, lParam);
@@ -159,10 +193,16 @@ IDXGIOutput6* FindOutputForWindow(HWND hWnd) {
 		return NULL;
 	}
 	IDXGIOutput6* pFound = NULL;
-	IDXGIAdapter1* pAdapter = NULL;
-	for (UINT a = 0; pFound == NULL && pFactory->EnumAdapters1(a, &pAdapter) != DXGI_ERROR_NOT_FOUND; a++) {
+	for (UINT a = 0; pFound == NULL; a++) {
+		IDXGIAdapter1* pAdapter = NULL;
+		const HRESULT adapterResult = pFactory->EnumAdapters1(a, &pAdapter);
+		if (adapterResult == DXGI_ERROR_NOT_FOUND) break;
+		if (FAILED(adapterResult) || pAdapter == NULL) break;
 		IDXGIOutput* pOutput = NULL;
-		for (UINT o = 0; pFound == NULL && pAdapter->EnumOutputs(o, &pOutput) != DXGI_ERROR_NOT_FOUND; o++) {
+		for (UINT o = 0; pFound == NULL; o++) {
+			const HRESULT outputResult = pAdapter->EnumOutputs(o, &pOutput);
+			if (outputResult == DXGI_ERROR_NOT_FOUND) break;
+			if (FAILED(outputResult) || pOutput == NULL) break;
 			DXGI_OUTPUT_DESC desc;
 			if (SUCCEEDED(pOutput->GetDesc(&desc)) && desc.Monitor == hMonitor) {
 				pOutput->QueryInterface(__uuidof(IDXGIOutput6), (void**)&pFound);
@@ -171,7 +211,6 @@ IDXGIOutput6* FindOutputForWindow(HWND hWnd) {
 			pOutput = NULL;
 		}
 		pAdapter->Release();
-		pAdapter = NULL;
 	}
 	pFactory->Release();
 	return pFound;
@@ -210,7 +249,10 @@ bool CHDRDisplay::IsHDRAvailable(HWND hWnd) {
 }
 
 bool CHDRDisplay::Show(HWND hWndParent, const float* pPixelsRGBA, int nWidth, int nHeight) {
-	if (pPixelsRGBA == NULL || nWidth <= 0 || nHeight <= 0 || hWndParent == NULL) {
+	if (pPixelsRGBA == NULL || nWidth <= 0 || nHeight <= 0 ||
+		nWidth > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || nHeight > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+		static_cast<size_t>(nWidth) > SIZE_MAX / static_cast<size_t>(nHeight) / 4 / sizeof(float) ||
+		hWndParent == NULL || !::IsWindow(hWndParent)) {
 		return false;
 	}
 	Hide();
@@ -348,6 +390,13 @@ void CHDRDisplay::Hide() {
 	s_hWndParent = NULL;
 	s_nImageWidth = 0;
 	s_nImageHeight = 0;
+}
+
+void CHDRDisplay::ResizeToParent() {
+	if (s_hWndOverlay == NULL || s_hWndParent == NULL || !::IsWindow(s_hWndParent)) return;
+	RECT client = {};
+	if (::GetClientRect(s_hWndParent, &client))
+		::MoveWindow(s_hWndOverlay, 0, 0, max(0L, client.right), max(0L, client.bottom), TRUE);
 }
 
 bool CHDRDisplay::IsActive() {

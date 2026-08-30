@@ -30,4 +30,8 @@ public:
 	// Performs a lossless JPEG crop, using the input file and writing the result to the output file.
 	// Input and output file can be identical, then the input file is overwritten by the resulting output file.
 	static EResult PerformCrop(LPCTSTR sInputFile, LPCTSTR sOutputFile, const CRect& cropRect);
+
+	// Rewrites the JPEG entropy stream with optimized Huffman tables without
+	// changing coefficients, dimensions, or pixel data.
+	static EResult Optimize(LPCTSTR sInputFile, LPCTSTR sOutputFile);
 };

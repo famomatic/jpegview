@@ -9,13 +9,13 @@
 
 CJPEGProvider::CJPEGProvider(HWND handlerWnd, int nNumThreads, int nNumBuffers) {
 	m_hHandlerWnd = handlerWnd;
-	m_nNumThread = nNumThreads;
-	m_nNumBuffers = nNumBuffers;
+	m_nNumThread = max(1, nNumThreads);
+	m_nNumBuffers = max(1, nNumBuffers);
 	m_nCurrentTimeStamp = 0;
 	m_eOldDirection = FORWARD;
 	::InitializeCriticalSection(&m_csRequestList);
-	m_pWorkThreads = new CImageLoadThread*[nNumThreads];
-	for (int i = 0; i < nNumThreads; i++) {
+	m_pWorkThreads = new CImageLoadThread*[m_nNumThread];
+	for (int i = 0; i < m_nNumThread; i++) {
 		m_pWorkThreads[i] = new CImageLoadThread();
 	}
 }
@@ -60,6 +60,11 @@ CJPEGImage* CJPEGProvider::RequestImage(CFileList* pFileList, EReadAheadDirectio
 		if (pRequest == NULL) {
 			// no request pending for this file, add to request queue and start async
 			pRequest = StartNewRequest(strFileName, nFrameIndex, processParams);
+			if (pRequest == NULL) {
+				bOutOfMemory = false;
+				bExceptionError = true;
+				return NULL;
+			}
 			// wait with read ahead when direction changed - maybe user just wants to re-see last image
 			bNeedNewBundle = !bDirectionChanged && eDirection != NONE;
 		}
@@ -69,8 +74,10 @@ CJPEGImage* CJPEGProvider::RequestImage(CFileList* pFileList, EReadAheadDirectio
 		if (!pRequest->Ready) {
 			// Duplicate the event handle so the wait survives any concurrent
 			// ClearRequest that may run while we are blocked.
-			::DuplicateHandle(::GetCurrentProcess(), pRequest->EventFinished,
-				::GetCurrentProcess(), &hEventToWait, 0, FALSE, DUPLICATE_SAME_ACCESS);
+			if (!::DuplicateHandle(::GetCurrentProcess(), pRequest->EventFinished,
+				::GetCurrentProcess(), &hEventToWait, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+				hEventToWait = pRequest->EventFinished;
+			}
 		}
 	}
 
@@ -85,7 +92,7 @@ CJPEGImage* CJPEGProvider::RequestImage(CFileList* pFileList, EReadAheadDirectio
 		::OutputDebugString(_T("Waiting for request: ")); ::OutputDebugString(pRequest->FileName); ::OutputDebugString(_T("\n"));
 #endif
 		::WaitForSingleObject(hEventToWait, INFINITE);
-		::CloseHandle(hEventToWait);
+		if (hEventToWait != pRequest->EventFinished) ::CloseHandle(hEventToWait);
 		// The load may have completed and posted WM_IMAGE_LOAD_COMPLETED which
 		// already retrieved the image via OnImageLoadCompleted. Re-fetch to be
 		// safe: GetLoadedImageFromWorkThread is a no-op once HandlingThread is NULL.
@@ -122,6 +129,11 @@ CJPEGImage* CJPEGProvider::RequestImage(CFileList* pFileList, EReadAheadDirectio
 			// its own event; runs outside the provider lock to avoid deadlock
 			// with the load-completed handler.
 			pRequest = StartRequestAndWaitUntilReady(strFileName, nFrameIndex, processParams);
+			if (pRequest == NULL) {
+				bOutOfMemory = false;
+				bExceptionError = true;
+				return NULL;
+			}
 		}
 	}
 
@@ -271,6 +283,7 @@ CJPEGProvider::CImageRequest* CJPEGProvider::StartRequestAndWaitUntilReady(LPCTS
 	{
 		Helpers::CAutoCriticalSection lock(m_csRequestList);
 		pRequest = StartNewRequest(sFileName, nFrameIndex, processParams);
+		if (pRequest == NULL) return NULL;
 		hEvent = pRequest->EventFinished;
 	}
 	::WaitForSingleObject(hEvent, INFINITE);
@@ -288,20 +301,15 @@ void CJPEGProvider::StartNewRequestBundle(CFileList* pFileList, EReadAheadDirect
 		bool bSwitchImage = true;
 		int nFrameIndex = (pLastReadyRequest != NULL) ? Helpers::GetFrameIndex(pLastReadyRequest->Image, eDirection == FORWARD, true, bSwitchImage) : 0;
 		LPCTSTR sFileName = bSwitchImage ? pFileList->PeekNextPrev(i + 1, eDirection == FORWARD, eDirection == TOGGLE) : pFileList->Current();
-		bool bAlreadyPending;
-		{
+		if (sFileName != NULL) {
 			Helpers::CAutoCriticalSection lock(m_csRequestList);
-			bAlreadyPending = (FindRequest(sFileName, nFrameIndex) != NULL);
-		}
-		if (sFileName != NULL && !bAlreadyPending) {
+			if (FindRequest(sFileName, nFrameIndex) != NULL) continue;
 			if (GetProcessingFlag(PFLAG_NoProcessingAfterLoad, processParams.ProcFlags)) {
 				// The read ahead threads need this flag to be deleted - we can speculatively process the image with good hit rate
 				CProcessParams paramsCopied = processParams;
 				paramsCopied.ProcFlags = SetProcessingFlag(paramsCopied.ProcFlags, PFLAG_NoProcessingAfterLoad, false);
-				Helpers::CAutoCriticalSection lock(m_csRequestList);
 				StartNewRequest(sFileName, nFrameIndex, paramsCopied);
 			} else {
-				Helpers::CAutoCriticalSection lock(m_csRequestList);
 				StartNewRequest(sFileName, nFrameIndex, processParams);
 			}
 		}
@@ -309,10 +317,12 @@ void CJPEGProvider::StartNewRequestBundle(CFileList* pFileList, EReadAheadDirect
 }
 
 CJPEGProvider::CImageRequest* CJPEGProvider::StartNewRequest(LPCTSTR sFileName, int nFrameIndex, const CProcessParams & processParams) {
+	if (sFileName == NULL || *sFileName == 0) return NULL;
 #ifdef DEBUG
 	::OutputDebugString(_T("Start new request: ")); ::OutputDebugString(sFileName); ::OutputDebugString(_T("\n"));
 #endif
 	CImageRequest* pRequest = new CImageRequest(sFileName, nFrameIndex);
+	if (pRequest->EventFinished == NULL) { delete pRequest; return NULL; }
 	m_requestList.push_back(pRequest);
 	pRequest->HandlingThread = SearchThreadForNewRequest();
 	pRequest->Handle = pRequest->HandlingThread->AsyncLoad(pRequest->FileName, nFrameIndex,
@@ -386,7 +396,7 @@ void CJPEGProvider::RemoveUnusedImagesLocked(bool bRemoveAlsoActiveRequests) {
 		}
 		nTimeStampToRemove = -2;
 		// Make one buffer free for next readahead (except when bRemoveAlsoActiveRequests)
-		int nMaxListSize = bRemoveAlsoActiveRequests ? (unsigned int)m_nNumBuffers : (unsigned int)m_nNumBuffers - 1;
+		int nMaxListSize = bRemoveAlsoActiveRequests ? m_nNumBuffers : max(0, m_nNumBuffers - 1);
 		if (m_requestList.size() > (unsigned int)nMaxListSize) {
 			// remove element with smallest timestamp
 			if (nSmallestTimeStamp < INT_MAX) {

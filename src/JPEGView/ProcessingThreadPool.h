@@ -58,11 +58,10 @@ public:
 	// method is called to process a strip of the image.
 	bool Process(CProcessingRequest* pRequest);
 private:
-	static CProcessingThreadPool* sm_instance;
-
 	CProcessingThread** m_threads;
 	int m_nNumThreads;
 	std::mutex m_processMutex;
 
 	CProcessingThreadPool(void);
+	~CProcessingThreadPool();
 };

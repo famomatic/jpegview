@@ -2,6 +2,7 @@
 #include "DirectoryWatcher.h"
 #include "MessageDef.h"
 #include <process.h>
+#include <vector>
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 // Static helpers
@@ -9,11 +10,9 @@
 
 static BOOL GetLastModificationTime(LPCTSTR fileName, FILETIME & lastModificationTime)
 {
-	HANDLE hFile = ::CreateFile(fileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-	// CreateFile returns INVALID_HANDLE_VALUE (-1) on failure, not NULL.
-	// Checking against NULL leaks the invalid handle and calls
-	// GetFileTime/CloseHandle on a bogus handle.
-	if (hFile != NULL && hFile != INVALID_HANDLE_VALUE) {
+	HANDLE hFile = ::CreateFile(fileName, FILE_READ_ATTRIBUTES,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+	if (hFile != INVALID_HANDLE_VALUE) {
 		BOOL bSuccess;
 		bSuccess = ::GetFileTime(hFile, NULL, NULL, &lastModificationTime);
 		::CloseHandle(hFile);
@@ -36,18 +35,20 @@ CDirectoryWatcher::CDirectoryWatcher(HWND hTargetWindow)
 	m_newDirectoryEvent = ::CreateEvent(0, TRUE, FALSE, NULL);
 	m_bModificationTimeValid = FALSE;
 
-	m_hThread = (HANDLE)_beginthreadex(nullptr, 0, ThreadFunc, this, 0, nullptr);
+	m_hThread = (m_terminateEvent != NULL && m_newDirectoryEvent != NULL)
+		? (HANDLE)_beginthreadex(nullptr, 0, ThreadFunc, this, 0, nullptr) : NULL;
+	if (m_hThread == NULL) m_bTerminate.store(true);
 }
 
 CDirectoryWatcher::~CDirectoryWatcher(void) {
 	Terminate();
 	::DeleteCriticalSection(&m_lock);
-	::CloseHandle(m_terminateEvent);
-	::CloseHandle(m_newDirectoryEvent);
+	if (m_terminateEvent != NULL) ::CloseHandle(m_terminateEvent);
+	if (m_newDirectoryEvent != NULL) ::CloseHandle(m_newDirectoryEvent);
 }
 
 void CDirectoryWatcher::Terminate() { 
-	m_bTerminate = true;
+	m_bTerminate.store(true, std::memory_order_release);
 	if (m_hThread != NULL) {
 		::SetEvent(m_terminateEvent);
 		::WaitForSingleObject(m_hThread, INFINITE);
@@ -57,20 +58,9 @@ void CDirectoryWatcher::Terminate() {
 }
 
 void CDirectoryWatcher::Abort() {
-	try {
-		if (m_hThread != NULL) {
-			m_bTerminate = true;
-			::SetEvent(m_terminateEvent);
-			if (WAIT_TIMEOUT == ::WaitForSingleObject(m_hThread, 100)) {
-				::TerminateThread(m_hThread, 1);
-				::WaitForSingleObject(m_hThread, INFINITE);
-			}
-			::CloseHandle(m_hThread);
-			m_hThread = NULL;
-		}
-	} catch (...) {
-		// do not crash
-	}
+	// The worker only blocks on events owned by this object, so cooperative
+	// termination is deterministic and does not risk killing it while locked.
+	Terminate();
 }
 
 void CDirectoryWatcher::SetCurrentFile(LPCTSTR fileName)
@@ -83,8 +73,15 @@ void CDirectoryWatcher::SetCurrentFile(LPCTSTR fileName)
 
 void CDirectoryWatcher::SetCurrentDirectory(LPCTSTR directoryName)
 {
-	TCHAR fullName[MAX_PATH]{ 0 };
-	GetFullPathName(directoryName, MAX_PATH, (LPTSTR)fullName, NULL);
+	CString fullName;
+	if (directoryName != NULL && *directoryName != 0) {
+		const DWORD required = ::GetFullPathName(directoryName, 0, NULL, NULL);
+		if (required == 0) return;
+		std::vector<TCHAR> buffer(static_cast<size_t>(required) + 1);
+		const DWORD written = ::GetFullPathName(directoryName, static_cast<DWORD>(buffer.size()), buffer.data(), NULL);
+		if (written == 0 || written >= buffer.size()) return;
+		fullName = buffer.data();
+	}
 
 	::EnterCriticalSection(&m_lock);
 
@@ -92,7 +89,7 @@ void CDirectoryWatcher::SetCurrentDirectory(LPCTSTR directoryName)
 
 	::LeaveCriticalSection(&m_lock);
 
-	::SetEvent(m_newDirectoryEvent);
+	if (m_newDirectoryEvent != NULL) ::SetEvent(m_newDirectoryEvent);
 }
 
 
@@ -177,7 +174,8 @@ unsigned __stdcall CDirectoryWatcher::ThreadFunc(void* arg) {
 			case WAIT_OBJECT_0 + 2:
 				// file added or deleted in directory, send message to registered window
 				bSetupNewDirectory = ::FindNextChangeNotification(waitHandles[2]) == FALSE;
-				::PostMessage(thisPtr->m_hTargetWindow, WM_ACTIVE_DIRECTORY_FILELIST_CHANGED, 0, 0);
+				if (::IsWindow(thisPtr->m_hTargetWindow))
+					::PostMessage(thisPtr->m_hTargetWindow, WM_ACTIVE_DIRECTORY_FILELIST_CHANGED, 0, 0);
 				::WaitForSingleObject(thisPtr->m_terminateEvent, 500); // don't flood the window with change notifications
 				break;
 			case WAIT_OBJECT_0 + 3:
@@ -202,12 +200,14 @@ unsigned __stdcall CDirectoryWatcher::ThreadFunc(void* arg) {
 							canReadModificationTime = false;
 						}
 					}
-					sendMessage = canReadModificationTime && ::memcmp(&fileTime, &thisPtr->m_modificationTimeCurrentFile, sizeof(FILETIME)) != 0;
+					sendMessage = canReadModificationTime && ::CompareFileTime(&fileTime, &thisPtr->m_modificationTimeCurrentFile) != 0;
+					if (sendMessage) thisPtr->m_modificationTimeCurrentFile = fileTime;
 				}
 				::LeaveCriticalSection(&thisPtr->m_lock);
 
 				if (sendMessage) {
-					::PostMessage(thisPtr->m_hTargetWindow, WM_DISPLAYED_FILE_CHANGED_ON_DISK, 0, 0);
+					if (::IsWindow(thisPtr->m_hTargetWindow))
+						::PostMessage(thisPtr->m_hTargetWindow, WM_DISPLAYED_FILE_CHANGED_ON_DISK, 0, 0);
 				}
 				break;
 				}

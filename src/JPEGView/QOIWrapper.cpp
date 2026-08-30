@@ -61,9 +61,10 @@ void* QoiReaderWriter::ReadImage(int& width,
 void* QoiReaderWriter::Compress(const void* source,
 	int width,
 	int height,
-	int& len) {
+	int& len,
+	int nchannels) {
 
-	int nchannels = 3;
+	if (source == NULL || width <= 0 || height <= 0 || (nchannels != 3 && nchannels != 4)) return NULL;
 	void* pOutput = NULL;
 
 	qoi_desc desc;
@@ -72,9 +73,10 @@ void* QoiReaderWriter::Compress(const void* source,
 	desc.channels = nchannels;
 	desc.colorspace = QOI_SRGB;
 	int input_stride = width * nchannels;
-	int padded_stride = Helpers::DoPadding(input_stride, 4);
+	if (width > INT_MAX / nchannels || height > INT_MAX / (width * nchannels)) return NULL;
+	int padded_stride = nchannels == 3 ? Helpers::DoPadding(input_stride, 4) : input_stride;
 	int size = input_stride * height;
-	unsigned char* pPixelData = new(std::nothrow) unsigned char[input_stride * height];
+	unsigned char* pPixelData = new(std::nothrow) unsigned char[size];
 	unsigned char* pSourcePixels = (unsigned char*)source;
 	if (pPixelData != NULL) {
 		// Copy from BGR to RGB
@@ -83,6 +85,7 @@ void* QoiReaderWriter::Compress(const void* source,
 			pPixelData[i  ] = pSourcePixels[j+2];
 			pPixelData[i+1] = pSourcePixels[j+1];
 			pPixelData[i+2] = pSourcePixels[j  ];
+			if (nchannels == 4) pPixelData[i+3] = pSourcePixels[j+3];
 		}
 		pOutput = qoi_encode(pPixelData, &desc, &len);
 		delete[] pPixelData;

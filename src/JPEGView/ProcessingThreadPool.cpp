@@ -2,9 +2,8 @@
 #include "ProcessingThreadPool.h"
 #include "SettingsProvider.h"
 #include <mutex>
-
-CProcessingThreadPool* CProcessingThreadPool::sm_instance;
-static std::once_flag g_processingThreadPoolOnce;
+#include <memory>
+#include <vector>
 
 ///////////////////////////////////////////////////////////////////////////////////
 // Supporting classes
@@ -33,7 +32,7 @@ public:
 	~CProcessingThread(void) {}
 
 	// Start a processing request on this thread asynchronously, returns immediately
-	void StartProcess(CWrappedRequest* pRequest);
+	bool StartProcess(CWrappedRequest* pRequest);
 
 	// Processes a request synchronously on the calling thread
 	static void DoProcess(CProcessingRequest* pRequest, int nOffsetY, int nSizeY);
@@ -47,29 +46,40 @@ private:
 ///////////////////////////////////////////////////////////////////////////////////
 
 CProcessingThreadPool& CProcessingThreadPool::This() {
-	// Serialize the one-time creation so two threads entering concurrently
-	// don't both see NULL and leak a duplicate instance.
-	std::call_once(g_processingThreadPoolOnce, []() {
-		sm_instance = new CProcessingThreadPool();
-	});
-	return *sm_instance;
+	static CProcessingThreadPool instance;
+	return instance;
 }
 
 void CProcessingThreadPool::CreateThreadPoolThreads() {
-	if (m_threads != NULL)
-		StopAllThreads();
-	m_nNumThreads = CSettingsProvider::This().NumberOfCoresToUse() - 1;
-	if (m_nNumThreads > 0) {
-		m_threads = new CProcessingThread*[m_nNumThreads];
-		for (int i = 0; i < m_nNumThreads; i++) {
-			m_threads[i] = new CProcessingThread();
+	std::lock_guard<std::mutex> processLock(m_processMutex);
+	const int desiredThreadCount = max(0, CSettingsProvider::This().NumberOfCoresToUse() - 1);
+	std::unique_ptr<CProcessingThread*[]> newThreads;
+	int createdThreads = 0;
+	try {
+		if (desiredThreadCount > 0) {
+			newThreads.reset(new CProcessingThread*[desiredThreadCount]());
+			for (; createdThreads < desiredThreadCount; ++createdThreads)
+				newThreads[createdThreads] = new CProcessingThread();
 		}
-	} else {
-		m_threads = NULL;
+	} catch (...) {
+		for (int i = 0; i < createdThreads; ++i)
+			delete newThreads[i];
+		return; // Keep the existing, known-good pool unchanged.
 	}
+	if (m_threads != NULL) {
+		for (int i = 0; i < m_nNumThreads; i++) { m_threads[i]->Terminate(); delete m_threads[i]; }
+		delete[] m_threads;
+	}
+	m_threads = newThreads.release();
+	m_nNumThreads = desiredThreadCount;
+}
+
+CProcessingThreadPool::~CProcessingThreadPool() {
+	StopAllThreads();
 }
 
 void CProcessingThreadPool::StopAllThreads() {
+	std::lock_guard<std::mutex> processLock(m_processMutex);
 	for (int i = 0; i < m_nNumThreads; i++) {
 		m_threads[i]->Terminate();
 		delete m_threads[i];
@@ -81,6 +91,9 @@ void CProcessingThreadPool::StopAllThreads() {
 
 bool CProcessingThreadPool::Process(CProcessingRequest* pRequest) {
 	std::lock_guard<std::mutex> processLock(m_processMutex);
+	if (pRequest == NULL || pRequest->ClippedTargetSize.cx <= 0 || pRequest->ClippedTargetSize.cy <= 0 ||
+		pRequest->FullTargetSize.cx <= 0 || pRequest->FullTargetSize.cy <= 0 || pRequest->StripPadding <= 0 ||
+		(pRequest->StripPadding & (pRequest->StripPadding - 1)) != 0) return false;
 	int nTargetCX = pRequest->ClippedTargetSize.cx;
 	int nTargetCY = pRequest->ClippedTargetSize.cy;
 	if (m_nNumThreads == 0) {
@@ -108,20 +121,36 @@ bool CProcessingThreadPool::Process(CProcessingRequest* pRequest) {
 			volatile LONG nRequestThreadCounter = nNumThreadsUsed - 1;
 			int nCurrCY = 0;
 			HANDLE eventFinished = ::CreateEvent(0, TRUE, FALSE, NULL);
-			CWrappedRequest** pAllWrappedRequests = new CWrappedRequest*[nNumThreadsUsed-1];
-			for (int i = 0; i < nNumThreadsUsed-1; i++) {
-				pAllWrappedRequests[i] = new CWrappedRequest(pRequest, nCurrCY, nSliceCY, eventFinished);
-				pAllWrappedRequests[i]->EventFinishedCounter = &nRequestThreadCounter;
-				m_threads[i]->StartProcess(pAllWrappedRequests[i]);
+			if (eventFinished == NULL) {
+				CProcessingThread::DoProcess(pRequest, 0, nTargetCY);
+				return pRequest->Success != 0;
+			}
+			std::vector<std::unique_ptr<CWrappedRequest>> pending;
+			std::vector<CWrappedRequest*> accepted;
+			try {
+				pending.reserve(nNumThreadsUsed - 1);
+				accepted.reserve(nNumThreadsUsed - 1);
+				for (int i = 0; i < nNumThreadsUsed - 1; ++i)
+					pending.push_back(std::make_unique<CWrappedRequest>(pRequest, i * nSliceCY, nSliceCY, eventFinished));
+			} catch (...) {
+				::CloseHandle(eventFinished);
+				CProcessingThread::DoProcess(pRequest, 0, nTargetCY);
+				return pRequest->Success != 0;
+			}
+			for (int i = 0; i < nNumThreadsUsed - 1; i++) {
+				pending[i]->EventFinishedCounter = &nRequestThreadCounter;
+				if (m_threads[i]->StartProcess(pending[i].get())) {
+					accepted.push_back(pending[i].release());
+				} else {
+					CProcessingThread::DoProcess(pRequest, i * nSliceCY, nSliceCY);
+					if (::InterlockedDecrement(&nRequestThreadCounter) <= 0) ::SetEvent(eventFinished);
+				}
 				nCurrCY += nSliceCY;
 			}
 			CProcessingThread::DoProcess(pRequest, nCurrCY, nLastCY);
-			::WaitForSingleObject(eventFinished, INFINITE);
+			if (!accepted.empty()) ::WaitForSingleObject(eventFinished, INFINITE);
 			::CloseHandle(eventFinished);
-			for (int i = 0; i < nNumThreadsUsed-1; i++) {
-				pAllWrappedRequests[i]->Deleted = true; // thread pool threads will remove the requests from the queue
-			}
-			delete [] pAllWrappedRequests;
+			for (CWrappedRequest* request : accepted) request->Deleted.store(true, std::memory_order_release);
 		}
 	}
 	return pRequest->Success != 0;
@@ -133,8 +162,8 @@ CProcessingThreadPool::CProcessingThreadPool(void) {
 }
 
 
-void CProcessingThread::StartProcess(CWrappedRequest* pRequest) {
-	ProcessAsync(pRequest);
+bool CProcessingThread::StartProcess(CWrappedRequest* pRequest) {
+	return ProcessAsync(pRequest);
 }
 
 void CProcessingThread::DoProcess(CProcessingRequest* pRequest, int nOffsetY, int nSizeY) {

@@ -104,6 +104,15 @@ protected:
 	// while this outer lock is held.
 	virtual void LockSource() {}
 	virtual void UnlockSource() {}
+	class CSourceLockGuard {
+	public:
+		explicit CSourceLockGuard(CLazySource& source) : m_source(source) { m_source.LockSource(); }
+		~CSourceLockGuard() { m_source.UnlockSource(); }
+		CSourceLockGuard(const CSourceLockGuard&) = delete;
+		CSourceLockGuard& operator=(const CSourceLockGuard&) = delete;
+	private:
+		CLazySource& m_source;
+	};
 
 	std::vector<uint8> m_singlePixelCache;
 	int m_nSourceRevision;

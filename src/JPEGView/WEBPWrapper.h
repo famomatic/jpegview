@@ -26,6 +26,9 @@ public:
 		int quality, // image quality as a percentage (ignored if lossless)
 		bool lossless); // use lossless compression if true
 
+	// Compress packed 4-byte BGRA data, preserving alpha.
+	static void* CompressBGRA(const void* buffer, int width, int height, size_t& len, int quality, bool lossless);
+
 	static void FreeMemory(void* pointer);
 
 private:

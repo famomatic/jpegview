@@ -16,6 +16,13 @@ struct AvifReader::avif_cache {
 
 thread_local AvifReader::avif_cache AvifReader::cache = { 0 };
 
+static int GetAvifThreadCount()
+{
+	SYSTEM_INFO systemInfo = {};
+	GetSystemInfo(&systemInfo);
+	return max(1, min(16, static_cast<int>(systemInfo.dwNumberOfProcessors)));
+}
+
 void* AvifReader::ReadImage(int& width,
 	int& height,
 	int& nchannels,
@@ -33,9 +40,11 @@ void* AvifReader::ReadImage(int& width,
 	nchannels = 4;
 	has_animation = false;
 	exif_chunk = NULL;
+	if (buffer == NULL || sizebytes <= 0 || frame_index < 0)
+		return NULL;
 
 	avifResult result;
-	int nthreads = 256; // sets maximum number of active threads allowed for libavif, default is 1
+	const int nthreads = GetAvifThreadCount();
 
 	// Cache animations
 	if (cache.decoder == NULL) {
@@ -46,6 +55,11 @@ void* AvifReader::ReadImage(int& width,
 		}
 		memcpy(cache.data, buffer, sizebytes);
 		cache.decoder = avifDecoderCreate();
+		if (cache.decoder == NULL) {
+			DeleteCache();
+			outOfMemory = true;
+			return NULL;
+		}
 		cache.decoder->maxThreads = nthreads;
 		cache.decoder->strictFlags = AVIF_STRICT_DISABLED;
 		result = avifDecoderSetIOMemory(cache.decoder, cache.data, sizebytes);
@@ -89,7 +103,12 @@ void* AvifReader::ReadImage(int& width,
 	frame_count = cache.decoder->imageCount;
 	frame_time = (int)(cache.decoder->imageTiming.duration * 1000.0);
 
-	size_t size = (size_t)width * nchannels * height;
+	if (static_cast<size_t>(width) > SIZE_MAX / static_cast<size_t>(height) / static_cast<size_t>(nchannels)) {
+		outOfMemory = true;
+		DeleteCache();
+		return NULL;
+	}
+	size_t size = static_cast<size_t>(width) * height * nchannels;
 	cache.rgb.pixels = new(std::nothrow) unsigned char[size];
 	if (cache.rgb.pixels == NULL) {
 		outOfMemory = true;
@@ -174,13 +193,13 @@ void AvifReader::DeleteCache() {
 
 // Compress 24-bit BGR DIB (rows padded to 4-byte boundary) into AVIF.
 // nQuality: 0-100. Returns malloc'd buffer (caller frees with free()).
-void* AvifReader::Compress(const void* pBGRData, int nWidth, int nHeight, size_t& nSize, int nQuality) {
+void* AvifReader::Compress(const void* pBGRData, int nWidth, int nHeight, size_t& nSize, int nQuality, int nChannels) {
 	nSize = 0;
-	if (pBGRData == NULL || nWidth <= 0 || nHeight <= 0) return NULL;
+	if (pBGRData == NULL || nWidth <= 0 || nHeight <= 0 || (nChannels != 3 && nChannels != 4)) return NULL;
 
 	avifEncoder* encoder = avifEncoderCreate();
 	if (encoder == NULL) return NULL;
-	encoder->maxThreads = 4;
+	encoder->maxThreads = GetAvifThreadCount();
 	encoder->quality = nQuality;
 
 	avifImage* image = avifImageCreate(nWidth, nHeight, 8, AVIF_PIXEL_FORMAT_YUV444);
@@ -189,26 +208,28 @@ void* AvifReader::Compress(const void* pBGRData, int nWidth, int nHeight, size_t
 	image->transferCharacteristics = AVIF_TRANSFER_CHARACTERISTICS_SRGB;
 	image->matrixCoefficients = AVIF_MATRIX_COEFFICIENTS_BT601;
 
-	// Convert BGR padded DIB to packed RGB for libavif.
-	int nRowPadded = (nWidth * 3 + 3) & ~3;
-	std::vector<uint8_t> rgbBuf(nWidth * nHeight * 3);
+	// Convert BGR(A) to packed RGB(A) for libavif.
+	const size_t nRowPadded = nChannels == 3 ? (static_cast<size_t>(nWidth) * 3 + 3) & ~static_cast<size_t>(3) : static_cast<size_t>(nWidth) * 4;
+	if (static_cast<size_t>(nWidth) > SIZE_MAX / static_cast<size_t>(nHeight) / static_cast<size_t>(nChannels)) { avifImageDestroy(image); avifEncoderDestroy(encoder); return NULL; }
+	std::vector<uint8_t> rgbBuf(static_cast<size_t>(nWidth) * nHeight * nChannels);
 	for (int y = 0; y < nHeight; y++) {
 		const uint8_t* src = (const uint8_t*)pBGRData + y * nRowPadded;
-		uint8_t* dst = rgbBuf.data() + y * nWidth * 3;
+		uint8_t* dst = rgbBuf.data() + static_cast<size_t>(y) * nWidth * nChannels;
 		for (int x = 0; x < nWidth; x++) {
-			dst[x * 3 + 0] = src[x * 3 + 2]; // R
-			dst[x * 3 + 1] = src[x * 3 + 1]; // G
-			dst[x * 3 + 2] = src[x * 3 + 0]; // B
+			dst[x * nChannels + 0] = src[x * nChannels + 2];
+			dst[x * nChannels + 1] = src[x * nChannels + 1];
+			dst[x * nChannels + 2] = src[x * nChannels + 0];
+			if (nChannels == 4) dst[x * 4 + 3] = src[x * 4 + 3];
 		}
 	}
 
 	avifRGBImage rgb;
 	memset(&rgb, 0, sizeof(rgb));
 	avifRGBImageSetDefaults(&rgb, image);
-	rgb.format = AVIF_RGB_FORMAT_RGB;
+	rgb.format = nChannels == 4 ? AVIF_RGB_FORMAT_RGBA : AVIF_RGB_FORMAT_RGB;
 	rgb.depth = 8;
 	rgb.pixels = rgbBuf.data();
-	rgb.rowBytes = nWidth * 3;
+	rgb.rowBytes = nWidth * nChannels;
 
 	void* pResult = NULL;
 	if (avifImageRGBToYUV(image, &rgb) == AVIF_RESULT_OK) {

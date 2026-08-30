@@ -111,4 +111,21 @@ set_property(TARGET CpuImageProcTest PROPERTY MSVC_RUNTIME_LIBRARY
     target_compile_options(CpuImageProcTest PRIVATE
         /utf-8 /Zc:wchar_t /Zc:__cplusplus /permissive- /Zc:preprocessor /EHsc)
     target_link_options(CpuImageProcTest PRIVATE /SUBSYSTEM:CONSOLE)
-    add_test(NAME CpuImageProcTest COMMAND CpuImageProcTest)
+add_test(NAME CpuImageProcTest COMMAND CpuImageProcTest)
+
+add_gpu_test(DdsReaderTest SOURCES DdsReaderTest.cpp
+    "${_gpu_src_dir}/DDSWrapper.cpp" REGISTER_TEST)
+target_include_directories(DdsReaderTest PRIVATE "${WTL_INCLUDE_DIR}")
+target_compile_definitions(DdsReaderTest PRIVATE
+    WIN32 _WINDOWS STRICT UNICODE _UNICODE _CRT_SECURE_NO_DEPRECATE)
+
+add_gpu_test(WorkThreadTest SOURCES WorkThreadTest.cpp
+    "${_gpu_src_dir}/WorkThread.cpp" REGISTER_TEST)
+target_include_directories(WorkThreadTest PRIVATE "${WTL_INCLUDE_DIR}")
+target_compile_definitions(WorkThreadTest PRIVATE
+    WIN32 _WINDOWS STRICT UNICODE _UNICODE _CRT_SECURE_NO_DEPRECATE)
+
+add_gpu_test(XmpRatingTest SOURCES XmpRatingTest.cpp REGISTER_TEST)
+target_include_directories(XmpRatingTest PRIVATE "${WTL_INCLUDE_DIR}")
+target_compile_definitions(XmpRatingTest PRIVATE
+    WIN32 _WINDOWS STRICT UNICODE _UNICODE _CRT_SECURE_NO_DEPRECATE)

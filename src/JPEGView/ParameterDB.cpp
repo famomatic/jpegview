@@ -67,13 +67,19 @@ static void HandleErrorAndCloseHandle(EFileError eError, LPCTSTR sParamDBName, H
 			MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR) &lpMsgBuf, 0, NULL);
 		sError += _T("\n");
 		sError += CNLS::GetString(_T("Reason:")); sError += _T(" ");
-		sError += lpMsgBuf;
-		LocalFree(lpMsgBuf);
+		if (lpMsgBuf != NULL) {
+			sError += lpMsgBuf;
+			LocalFree(lpMsgBuf);
+		} else {
+			CString errorCode;
+			errorCode.Format(_T("Windows error %lu"), lastError);
+			sError += errorCode;
+		}
 	}
 
 	::MessageBox(NULL, sError, CNLS::GetString(_T("Parameter DB error")), MB_OK | MB_ICONSTOP);
 
-	if (hFile != 0) {
+	if (hFile != NULL && hFile != INVALID_HANDLE_VALUE) {
 		::CloseHandle(hFile);
 	}
 }
@@ -326,13 +332,9 @@ bool CParameterDBEntry::HasZoomOffsetStored() const {
 // CParameterDB
 /////////////////////////////////////////////////////////////////////////////////////////////
 
-CParameterDB* CParameterDB::sm_instance = NULL;
-
 CParameterDB& CParameterDB::This() {
-	if (sm_instance == NULL) {
-		sm_instance = new CParameterDB();
-	}
-	return *sm_instance;
+	static CParameterDB instance;
+	return instance;
 }
 
 CString CParameterDB::GetParamDBName() {
@@ -492,7 +494,12 @@ CParameterDB::CParameterDB(void)
 }
 
 CParameterDB::~CParameterDB(void) {
-	// not implemented, never deleted (singleton)
+	for (DBBlock* block : m_blockList) {
+		delete[] block->Block;
+		delete block;
+	}
+	m_blockList.clear();
+	::DeleteCriticalSection(&m_csDBLock);
 }
 
 CParameterDBEntry* CParameterDB::FindEntryInternal(__int64 nHash, int& nIndex) {
@@ -580,6 +587,11 @@ CParameterDB::DBBlock* CParameterDB::LoadFromFile(const CString& sParamDBName, b
 		HandleErrorAndCloseHandle(errorTooLarge, sParamDBName, hFile);
 		return NULL;
 	}
+	if (nFileSize < static_cast<__int64>(sizeof(ParameterDBHeader)) ||
+		(nFileSize - sizeof(ParameterDBHeader)) % sizeof(CParameterDBEntry) != 0) {
+		HandleErrorAndCloseHandle(errorHeaderInvalid, sParamDBName, hFile);
+		return NULL;
+	}
 	int nBlocks = (uint32)(nFileSize - sizeof(ParameterDBHeader))/sizeof(CParameterDBEntry);
 
 	// if not, read whole file into one block
@@ -587,8 +599,8 @@ CParameterDB::DBBlock* CParameterDB::LoadFromFile(const CString& sParamDBName, b
 	pBlock->Block = new CParameterDBEntry[nBlocks];
 	pBlock->BlockLen = nBlocks;
 	DWORD numRead;
-	::ReadFile(hFile, pBlock->Block, sizeof(CParameterDBEntry)*nBlocks, &numRead, NULL);
-	if (numRead == 0) {
+	const DWORD bytesExpected = sizeof(CParameterDBEntry) * nBlocks;
+	if (!::ReadFile(hFile, pBlock->Block, bytesExpected, &numRead, NULL) || numRead != bytesExpected) {
 		HandleErrorAndCloseHandle(errorReadFailed, sParamDBName, hFile);
 		delete[] pBlock->Block;
 		delete pBlock;
@@ -666,6 +678,10 @@ bool CParameterDB::SaveToFile(int nIndex, const CParameterDBEntry & dbEntry) {
 				return false;
 			}
 		}
+		if (!::SetEndOfFile(hFile)) {
+			HandleErrorAndCloseHandle(errorWriteFailed, sParamDBName, hFile);
+			return false;
+		}
 	} else {
 		// Write a single entry
 		DWORD numWritten;
@@ -690,8 +706,8 @@ bool CParameterDB::ConvertVersion1To2(HANDLE hFile, const CString& sFileName) {
 	DWORD numRead;
 	uint8* pSource = new uint8[(int)nFileSize];
 	::SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
-	::ReadFile(hFile, pSource, (DWORD)nFileSize, &numRead, NULL);
-	if (numRead == 0) {
+	if (nFileSize < 32 || nFileSize % 32 != 0 ||
+		!::ReadFile(hFile, pSource, (DWORD)nFileSize, &numRead, NULL) || numRead != nFileSize) {
 		HandleErrorAndCloseHandle(errorReadFailed, sFileName, hFile);
 		delete[] pSource;
 		return false;
@@ -714,23 +730,29 @@ bool CParameterDB::ConvertVersion1To2(HANDLE hFile, const CString& sFileName) {
 
 	// rename old file and save new
 	::CloseHandle(hFile);
-	if (!::MoveFile(sFileName, sFileName + _T(".v1"))) {
+	const CString backupName = sFileName + _T(".v1");
+	if (!::MoveFileEx(sFileName, backupName, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
 		delete[] pTarget;
 		HandleErrorAndCloseHandle(errorRenameFailed, sFileName, 0);
 		return false;
 	}
 
-	HANDLE hFileWrite = ::CreateFile(sFileName, GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (hFile == INVALID_HANDLE_VALUE) {
+	HANDLE hFileWrite = ::CreateFile(sFileName, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFileWrite == INVALID_HANDLE_VALUE) {
 		delete[] pTarget;
+		::MoveFileEx(backupName, sFileName, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
 		HandleErrorAndCloseHandle(errorOpenFailed, sFileName, 0);
 		return false;
 	}
 	DWORD numWritten;
-	::WriteFile(hFileWrite, pTarget, nOldEntries*sizeof(CParameterDBEntry), &numWritten, NULL);
+	const DWORD targetBytes = nOldEntries * sizeof(CParameterDBEntry);
+	const BOOL writeOk = ::WriteFile(hFileWrite, pTarget, targetBytes, &numWritten, NULL);
 	delete[] pTarget;
-	if (numWritten != nOldEntries*sizeof(CParameterDBEntry)) {
-		HandleErrorAndCloseHandle(errorWriteFailed, sFileName, hFileWrite);
+	if (!writeOk || numWritten != targetBytes || !::FlushFileBuffers(hFileWrite)) {
+		::CloseHandle(hFileWrite);
+		::DeleteFile(sFileName);
+		::MoveFileEx(backupName, sFileName, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+		HandleErrorAndCloseHandle(errorWriteFailed, sFileName, 0);
 		return false;
 	}
 	::CloseHandle(hFileWrite);

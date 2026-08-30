@@ -1,22 +1,24 @@
 #include "StdAfx.h"
 #include "JPEGLosslessTransform.h"
 #include "Helpers.h"
+#include "MaxImageDef.h"
 #include "turbojpeg.h"
+#include <memory>
 
-CJPEGLosslessTransform::EResult _DoTransformation(LPCTSTR sInputFile, LPCTSTR sOutputFile, tjtransform &transform);
-unsigned char* _ReadFile(LPCTSTR sFileName, unsigned int & nLengthBytes);
-bool _WriteFile(LPCTSTR sFileName, unsigned char* pBuffer, unsigned int nLengthBytes);
-int _TransformationEnumToOpCode(CJPEGLosslessTransform::ETransformation transformation);
+static CJPEGLosslessTransform::EResult DoTransformation(LPCTSTR sInputFile, LPCTSTR sOutputFile, tjtransform& transform);
+static std::unique_ptr<unsigned char[]> ReadJPEGFile(LPCTSTR sFileName, size_t& nLengthBytes);
+static bool WriteFileAtomically(LPCTSTR sFileName, const unsigned char* pBuffer, size_t nLengthBytes);
+static int TransformationEnumToOpCode(CJPEGLosslessTransform::ETransformation transformation);
 
 // Performs a lossless JPEG transformation, transforming the input file and writing the result to the output file.
 // Input and output file can be identical, then the input file is overwritten by the resulting output file.
 CJPEGLosslessTransform::EResult CJPEGLosslessTransform::PerformTransformation(LPCTSTR sInputFile, LPCTSTR sOutputFile, 
 	CJPEGLosslessTransform::ETransformation transformation, bool bAllowTrim) {
 	tjtransform transform{ 0 };
-	transform.op = _TransformationEnumToOpCode(transformation);
+	transform.op = TransformationEnumToOpCode(transformation);
 	transform.options = bAllowTrim ? TJXOPT_TRIM : TJXOPT_PERFECT;
 
-	return _DoTransformation(sInputFile, sOutputFile, transform);
+	return DoTransformation(sInputFile, sOutputFile, transform);
 }
 
 // Performs a lossless JPEG crop, using the input file and writing the result to the output file.
@@ -30,22 +32,29 @@ CJPEGLosslessTransform::EResult CJPEGLosslessTransform::PerformCrop(LPCTSTR sInp
 	transform.r.w = cropRect.Width();
 	transform.r.h = cropRect.Height();
 
-	return _DoTransformation(sInputFile, sOutputFile, transform);
+	return DoTransformation(sInputFile, sOutputFile, transform);
 }
 
+CJPEGLosslessTransform::EResult CJPEGLosslessTransform::Optimize(LPCTSTR sInputFile, LPCTSTR sOutputFile) {
+	tjtransform transform{ 0 };
+	transform.op = TJXOP_NONE;
+	transform.options = TJXOPT_OPTIMIZE | TJXOPT_PERFECT;
+	return DoTransformation(sInputFile, sOutputFile, transform);
+}
 
-static CJPEGLosslessTransform::EResult _DoTransformation(LPCTSTR sInputFile, LPCTSTR sOutputFile, tjtransform &transform) {
+static CJPEGLosslessTransform::EResult DoTransformation(LPCTSTR sInputFile, LPCTSTR sOutputFile, tjtransform& transform) {
 	CJPEGLosslessTransform::EResult eResult = CJPEGLosslessTransform::Success;
 
 	tjhandle hTransform = tj3Init(TJINIT_TRANSFORM);
+	if (hTransform == NULL) return CJPEGLosslessTransform::TransformationFailed;
 
-	unsigned int nNumBytesInput;
-	unsigned char* pInputJPEGBytes = _ReadFile(sInputFile, nNumBytesInput);
-	if (pInputJPEGBytes != NULL) {
+	size_t nNumBytesInput = 0;
+	auto pInputJPEGBytes = ReadJPEGFile(sInputFile, nNumBytesInput);
+	if (pInputJPEGBytes != nullptr) {
 		unsigned char* pOutputJPEGBytes = NULL;
 		size_t nNumBytesOutput = 0;
-		if (0 == tj3Transform(hTransform, pInputJPEGBytes, nNumBytesInput, 1, &pOutputJPEGBytes, &nNumBytesOutput, &transform) && pOutputJPEGBytes != NULL) {
-			if (!_WriteFile(sOutputFile, pOutputJPEGBytes, nNumBytesOutput)) {
+		if (0 == tj3Transform(hTransform, pInputJPEGBytes.get(), nNumBytesInput, 1, &pOutputJPEGBytes, &nNumBytesOutput, &transform) && pOutputJPEGBytes != NULL) {
+			if (!WriteFileAtomically(sOutputFile, pOutputJPEGBytes, nNumBytesOutput)) {
 				eResult = CJPEGLosslessTransform::WriteFileFailed;
 			}
 		} else {
@@ -58,88 +67,91 @@ static CJPEGLosslessTransform::EResult _DoTransformation(LPCTSTR sInputFile, LPC
 		eResult = CJPEGLosslessTransform::ReadFileFailed;
 	}
 
-	delete[] pInputJPEGBytes;
-
 	tj3Destroy(hTransform);
 
 	return eResult;
 }
 
-static unsigned char* _ReadFile(LPCTSTR sFileName, unsigned int & nLengthBytes) {
-	const unsigned int MAX_JPEG_FILE_SIZE = 1024*1024*50; // 50 MB
-
+static std::unique_ptr<unsigned char[]> ReadJPEGFile(LPCTSTR sFileName, size_t& nLengthBytes) {
 	nLengthBytes = 0;
 	HANDLE hFile = ::CreateFile(sFileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
 	if (hFile == INVALID_HANDLE_VALUE) {
-		return NULL;
+		return nullptr;
 	}
 
-	long long nFileSize = Helpers::GetFileSize(hFile);
-	if (nFileSize > MAX_JPEG_FILE_SIZE) {
+	const long long nFileSize = Helpers::GetFileSize(hFile);
+	if (nFileSize <= 0 || nFileSize > MAX_JPEG_FILE_SIZE) {
 		::CloseHandle(hFile);
-		return NULL;
+		return nullptr;
 	}
 
-	unsigned char *pBuffer = new(std::nothrow) unsigned char[nFileSize];
-	if (pBuffer == NULL) {
+	auto pBuffer = std::unique_ptr<unsigned char[]>(new(std::nothrow) unsigned char[static_cast<size_t>(nFileSize)]);
+	if (pBuffer == nullptr) {
 		::CloseHandle(hFile);
-		return NULL;
+		return nullptr;
 	}
 
-	unsigned int nNumBytesRead;
-	if (::ReadFile(hFile, pBuffer, nFileSize, (LPDWORD) &nNumBytesRead, NULL) && nNumBytesRead == nFileSize) {
-		::CloseHandle(hFile);
-		nLengthBytes = nFileSize;
-		return pBuffer;
+	size_t nTotalRead = 0;
+	while (nTotalRead < static_cast<size_t>(nFileSize)) {
+		const DWORD nChunk = static_cast<DWORD>(min(static_cast<size_t>(MAXDWORD), static_cast<size_t>(nFileSize) - nTotalRead));
+		DWORD nRead = 0;
+		if (!::ReadFile(hFile, pBuffer.get() + nTotalRead, nChunk, &nRead, NULL) || nRead == 0) break;
+		nTotalRead += nRead;
 	}
-	delete[] pBuffer;
 	::CloseHandle(hFile);
-	return NULL;
+	if (nTotalRead != static_cast<size_t>(nFileSize)) return nullptr;
+	nLengthBytes = nTotalRead;
+	return pBuffer;
 }
 
-static bool _WriteFile(LPCTSTR sFileName, unsigned char* pBuffer, unsigned int nLengthBytes) {
-	LPCTSTR sTempEnding = _T("");
-	FILETIME lastWriteTime;
-	bool bRestoreWriteTime = false;
-	HANDLE hFile = ::CreateFile(sFileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-	if (hFile != INVALID_HANDLE_VALUE) {
-		bRestoreWriteTime = ::GetFileTime(hFile, NULL, NULL, &lastWriteTime);
-		::CloseHandle(hFile);
-		sTempEnding = _T(".tmp");
+static bool WriteFileAtomically(LPCTSTR sFileName, const unsigned char* pBuffer, size_t nLengthBytes) {
+	static volatile LONG s_tempSequence = 0;
+	CString sTempName;
+	HANDLE hFile = INVALID_HANDLE_VALUE;
+	for (int attempt = 0; attempt < 100 && hFile == INVALID_HANDLE_VALUE; ++attempt) {
+		const LONG sequence = ::InterlockedIncrement(&s_tempSequence);
+		sTempName.Format(_T("%s.jvtmp.%lu.%ld"), sFileName, ::GetCurrentProcessId(), sequence);
+		hFile = ::CreateFile(sTempName, GENERIC_WRITE, 0, NULL, CREATE_NEW,
+			FILE_ATTRIBUTE_TEMPORARY, NULL);
+	}
+	if (hFile == INVALID_HANDLE_VALUE) return false;
+
+	FILETIME creationTime{}, accessTime{}, writeTime{};
+	DWORD originalAttributes = INVALID_FILE_ATTRIBUTES;
+	HANDLE hOriginal = ::CreateFile(sFileName, FILE_READ_ATTRIBUTES,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+	const bool targetExists = hOriginal != INVALID_HANDLE_VALUE;
+	if (targetExists) {
+		::GetFileTime(hOriginal, &creationTime, &accessTime, &writeTime);
+		originalAttributes = ::GetFileAttributes(sFileName);
+		::CloseHandle(hOriginal);
 	}
 
-	// For security reasons, we never write to an existing file. So generate a tmp file if the file already exists.
-	// If all writing succeeds, the existing file is finally replaced by the temporary one.
-	CString sNewFileName = CString(sFileName) + sTempEnding;
-	hFile = ::CreateFile(sNewFileName, GENERIC_WRITE, FILE_SHARE_WRITE, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (hFile == INVALID_HANDLE_VALUE) {
-		return false;
+	bool bOk = true;
+	size_t nWrittenTotal = 0;
+	while (bOk && nWrittenTotal < nLengthBytes) {
+		const DWORD nChunk = static_cast<DWORD>(min(static_cast<size_t>(MAXDWORD), nLengthBytes - nWrittenTotal));
+		DWORD nWritten = 0;
+		bOk = ::WriteFile(hFile, pBuffer + nWrittenTotal, nChunk, &nWritten, NULL) != FALSE && nWritten > 0;
+		nWrittenTotal += nWritten;
 	}
-
-	unsigned int nNumBytesWritten;
-	bool bOk = ::WriteFile(hFile, pBuffer, nLengthBytes, (LPDWORD) &nNumBytesWritten, NULL) && nNumBytesWritten == nLengthBytes;
-	
-	if (bOk && bRestoreWriteTime) {
-		::SetFileTime(hFile, NULL, NULL, &lastWriteTime);
-	}
-
+	bOk = bOk && nWrittenTotal == nLengthBytes && ::FlushFileBuffers(hFile) != FALSE;
+	if (bOk && targetExists) ::SetFileTime(hFile, &creationTime, &accessTime, &writeTime);
 	::CloseHandle(hFile);
 
-	// If the file was written to a temporary file and it succeeded, replace now the existing file with the temporary
-	if (bOk && sTempEnding[0] != 0) {
-		bOk = ::DeleteFile(sFileName);
-		if (bOk) {
-			bOk = ::MoveFile(sNewFileName, sFileName);
+	if (bOk) {
+		if (targetExists) {
+			bOk = ::ReplaceFile(sFileName, sTempName, NULL, REPLACEFILE_WRITE_THROUGH, NULL, NULL) != FALSE;
+		} else {
+			bOk = ::MoveFileEx(sTempName, sFileName, MOVEFILE_WRITE_THROUGH) != FALSE;
 		}
-	} else if (!bOk) {
-		// new file is only partly written or not at all, make sure it is deleted
-		::DeleteFile(sNewFileName);
 	}
-
+	if (!bOk) ::DeleteFile(sTempName);
+	if (bOk && originalAttributes != INVALID_FILE_ATTRIBUTES) ::SetFileAttributes(sFileName, originalAttributes);
 	return bOk;
 }
 
-static int _TransformationEnumToOpCode(CJPEGLosslessTransform::ETransformation transformation) {
+static int TransformationEnumToOpCode(CJPEGLosslessTransform::ETransformation transformation) {
 	switch (transformation) {
 		case CJPEGLosslessTransform::Rotate90:
 			return TJXOP_ROT90;

@@ -303,6 +303,7 @@ CMainDlg::CMainDlg(bool bForceFullScreen) {
 }
 
 CMainDlg::~CMainDlg() {
+	CUpdateCheck::Shutdown(m_hWnd);
 	delete m_pDirectoryWatcher;
 	delete m_pFileList;
 	if (m_pJPEGProvider != NULL) delete m_pJPEGProvider;
@@ -755,7 +756,7 @@ void CMainDlg::DisplayFileName(const CRect& imageProcessingArea, CDC& dc, double
 
 LRESULT CMainDlg::OnSize(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, BOOL& /*bHandled*/) {
 	if (CHDRDisplay::IsActive()) {
-		CHDRDisplay::Hide(); // overlay swap chain is sized to the old client area
+		CHDRDisplay::ResizeToParent();
 	}
 	bool bKeepFitToScreen = !m_bResizeForNewImage && fabs(m_dZoom - GetZoomFactorForFitToScreen(false, false)) < 0.01;
 	this->GetClientRect(&m_clientRect);
@@ -2431,7 +2432,7 @@ LONG CMainDlg::SetCurrentWindowStyle() {
 
 
 void CMainDlg::ExploreFile() {
-	ITEMIDLIST* pidl = ILCreateFromPath(CurrentFileName(false));
+	PIDLIST_ABSOLUTE pidl = ILCreateFromPath(CurrentFileName(false));
 	if (pidl) {
 		// https://docs.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shopenfolderandselectitems
 		SHOpenFolderAndSelectItems(pidl, 0, 0, 0);
@@ -4036,7 +4037,8 @@ void CMainDlg::OptimizeLosslessJPEG() {
 
 	// Only meaningful for JPEG files.
 	CString sFileStr(sFile);
-	CString sExt = (sFileStr.GetLength() >= 4) ? CString(sFileStr.Mid(sFileStr.GetLength() - 4)) : CString(_T(""));
+	const int nDot = sFileStr.ReverseFind(_T('.'));
+	CString sExt = nDot >= 0 ? sFileStr.Mid(nDot) : CString();
 	if (sExt.CompareNoCase(_T(".jpg")) != 0 && sExt.CompareNoCase(_T(".jpeg")) != 0) {
 		this->MessageBox(CNLS::GetString(_T("Lossless optimization is only available for JPEG files.")),
 			CNLS::GetString(_T("Optimize JPEG")), MB_OK | MB_ICONINFORMATION);
@@ -4048,60 +4050,8 @@ void CMainDlg::OptimizeLosslessJPEG() {
 		return;
 	}
 
-	// The TJPEG wrapper only exposes 90/180/270/mirror transforms; a lossless
-	// optimize is simulated by rotate-180 twice (identity re-encode), which
-	// triggers Huffman optimization on the re-encoded stream.
-	//
-	// To avoid corrupting the original on a mid-way failure, both passes write
-	// to temp files and the original is only replaced after both succeed. A
-	// backup of the original is kept until the final move completes so it can be
-	// restored if the last rename fails.
-	CString sTemp1 = CString(sFile) + _T(".jvopt1.tmp");
-	CString sTemp2 = CString(sFile) + _T(".jvopt2.tmp");
-	CString sBackup = CString(sFile) + _T(".jvbak.tmp");
-
-	// Make sure no stale temp files from a previous aborted run interfere.
-	::DeleteFile(sTemp1);
-	::DeleteFile(sTemp2);
-	::DeleteFile(sBackup);
-
-	CJPEGLosslessTransform::EResult r =
-		CJPEGLosslessTransform::PerformTransformation(sFile, sTemp1, CJPEGLosslessTransform::Rotate180, true);
+	const CJPEGLosslessTransform::EResult r = CJPEGLosslessTransform::Optimize(sFile, sFile);
 	if (r != CJPEGLosslessTransform::Success) {
-		::DeleteFile(sTemp1);
-		this->MessageBox(CNLS::GetString(_T("Optimization failed.")),
-			CNLS::GetString(_T("Optimize JPEG")), MB_OK | MB_ICONERROR);
-		return;
-	}
-	r = CJPEGLosslessTransform::PerformTransformation(sTemp1, sTemp2, CJPEGLosslessTransform::Rotate180, true);
-	::DeleteFile(sTemp1);
-	if (r != CJPEGLosslessTransform::Success) {
-		::DeleteFile(sTemp2);
-		this->MessageBox(CNLS::GetString(_T("Optimization failed.")),
-			CNLS::GetString(_T("Optimize JPEG")), MB_OK | MB_ICONERROR);
-		return;
-	}
-
-	// Atomically replace the original: back it up, move the optimized file in,
-	// then drop the backup. If the final move fails, restore the backup.
-	::SetFileAttributes(sFile, FILE_ATTRIBUTE_NORMAL);
-	BOOL bBackupOk = ::MoveFileEx(sFile, sBackup, MOVEFILE_REPLACE_EXISTING);
-	BOOL bFinalOk = FALSE;
-	if (bBackupOk) {
-		bFinalOk = ::MoveFileEx(sTemp2, sFile, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-		if (!bFinalOk) {
-			// Restore the original from the backup.
-			::MoveFileEx(sBackup, sFile, MOVEFILE_REPLACE_EXISTING);
-		}
-	} else {
-		// Could not back up (e.g. file locked): fall back to a direct replace,
-		// accepting that a failure here leaves no backup.
-		bFinalOk = ::MoveFileEx(sTemp2, sFile, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-	}
-	::DeleteFile(sBackup);
-	::DeleteFile(sTemp2);
-
-	if (!bFinalOk) {
 		this->MessageBox(CNLS::GetString(_T("Optimization failed.")),
 			CNLS::GetString(_T("Optimize JPEG")), MB_OK | MB_ICONERROR);
 		return;

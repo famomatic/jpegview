@@ -100,9 +100,9 @@ void * HeifReader::ReadImage(int &width,
 
 // Compress 24-bit BGR DIB (rows padded to 4-byte boundary) into HEIF/HEIC.
 // nQuality: 0-100. Returns malloc'd buffer (caller frees with free()).
-void* HeifReader::Compress(const void* pBGRData, int nWidth, int nHeight, size_t& nSize, int nQuality) {
+void* HeifReader::Compress(const void* pBGRData, int nWidth, int nHeight, size_t& nSize, int nQuality, int nChannels) {
 	nSize = 0;
-	if (pBGRData == NULL || nWidth <= 0 || nHeight <= 0) return NULL;
+	if (pBGRData == NULL || nWidth <= 0 || nHeight <= 0 || (nChannels != 3 && nChannels != 4)) return NULL;
 
 	// Collect encoded bytes into a growable buffer via a custom Writer.
 	struct MemWriter : public heif::Context::Writer {
@@ -122,20 +122,22 @@ void* HeifReader::Compress(const void* pBGRData, int nWidth, int nHeight, size_t
 		encoder.set_lossy_quality(nQuality);
 
 		heif::Image image;
-		image.create(nWidth, nHeight, heif_colorspace_RGB, heif_chroma_interleaved_RGB);
+		const heif_chroma chroma = nChannels == 4 ? heif_chroma_interleaved_RGBA : heif_chroma_interleaved_RGB;
+		image.create(nWidth, nHeight, heif_colorspace_RGB, chroma);
 		image.add_plane(heif_channel_interleaved, nWidth, nHeight, 8);
 		int stride;
 		uint8_t* dst = image.get_plane(heif_channel_interleaved, &stride);
 
 		// Convert BGR padded DIB to packed RGB in the heif image plane.
-		int nRowPadded = (nWidth * 3 + 3) & ~3;
+		const size_t nRowPadded = nChannels == 3 ? (static_cast<size_t>(nWidth) * 3 + 3) & ~static_cast<size_t>(3) : static_cast<size_t>(nWidth) * 4;
 		for (int y = 0; y < nHeight; y++) {
 			const uint8_t* src = (const uint8_t*)pBGRData + y * nRowPadded;
 			uint8_t* d = dst + y * stride;
 			for (int x = 0; x < nWidth; x++) {
-				d[x * 3 + 0] = src[x * 3 + 2]; // R
-				d[x * 3 + 1] = src[x * 3 + 1]; // G
-				d[x * 3 + 2] = src[x * 3 + 0]; // B
+				d[x * nChannels + 0] = src[x * nChannels + 2];
+				d[x * nChannels + 1] = src[x * nChannels + 1];
+				d[x * nChannels + 2] = src[x * nChannels + 0];
+				if (nChannels == 4) d[x * 4 + 3] = src[x * 4 + 3];
 			}
 		}
 

@@ -119,14 +119,11 @@ public:
 	void ReleaseFilter(const CResizeFilter& filter);
 
 private:
-	static CResizeFilterCache* sm_instance;
-
 	CRITICAL_SECTION m_csList; // access to list must be thread safe
 	std::list<CResizeFilter*> m_filterList;
 
 	CResizeFilterCache();
 	~CResizeFilterCache();
-	static void Delete() { delete sm_instance; }
 };
 
 // Helper class for accessing filters from filter cache, automatically releasing the filter when object goes out of scope

@@ -31,6 +31,17 @@
 #include "JXRWrapper.h"
 #include "TIFFWrapper.h"
 #include "TiffLazySource.h"
+
+namespace {
+class CThreadErrorModeGuard {
+public:
+	CThreadErrorModeGuard() : m_previous(0), m_changed(::SetThreadErrorMode(SEM_FAILCRITICALERRORS, &m_previous) != FALSE) { }
+	~CThreadErrorModeGuard() { if (m_changed) ::SetThreadErrorMode(m_previous, NULL); }
+private:
+	DWORD m_previous;
+	bool m_changed;
+};
+}
 #include "FullBufferSource.h"
 
 
@@ -49,7 +60,7 @@ static EImageFormat GetImageFormat(LPCTSTR sFileName) {
 	if ((fptr = _tfopen(sFileName, _T("rb"))) == NULL) {
 		return IF_Unknown;
 	}
-	unsigned char header[16];
+	unsigned char header[16]{};
 	int nSize = (int)fread((void*)header, 1, 16, fptr);
 	fclose(fptr);
 	if (nSize < 2) {
@@ -60,19 +71,19 @@ static EImageFormat GetImageFormat(LPCTSTR sFileName) {
 		return IF_WindowsBMP;
 	} else if (header[0] == 0xff && header[1] == 0xd8) {
 		return IF_JPEG;
-	} else if (header[0] == 0x89 && header[1] == 'P' && header[2] == 'N' && header[3] == 'G' &&
+	} else if (nSize >= 8 && header[0] == 0x89 && header[1] == 'P' && header[2] == 'N' && header[3] == 'G' &&
 		header[4] == 0x0d && header[5] == 0x0a && header[6] == 0x1a && header[7] == 0x0a) {
 		return IF_PNG;
-	} else if (header[0] == 'G' && header[1] == 'I' && header[2] == 'F' && header[3] == '8' &&
+	} else if (nSize >= 6 && header[0] == 'G' && header[1] == 'I' && header[2] == 'F' && header[3] == '8' &&
 		(header[4] == '7' || header[4] == '9') && header[5] == 'a') {
 		return IF_GIF;
-	} else if (header[0] == 'R' && header[1] == 'I' && header[2] == 'F' && header[3] == 'F' &&
+	} else if (nSize >= 12 && header[0] == 'R' && header[1] == 'I' && header[2] == 'F' && header[3] == 'F' &&
 		header[8] == 'W' && header[9] == 'E' && header[10] == 'B' && header[11] == 'P') {
 		return IF_WEBP;
 	} else if ((header[0] == 0xff && header[1] == 0x0a) ||
-		memcmp(header, "\x00\x00\x00\x0cJXL\x20\x0d\x0a\x87\x0a", 12) == 0) {
+		(nSize >= 12 && memcmp(header, "\x00\x00\x00\x0cJXL\x20\x0d\x0a\x87\x0a", 12) == 0)) {
 		return IF_JXL;
-	} else if (!memcmp(header+4, "ftyp", 4)) {
+	} else if (nSize >= 12 && !memcmp(header+4, "ftyp", 4)) {
 		// https://github.com/strukturag/libheif/issues/83
 		// https://github.com/strukturag/libheif/blob/ce1e4586b6222588c5afcd60c7ba9caa86bcc58c/libheif/heif.h#L602-L805
 
@@ -85,9 +96,9 @@ static EImageFormat GetImageFormat(LPCTSTR sFileName) {
 		// Canon CR3
 		if (!memcmp(header+8, "crx ", 4))
 			return IF_CameraRAW;
-	} else if (header[0] == 'q' && header[1] == 'o' && header[2] == 'i' && header[3] == 'f') {
+	} else if (nSize >= 4 && header[0] == 'q' && header[1] == 'o' && header[2] == 'i' && header[3] == 'f') {
 		return IF_QOI;
-	} else if (header[0] == '8' && header[1] == 'B' && header[2] == 'P' && header[3] == 'S') {
+	} else if (nSize >= 4 && header[0] == '8' && header[1] == 'B' && header[2] == 'P' && header[3] == 'S') {
 		return IF_PSD;
 	}
 
@@ -96,10 +107,10 @@ static EImageFormat GetImageFormat(LPCTSTR sFileName) {
 
 	if (eImageFormat != IF_Unknown) {
 		return eImageFormat;
-	} else if (!memcmp(header+4, "ftyp", 4)) {
+	} else if (nSize >= 12 && !memcmp(header+4, "ftyp", 4)) {
 		// Unspecified encoding (possibly AVIF or HEIF): mif1, mif2, msf1, miaf, 1pic
 		return IF_AVIF;
-	} else if (!memcmp(header, "II*\0", 4) || !memcmp(header, "MM\0*", 4)) {
+	} else if (nSize >= 4 && (!memcmp(header, "II*\0", 4) || !memcmp(header, "MM\0*", 4))) {
 		// Must be checked after file extension to avoid classifying RAW as TIFF
 		// A few RAW image formats use TIFF as the container
 		// ex: CR2 - http://lclevy.free.fr/cr2/#key_info
@@ -109,8 +120,8 @@ static EImageFormat GetImageFormat(LPCTSTR sFileName) {
 	// BigTIFF (TIFF version 43) uses 8-byte offsets and supports files > 4 GB.
 	// GDI+/WIC cannot decode these, so the libtiff-backed reader is required.
 	// Magic: little-endian "II+\0" or big-endian "MM\0+".
-	if ((header[0]=='I' && header[1]=='I' && header[2]=='+' && header[3]==0) ||
-		(header[0]=='M' && header[1]=='M' && header[2]==0 && header[3]=='+')) {
+	if (nSize >= 4 && ((header[0]=='I' && header[1]=='I' && header[2]=='+' && header[3]==0) ||
+		(header[0]=='M' && header[1]=='M' && header[2]==0 && header[3]=='+'))) {
 		return IF_TIFF;
 	}
 	return IF_Unknown;
@@ -240,10 +251,12 @@ void CImageLoadThread::BeforeThreadExit()
 
 int CImageLoadThread::AsyncLoad(LPCTSTR strFileName, int nFrameIndex, const CProcessParams & processParams, HWND targetWnd, HANDLE eventFinished) {
 	CRequest* pRequest = new CRequest(strFileName, nFrameIndex, targetWnd, processParams, eventFinished);
-
-	ProcessAsync(pRequest);
-
-	return pRequest->RequestHandle;
+	const int requestHandle = pRequest->RequestHandle;
+	if (!ProcessAsync(pRequest)) {
+		if (eventFinished != NULL) ::SetEvent(eventFinished);
+		delete pRequest;
+	}
+	return requestHandle;
 }
 
 CImageData CImageLoadThread::GetLoadedImage(int nHandle) {
@@ -443,11 +456,10 @@ void CImageLoadThread::DeleteCachedJxlDecoder() {
 void CImageLoadThread::DeleteCachedAvifDecoder() {
 #ifndef WINXP
 	// prevent crashing when libavif/dav1d fail or missing
-	UINT nPrevErrorMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+	CThreadErrorModeGuard errorModeGuard;
 	try {
 		AvifReader::DeleteCache();
 	} catch (...) {}
-	SetErrorMode(nPrevErrorMode);
 	m_sLastAvifFileName.Empty();
 #endif
 }
@@ -779,7 +791,7 @@ void CImageLoadThread::ProcessReadJXLRequest(CRequest* request) {
 		}
 	}
 	char* pBuffer = NULL;
-	UINT nPrevErrorMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+	CThreadErrorModeGuard errorModeGuard;
 	try {
 		long long nFileSize = 0;
 		unsigned int nNumBytesRead;
@@ -821,7 +833,6 @@ void CImageLoadThread::ProcessReadJXLRequest(CRequest* request) {
 		request->Image = NULL;
 		request->ExceptionError = true;
 	}
-	SetErrorMode(nPrevErrorMode);
 	if (!bUseCachedDecoder) {
 		::CloseHandle(hFile);
 		delete[] pBuffer;
@@ -850,7 +861,7 @@ void CImageLoadThread::ProcessReadAVIFRequest(CRequest* request) {
 		}
 	}
 	char* pBuffer = NULL;
-	UINT nPrevErrorMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+	CThreadErrorModeGuard errorModeGuard;
 	try {
 		long long nFileSize = 0;
 		unsigned int nNumBytesRead;
@@ -898,7 +909,6 @@ void CImageLoadThread::ProcessReadAVIFRequest(CRequest* request) {
 		request->Image = NULL;
 		request->ExceptionError = true;
 	}
-	SetErrorMode(nPrevErrorMode);
 	if (!bUseCachedDecoder) {
 		::CloseHandle(hFile);
 		delete[] pBuffer;
@@ -937,7 +947,7 @@ void CImageLoadThread::ProcessReadHEIFRequest(CRequest* request) {
 		return;
 	}
 	char* pBuffer = NULL;
-	UINT nPrevErrorMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+	CThreadErrorModeGuard errorModeGuard;
 	try {
 		unsigned int nNumBytesRead;
 		// Don't read too huge files
@@ -962,7 +972,6 @@ void CImageLoadThread::ProcessReadHEIFRequest(CRequest* request) {
 		request->Image = NULL;
 		request->ExceptionError = true;
 	}
-	SetErrorMode(nPrevErrorMode);
 	::CloseHandle(hFile);
 	delete[] pBuffer;
 }
@@ -1025,7 +1034,7 @@ void CImageLoadThread::ProcessReadRAWRequest(CRequest * request) {
 
 #ifndef WINXP
 		// Try with libraw
-		UINT nPrevErrorMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+		CThreadErrorModeGuard errorModeGuard;
 		try {
 			if (fullsize == 2 || fullsize == 3) {
 				request->Image = RawReader::ReadImage(request->FileName, bOutOfMemory, fullsize == 2);
@@ -1039,7 +1048,6 @@ void CImageLoadThread::ProcessReadRAWRequest(CRequest * request) {
 		} catch (...) {
 			// libraw.dll not found or VC++ Runtime not installed
 		}
-		SetErrorMode(nPrevErrorMode);
 #else
 		fullsize = fullsize == 1;
 #endif

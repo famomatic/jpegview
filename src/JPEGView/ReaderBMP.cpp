@@ -4,6 +4,7 @@
 #include "Helpers.h"
 #include "BasicProcessing.h"
 #include "MaxImageDef.h"
+#include <memory>
 
 //////////////////////////////////////////////////////////////////////////////////
 // BITMAP reading
@@ -27,12 +28,12 @@ struct BMINFOHEADER {
 	unsigned int importantcolors;    /* Important colors          */
 };
 
-static void ReadUShort(FILE* file, uint16* pUShort) {
-	fread(pUShort, sizeof(uint16), 1, file);
+static bool ReadUShort(FILE* file, uint16* pUShort) {
+	return fread(pUShort, sizeof(uint16), 1, file) == 1;
 }
 
-static void ReadUInt(FILE* file, uint32* pUInt) {
-	fread(pUInt, sizeof(uint32), 1, file);
+static bool ReadUInt(FILE* file, uint32* pUInt) {
+	return fread(pUInt, sizeof(uint32), 1, file) == 1;
 }
 
 CJPEGImage* CReaderBMP::ReadBmpImage(LPCTSTR strFileName, bool& bOutOfMemory) {
@@ -46,47 +47,47 @@ CJPEGImage* CReaderBMP::ReadBmpImage(LPCTSTR strFileName, bool& bOutOfMemory) {
 	if ((fptr = _tfopen(strFileName,_T("rb"))) == NULL) {
 		return NULL;
 	}
+	std::unique_ptr<FILE, decltype(&fclose)> fileGuard(fptr, &fclose);
+	if (_fseeki64(fptr, 0, SEEK_END) != 0) return NULL;
+	const __int64 actualFileSize = _ftelli64(fptr);
+	if (actualFileSize < 14 + static_cast<__int64>(sizeof(BMINFOHEADER)) || _fseeki64(fptr, 0, SEEK_SET) != 0) return NULL;
 
 	/* Read the header */
-	ReadUShort(fptr,&header.type);
-	ReadUInt(fptr,&header.size);
-	ReadUShort(fptr,&header.reserved1);
-	ReadUShort(fptr,&header.reserved2);
-	ReadUInt(fptr,&header.offset);
+	if (!ReadUShort(fptr, &header.type) || !ReadUInt(fptr, &header.size) ||
+		!ReadUShort(fptr, &header.reserved1) || !ReadUShort(fptr, &header.reserved2) ||
+		!ReadUInt(fptr, &header.offset) || header.type != 0x4D42) return NULL;
 
 	/* Read and check the information header */
 	if (fread(&infoheader,sizeof(BMINFOHEADER),1,fptr) != 1) {
-		fclose(fptr);
 		return NULL;
 	}
+	if (infoheader.size != sizeof(BMINFOHEADER) || infoheader.planes != 1 || infoheader.compression != 0 ||
+		header.offset < 14 + infoheader.size || header.offset > static_cast<uint64_t>(actualFileSize)) return NULL;
 	/* Only 24 and 32 bpp */
 	if (infoheader.bits != 24 && infoheader.bits != 32 && infoheader.bits != 8) {
-		fclose(fptr);
 		return NULL;
 	}
 	/* Not too big files */
-	if (infoheader.width > MAX_IMAGE_DIMENSION || infoheader.width <= 0 || abs(infoheader.height) > MAX_IMAGE_DIMENSION) {
-		fclose(fptr);
+	if (infoheader.height == INT_MIN || infoheader.width > static_cast<int>(MAX_IMAGE_DIMENSION) || infoheader.width <= 0 ||
+		abs(infoheader.height) > static_cast<int>(MAX_IMAGE_DIMENSION) || infoheader.height == 0) {
 		return NULL;
 	}
 	if ((double)infoheader.width * abs(infoheader.height) > MAX_IMAGE_PIXELS) {
-		fclose(fptr);
 		bOutOfMemory = true;
 		return NULL;
 	}
 
 	// read palette for 8 bpp DIBs
-	uint8 palette[4*256];
+	uint8 palette[4*256]{};
 	if (infoheader.bits == 8) {
-		fseek(fptr, infoheader.size + 14, SEEK_SET);
-		if (fread(palette, 256*4, 1, fptr) != 1) {
-			fclose(fptr);
-			return NULL;
-		}
+		const uint32 paletteEntries = infoheader.ncolors == 0 ? 256u : infoheader.ncolors;
+		if (paletteEntries > 256 || 14ULL + infoheader.size + static_cast<uint64_t>(paletteEntries) * 4 > header.offset ||
+			fseek(fptr, infoheader.size + 14, SEEK_SET) != 0 ||
+			fread(palette, 4, paletteEntries, fptr) != paletteEntries) return NULL;
 	}
 
 	/* Seek to the start of the image data */
-	fseek(fptr,header.offset,SEEK_SET);
+	if (_fseeki64(fptr, header.offset, SEEK_SET) != 0) return NULL;
 
 	// DIBs are normally stored flipped vertically (meaning they are stored bottom-up)
 	bool bFlipped;
@@ -98,17 +99,17 @@ CJPEGImage* CReaderBMP::ReadBmpImage(LPCTSTR strFileName, bool& bOutOfMemory) {
 	}
 
 	int bytesPerPixel = infoheader.bits/8;
-	int paddedWidth = Helpers::DoPadding(infoheader.width*bytesPerPixel, 4);
-	int fileSizeBytes = infoheader.height*paddedWidth;
-	if (fileSizeBytes <= 0 || fileSizeBytes > MAX_BMP_FILE_SIZE) {
-		fclose(fptr);
+	const size_t rowBytes = static_cast<size_t>(infoheader.width) * bytesPerPixel;
+	const size_t paddedWidth = (rowBytes + 3) & ~static_cast<size_t>(3);
+	const size_t fileSizeBytes = static_cast<size_t>(infoheader.height) * paddedWidth;
+	if (fileSizeBytes == 0 || fileSizeBytes > MAX_BMP_FILE_SIZE ||
+		fileSizeBytes > static_cast<uint64_t>(actualFileSize) - header.offset) {
 		bOutOfMemory = fileSizeBytes > MAX_BMP_FILE_SIZE;
 		return NULL; // corrupt or manipulated header
 	}
 
 	uint8* pDest = new(std::nothrow) uint8[fileSizeBytes];
 	if (pDest == NULL) {
-		fclose(fptr);
 		bOutOfMemory = true;
 		return NULL;
 	}
@@ -116,7 +117,6 @@ CJPEGImage* CReaderBMP::ReadBmpImage(LPCTSTR strFileName, bool& bOutOfMemory) {
 	for (int nLine = 0; nLine < infoheader.height; nLine++) {
 		if (paddedWidth != fread(pStart, 1, paddedWidth, fptr)) {
 			delete[] pDest;
-			fclose(fptr);
 			return NULL;
 		}
 		pStart = pStart + (bFlipped ? -paddedWidth : paddedWidth);
@@ -133,8 +133,6 @@ CJPEGImage* CReaderBMP::ReadBmpImage(LPCTSTR strFileName, bool& bOutOfMemory) {
 	// The CJPEGImage object gets ownership of the memory in pDest
 	CJPEGImage* pImage = (pDest == NULL) ? NULL : new CJPEGImage(infoheader.width, infoheader.height, pDest, NULL, infoheader.bits/8, 
 		0, IF_WindowsBMP, false, 0, 1, 0);
-
-	fclose(fptr);
 
 	bOutOfMemory = pImage == NULL;
 

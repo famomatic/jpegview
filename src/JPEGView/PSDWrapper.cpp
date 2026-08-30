@@ -202,7 +202,8 @@ CJPEGImage* PsdReader::ReadImage(LPCTSTR strFileName, bool& bOutOfMemory)
 		
 		// Read color mode
 		// Bitmap = 0; Grayscale = 1; Indexed = 2; RGB = 3; CMYK = 4; Multichannel = 7; Duotone = 8; Lab = 9.
-		// TODO: NegateCMYK
+		// Photoshop stores CMYK component intensities in the representation used
+		// below; the K component is composed as opacity over black after decode.
 		unsigned short nChannels = 0;
 		unsigned short nColorMode = ReadUShortFromFile(hFile);
 		switch (nColorMode) {

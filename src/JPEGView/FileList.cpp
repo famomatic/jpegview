@@ -877,18 +877,11 @@ void CFileList::FindFiles() {
 }
 
 void CFileList::VerifyFiles() {
-	std::list<CFileDesc>::iterator iter;
-	for (iter = m_fileList.begin( ); iter != m_fileList.end( ); iter++ ) {
+	std::list<CFileDesc>::iterator iter = m_fileList.begin();
+	while (iter != m_fileList.end()) {
 		if (::GetFileAttributes(iter->GetName()) == INVALID_FILE_ATTRIBUTES) {
-			// erase() returns the next iterator; the for-loop's iter++ would
-			// then skip it. Erase and continue from the returned iterator
-			// without advancing again.
 			iter = m_fileList.erase(iter);
-			if (iter == m_fileList.end()) {
-				break;
-			}
-			continue;
-		}
+		} else ++iter;
 	}
 }
 
@@ -911,11 +904,12 @@ bool CFileList::TryReadingSlideShowList(const CString & sSlideShowFile) {
 	}
 	// Try to detect if this is a UTF16 Unicode text file or a ANSI or UTF-8 coded file
 	const int NUMPROBE = 64;
-	uint8 buff[NUMPROBE];
+	uint8 buff[NUMPROBE + 1]{};
 	bool bUnicode;
 	bool bUTF8Marker = false;
 	int nSeekPos = 0;
 	int nRealProbe = (int)fread(buff, 1, NUMPROBE, fptr);
+	buff[nRealProbe] = 0;
 	if (nRealProbe < 16) {
 		// file is too short for a good guess
 		bUnicode = false;
@@ -941,14 +935,20 @@ bool CFileList::TryReadingSlideShowList(const CString & sSlideShowFile) {
 		}
 	}
 
-	bool bIsUTF8EncodedXML = strstr((char*)buff, "encoding=\"utf-8\"") != NULL;
+	static const char utf8Declaration[] = "encoding=\"utf-8\"";
+	const char* probeBegin = reinterpret_cast<const char*>(buff);
+	const char* probeEnd = probeBegin + nRealProbe;
+	bool bIsUTF8EncodedXML = std::search(probeBegin, probeEnd,
+		utf8Declaration, utf8Declaration + sizeof(utf8Declaration) - 1) != probeEnd;
 	if (bUTF8Marker || bIsUTF8EncodedXML) {
 		// UTF-8 encoded text file, open the file in UTF-8 mode, it will be read as Unicode
 		fclose(fptr);
 		if ((fptr = _tfopen(sSlideShowFile,_T("r, ccs=UTF-8"))) == NULL) {
 			return false;
 		}
-		nSeekPos = bIsUTF8EncodedXML ? max(0, (int)(strchr((char*)buff, '<') - (char*)buff)) : 3;
+		const void* pXmlStart = memchr(buff, '<', nRealProbe);
+		nSeekPos = bIsUTF8EncodedXML && pXmlStart != NULL
+			? static_cast<int>(static_cast<const uint8*>(pXmlStart) - buff) : (bUTF8Marker ? 3 : 0);
 		bUnicode = true;
 	}
 
@@ -970,7 +970,7 @@ bool CFileList::TryReadingSlideShowList(const CString & sSlideShowFile) {
 		if (bUnicode) {
 			wchar_t* pRunning = wideFileBuff;
 			bool bIsNull = false;
-			while (*pRunning != L'\n' && nNumChars < LINE_BUFF_SIZE && nTotalChars < nRealFileSizeChars) {
+			while (nTotalChars < nRealFileSizeChars && nNumChars < LINE_BUFF_SIZE && *pRunning != L'\n') {
 				if (*pRunning == 0) {
 					bIsNull = true;
 				}
@@ -980,12 +980,13 @@ bool CFileList::TryReadingSlideShowList(const CString & sSlideShowFile) {
 			if (bValid) {
 				memcpy(lineBuff, wideFileBuff, (pRunning - wideFileBuff)*sizeof(TCHAR));
 			}
-			wideFileBuff = pRunning+1;
-			nTotalChars++;
+			const bool hasNewline = nTotalChars < nRealFileSizeChars && *pRunning == L'\n';
+			wideFileBuff = pRunning + (hasNewline ? 1 : 0);
+			if (hasNewline) nTotalChars++;
 		} else {
 			char* pRunning = fileBuff;
 			bool bIsNull = false;
-			while (*pRunning != '\n' && nNumChars < LINE_BUFF_SIZE && nTotalChars < nRealFileSizeChars) {
+			while (nTotalChars < nRealFileSizeChars && nNumChars < LINE_BUFF_SIZE && *pRunning != '\n') {
 				if (*pRunning == 0) {
 					bIsNull = true;
 				}
@@ -996,8 +997,9 @@ bool CFileList::TryReadingSlideShowList(const CString & sSlideShowFile) {
 				size_t nDummy;
 				mbstowcs_s(&nDummy, lineBuff, LINE_BUFF_SIZE, fileBuff, pRunning - fileBuff);
 			}
-			fileBuff = pRunning+1;
-			nTotalChars++;
+			const bool hasNewline = nTotalChars < nRealFileSizeChars && *pRunning == '\n';
+			fileBuff = pRunning + (hasNewline ? 1 : 0);
+			if (hasNewline) nTotalChars++;
 		}
 		if (!bValid) {
 			// the file contains very long lines or null characters, it is most likely not a text file

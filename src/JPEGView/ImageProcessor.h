@@ -34,8 +34,6 @@
 #include "ImageProcessingTypes.h"
 #include "ProcessParams.h"
 
-#include <memory>
-#include <mutex>
 
 class IImageProcessor {
 public:
@@ -101,16 +99,4 @@ public:
     // initial selection is CPU-only so Step 1 has zero behavior change.
     static IImageProcessor& Get();
 
-    // Forced selection, used by tests and by the future GPU-init path to
-    // override the lazy default once a device is ready.
-    static void SetBackend(std::unique_ptr<IImageProcessor> pBackend);
-
-    // Releases the active backend. Call at process shutdown (optional; the
-    // singleton leak is acceptable for a viewer process).
-    static void Shutdown();
-
-private:
-    // Owns the process-wide singleton slot. Defined in ImageProcessor.cpp.
-    static std::unique_ptr<IImageProcessor>& ActiveBackend();
-	static std::mutex& BackendMutex();
 };

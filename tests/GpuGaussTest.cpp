@@ -153,10 +153,10 @@ int main() {
         ctx->CSSetUnorderedAccessViews(0, 1, &outUav, nullptr);
         // CB0: srcLen, nRunX, srcStride, nStartX, nTargetWidth (5 x uint).
         struct { UINT a, b, c, d, e; } cb0 = { (UINT)srcLen, (UINT)nRunX, (UINT)srcStride, 0, (UINT)nTargetWidth };
-        ID3D11Buffer* c0 = mkCB(&cb0, (sizeof(cb0) + 15) & ~15);
+		ID3D11Buffer* c0 = mkCB(&cb0, sizeof(cb0));
         // CB1: incX(ignored), rowCount, nStartY=0, _p1
         struct { uint32_t a; int b; uint32_t c, d; } cb1 = { 65536, rowCount, 0, 0 };
-        ID3D11Buffer* c1 = mkCB(&cb1, (sizeof(cb1) + 15) & ~15);
+		ID3D11Buffer* c1 = mkCB(&cb1, sizeof(cb1));
         ID3D11Buffer* cbs[2] = { c0, c1 };
         ctx->CSSetConstantBuffers(0, 2, cbs);
         ctx->CSSetShader(cs, nullptr, 0);

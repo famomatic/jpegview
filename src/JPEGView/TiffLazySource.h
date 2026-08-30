@@ -43,6 +43,8 @@ private:
 	CTiffLazySource();
 	bool OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex);
 	bool UpdateDirectoryLayout();
+	bool UpdateDirectoryFormat();
+	void UpdateICCProfile();
 	int DetectPyramidLevels();
 	bool DecodeSingleStrip(int stripIndex, uint8* pDst, int dstStride);
 	void ConvertStripToBGRA(const uint8* pSrc, uint8* pDst,
@@ -56,7 +58,7 @@ private:
 	uint16 m_planarConfig;
 	uint16 m_sampleFormat;
 	uint16 m_compression;
-	std::vector<int> m_pyramidIFDs;
+	std::vector<uint64> m_pyramidIFDOffsets;
 	int m_nCurrentPyramidLevel;
 	bool m_bUseRGBA;
 

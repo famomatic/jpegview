@@ -286,7 +286,6 @@ public:
 	LPCTSTR GetINIFileTitle() { return m_sIniFileTitle; }
 
 private:
-	static CSettingsProvider* sm_instance;
 	CString m_sEXEPath;
 	CString m_sIniNameGlobal;
 	CString m_sIniNameUser;

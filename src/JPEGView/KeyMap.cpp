@@ -4,6 +4,7 @@
 #include "resource.h"
 #include "Helpers.h"
 #include "SettingsProvider.h"
+#include <shellapi.h>
 
 #define M_SHIFT 0x10000
 #define M_ALT   0x20000
@@ -13,6 +14,29 @@
 static const TCHAR* KEYMAP_USER_FILE_NAME = _T("KeyMap.txt");
 static const TCHAR* KEYMAP_DEFAULT_FILE_NAME = _T("KeyMap.txt.default");
 static const TCHAR* KEYMAP_SYMBOLS_FILE_NAME = _T("symbols.km");
+
+static CString ParseCommandLineForKeyMapFile()
+{
+	int argumentCount = 0;
+	LPWSTR* arguments = ::CommandLineToArgvW(::GetCommandLineW(), &argumentCount);
+	if (arguments == nullptr)
+		return CString();
+	CString result;
+	for (int i = 1; i < argumentCount; ++i) {
+		CString argument(arguments[i]);
+		if (argument.CompareNoCase(_T("/keymap")) == 0) {
+			if (i + 1 < argumentCount)
+				result = arguments[i + 1];
+			break;
+		}
+		if (argument.GetLength() > 8 && argument.Left(8).CompareNoCase(_T("/keymap=")) == 0) {
+			result = argument.Mid(8);
+			break;
+		}
+	}
+	::LocalFree(arguments);
+	return result;
+}
 
 struct SKey {
 	LPCTSTR Name;
@@ -161,13 +185,16 @@ static CString _GetKeyShortcutName(int nShortcut) {
 // Then tries (JPEGView root)\KeyMap.txt
 // if none of those, then (JPEGView root)\KeyMap.txt.default
 CKeyMap::CKeyMap() {
-	FILE* fkm_ptr;
+	FILE* fkm_ptr = nullptr;
 	CString exe_path = CString(CSettingsProvider::This().GetEXEPath());
 
-	// TODO: ParseCommandLineForKeyMapFile or something... where you can specify a custom full file path name for a keymap you'd like to use instead of the default search order
+	CString commandLineKeyMap = ParseCommandLineForKeyMapFile();
+	if (!commandLineKeyMap.IsEmpty())
+		fkm_ptr = _tfopen(commandLineKeyMap, _T("r"));
 
 	// check if the use directory keymap.txt exists
-	fkm_ptr = _tfopen(CString(Helpers::JPEGViewAppDataPath()) + KEYMAP_USER_FILE_NAME, _T("r"));
+	if (fkm_ptr == nullptr)
+		fkm_ptr = _tfopen(CString(Helpers::JPEGViewAppDataPath()) + KEYMAP_USER_FILE_NAME, _T("r"));
 	if (fkm_ptr == NULL) {
 		// the appdata one doesn't exist, try the local directory
 		fkm_ptr = _tfopen(exe_path + KEYMAP_USER_FILE_NAME, _T("r"));

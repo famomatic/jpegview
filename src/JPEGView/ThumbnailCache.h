@@ -87,6 +87,8 @@ private:
 		int nThumbH;
 		int nOrigW;
 		int nOrigH;
+		__int64 nFileSize;
+		FILETIME lastModTime;
 		std::vector<unsigned char> pixels;
 	};
 	void WorkerLoop();

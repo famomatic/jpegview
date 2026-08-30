@@ -23,7 +23,7 @@ public:
 
 	// Compress 24-bit BGR DIB (padded to 4-byte boundary) into AVIF.
 	// quality: 0-100. Returns malloc'd buffer (caller frees with free()).
-	static void* Compress(const void* pBGRData, int nWidth, int nHeight, size_t& nSize, int nQuality);
+	static void* Compress(const void* pBGRData, int nWidth, int nHeight, size_t& nSize, int nQuality, int nChannels = 3);
 
 private:
 	struct avif_cache;

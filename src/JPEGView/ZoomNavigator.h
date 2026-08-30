@@ -28,7 +28,7 @@ public:
 	// Gets the visible rectangle in float coordinates (normalized to 0..1) relative to full image
 	static CRectF GetVisibleRect(CSize sizeFull, CSize sizeClipped, CPoint offset);
 
-	// Gets the position of the navigator rectangle (thumbnail image rect) în client coordinates.
+	// Gets the position of the navigator rectangle (thumbnail image rect) in client coordinates.
 	// The zoom navigator is placed relative to the image processing panel rectangle (panelRect) and
 	// the navigator panel rectangle (navigatorRect)
 	static CRect GetNavigatorRect(CJPEGImage* pImage, const CRect& panelRect, const CRect& navigatorRect);

@@ -55,6 +55,8 @@
 #define IDC_BC_RESIZE_LBL 1116
 #define IDC_BC_MAXWIDTH 1117
 #define IDC_BC_MAXHEIGHT 1118
+#define IDC_BC_FORMAT_LBL 1119
+#define IDC_BC_RESIZE_X_LBL 1120
 
 // EXIF Edit dialog
 #define IDD_EXIFEDIT 1200
@@ -121,6 +123,7 @@
 #define IDC_EF_PROGRESS       8306
 #define IDC_EF_STATUS         8307
 #define IDC_EF_FMT            8308
+#define IDC_EF_FORMAT_LBL     8309
 
 #define IDD_ABOUT 2000
 #define IDC_CLOSE 1001

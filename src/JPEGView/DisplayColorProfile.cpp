@@ -6,13 +6,13 @@
 #ifndef WINXP
 
 #include "lcms2.h"
-#include <vector>
+#include <mutex>
 
 namespace {
 
-CRITICAL_SECTION& GetCS() {
-	static CRITICAL_SECTION cs = []() { CRITICAL_SECTION c; ::InitializeCriticalSection(&c); return c; }();
-	return cs;
+std::mutex& GetMutex() {
+	static std::mutex mutex;
+	return mutex;
 }
 
 HWND s_hWnd = NULL;
@@ -51,11 +51,9 @@ bool IsSRGBProfileName(const CString& sPath) {
 
 void RecreateTransform() {
 	if (s_hTransform != NULL) {
-		// Never delete old transforms: GetTransform() hands out raw handles that may
-		// still be in use by another thread in cmsDoTransform(). Transforms only change
-		// on monitor/profile switches, so the retained set stays tiny.
-		static std::vector<cmsHTRANSFORM> s_retiredTransforms;
-		s_retiredTransforms.push_back(s_hTransform);
+		// RecreateTransform and ApplyTransform both hold GetMutex(), so no transform
+		// can be deleted while lcms is using it.
+		cmsDeleteTransform(s_hTransform);
 		s_hTransform = NULL;
 	}
 	s_bTransformValid = true;
@@ -107,17 +105,16 @@ void RecreateTransform() {
 } // namespace
 
 void CDisplayColorProfile::SetWindow(HWND hWnd) {
-	::EnterCriticalSection(&GetCS());
+	std::lock_guard<std::mutex> lock(GetMutex());
 	s_hWnd = hWnd;
 	s_bTransformValid = false;
-	::LeaveCriticalSection(&GetCS());
 }
 
 void* CDisplayColorProfile::GetTransform() {
 	if (!CSettingsProvider::This().UseDisplayColorProfile()) {
 		return NULL;
 	}
-	::EnterCriticalSection(&GetCS());
+	std::lock_guard<std::mutex> lock(GetMutex());
 	if (s_hWnd != NULL) {
 		HMONITOR hMonitor = ::MonitorFromWindow(s_hWnd, MONITOR_DEFAULTTONEAREST);
 		if (hMonitor != s_hCachedMonitor || !s_bTransformValid) {
@@ -126,24 +123,24 @@ void* CDisplayColorProfile::GetTransform() {
 		}
 	}
 	void* hTransform = s_hTransform;
-	::LeaveCriticalSection(&GetCS());
 	return hTransform;
 }
 
 int CDisplayColorProfile::GetVersion() {
-	return (int)s_nVersion;
+	return static_cast<int>(::InterlockedCompareExchange(&s_nVersion, 0, 0));
 }
 
 void CDisplayColorProfile::Invalidate() {
-	::EnterCriticalSection(&GetCS());
+	std::lock_guard<std::mutex> lock(GetMutex());
 	s_bTransformValid = false;
-	::LeaveCriticalSection(&GetCS());
 }
 
 bool CDisplayColorProfile::ApplyTransform(void* hTransform, const void* pSource, void* pTarget, int nWidth, int nHeight) {
 	if (hTransform == NULL || pSource == NULL || pTarget == NULL || nWidth <= 0 || nHeight <= 0) {
 		return false;
 	}
+	std::lock_guard<std::mutex> lock(GetMutex());
+	if (hTransform != s_hTransform) return false;
 	__int64 nNumPixels = (__int64)nWidth * nHeight;
 	if (nNumPixels > 0xFFFFFFFF) {
 		return false; // pixel count does not fit cmsUInt32Number

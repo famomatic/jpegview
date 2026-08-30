@@ -210,12 +210,19 @@ LRESULT CBatchCopyDlg::OnRename(WORD /*wNotifyCode*/, WORD wID, HWND /*hWndCtl*/
 			bool bSuccess = true;
 			DWORD lastError = 0;
 			if (bCopyNeeded) {
-				CString strNewPath(strNewName, (int)(_tcsrchr(strNewName, _T('\\')) - strNewName));
+				LPCTSTR finalSeparator = _tcsrchr(strNewName, _T('\\'));
+				if (finalSeparator == nullptr) {
+					bSuccess = false;
+					lastError = ERROR_INVALID_NAME;
+				}
+				CString strNewPath;
+				if (bSuccess)
+					strNewPath = CString(strNewName, static_cast<int>(finalSeparator - strNewName.GetString()));
 				// First create directory if it does not yet exist
-				if (::GetFileAttributes(strNewPath) == INVALID_FILE_ATTRIBUTES) {
+				if (bSuccess && ::GetFileAttributes(strNewPath) == INVALID_FILE_ATTRIBUTES) {
 					int nErrorCode = ::SHCreateDirectoryEx(NULL, strNewPath, NULL);
-					bSuccess = (nErrorCode == ERROR_SUCCESS);
-					if (bSuccess) nDirsCreated++;
+					bSuccess = (nErrorCode == ERROR_SUCCESS || nErrorCode == ERROR_ALREADY_EXISTS || nErrorCode == ERROR_FILE_EXISTS);
+					if (nErrorCode == ERROR_SUCCESS) nDirsCreated++;
 					else lastError = nErrorCode;
 				}
 				if (bSuccess) {
@@ -223,8 +230,12 @@ LRESULT CBatchCopyDlg::OnRename(WORD /*wNotifyCode*/, WORD wID, HWND /*hWndCtl*/
 					if (bSuccess) nFilesCopied++;
 				}
 			} else {
-				bSuccess = ::MoveFile(iter->GetName(), strNewName) != 0;
-				if (bSuccess) {
+				if (_tcsicmp(iter->GetName(), strNewName) == 0) {
+					bSuccess = true;
+				} else {
+					bSuccess = ::MoveFileEx(iter->GetName(), strNewName, MOVEFILE_WRITE_THROUGH) != 0;
+				}
+				if (bSuccess && _tcsicmp(iter->GetName(), strNewName) != 0) {
 					nFilesRenamed++;
 					iter->SetName(strNewName);
 				}
@@ -241,10 +252,16 @@ LRESULT CBatchCopyDlg::OnRename(WORD /*wNotifyCode*/, WORD wID, HWND /*hWndCtl*/
 				strError += _T("\n");
 				strError += CNLS::GetString(_T("Reason:")); strError += _T(" ");
 				LPTSTR lpMsgBuf = NULL;
-				::FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM, NULL, lastError,
+				::FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, lastError,
 					MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR) &lpMsgBuf, 0, NULL);
-				strError += lpMsgBuf;
-				LocalFree(lpMsgBuf);
+				if (lpMsgBuf != nullptr) {
+					strError += lpMsgBuf;
+					LocalFree(lpMsgBuf);
+				} else {
+					CString errorCode;
+					errorCode.Format(_T("0x%08lX"), lastError);
+					strError += errorCode;
+				}
 				strError += _T("\n");
 				strError += CNLS::GetString(_T("Continue rename/copy?"));
 				if (IDNO == ::MessageBox(NULL, strError, CNLS::GetString(_T("Error during rename/copy")), MB_YESNO | MB_ICONSTOP)) {

@@ -6,33 +6,41 @@
 #include <algorithm>
 #include <cerrno>
 #include <cwctype>
+#include <shellapi.h>
+#include <vector>
 
 static const TCHAR* DEFAULT_INI_FILE_NAME = _T("JPEGView.ini");
 static const TCHAR* SECTION_NAME = _T("JPEGView");
 
 static float COLOR_CORR_DEFAULT_FACTORS[6] = {0.2f, 0.1f, 0.3f, 0.3f, 0.3f, 0.15f};
 
-CSettingsProvider* CSettingsProvider::sm_instance;
-
 static CString ParseCommandLineForIniName(LPCTSTR sCommandLine) {
-	if (sCommandLine == NULL) {
+	if (sCommandLine == nullptr)
 		return CString();
-	}
-	LPCTSTR iniFile = Helpers::stristr(sCommandLine, _T("/ini"));
-	if (iniFile == NULL) {
+	int argumentCount = 0;
+	LPWSTR* arguments = ::CommandLineToArgvW(sCommandLine, &argumentCount);
+	if (arguments == nullptr)
 		return CString();
+	CString result;
+	for (int i = 1; i < argumentCount; ++i) {
+		CString argument(arguments[i]);
+		if (argument.CompareNoCase(_T("/ini")) == 0) {
+			if (i + 1 < argumentCount)
+				result = arguments[i + 1];
+			break;
+		}
+		if (argument.GetLength() > 5 && argument.Left(5).CompareNoCase(_T("/ini=")) == 0) {
+			result = argument.Mid(5);
+			break;
+		}
 	}
-	iniFile = iniFile + _tcslen(_T("/ini")) + 1;
-	LPCTSTR posSpace = _tcschr(iniFile, _T(' '));
-	CString iniFileName = (posSpace == NULL) ? CString(iniFile) : CString(iniFile, (int)(posSpace - iniFile));
-	return iniFileName;
+	::LocalFree(arguments);
+	return result;
 }
 
 CSettingsProvider& CSettingsProvider::This() {
-	if (sm_instance == NULL) {
-		sm_instance = new CSettingsProvider();
-	}
-	return *sm_instance;
+	static CSettingsProvider instance;
+	return instance;
 }
 
 float* CSettingsProvider::ColorCorrectionAmounts() { 
@@ -640,24 +648,32 @@ void CSettingsProvider::UpdateUserSettings() {
 	}
 
 	const int BUFFER_LEN = 16000;
-	TCHAR* buffer = new TCHAR[BUFFER_LEN];
-	if (::GetPrivateProfileString(SECTION_NAME, NULL, _T(""), buffer, BUFFER_LEN, sINIFileName) == BUFFER_LEN - 2) {
+	std::vector<TCHAR> buffer(BUFFER_LEN);
+	if (::GetPrivateProfileString(SECTION_NAME, NULL, _T(""), buffer.data(), BUFFER_LEN, sINIFileName) == BUFFER_LEN - 2) {
 		// buffer was too small, maybe INI file corrupt, do not touch
-		delete[] buffer;
 		return;
 	}
 
-	CString newINIFileName = sINIFileName + _T(".new");
-	if (!::CopyFile(GetINITemplateName(), newINIFileName, FALSE)){
-		delete[] buffer;
-		return;
+	CString newINIFileName;
+	bool copiedTemplate = false;
+	for (unsigned int attempt = 0; attempt < 100; ++attempt) {
+		newINIFileName.Format(_T("%s.new.%08X.%08X.%02X"), sINIFileName.GetString(),
+			::GetCurrentProcessId(), ::GetTickCount(), attempt);
+		if (::CopyFile(GetINITemplateName(), newINIFileName, TRUE)) {
+			copiedTemplate = true;
+			break;
+		}
+		if (::GetLastError() != ERROR_FILE_EXISTS && ::GetLastError() != ERROR_ALREADY_EXISTS)
+			break;
 	}
+	if (!copiedTemplate)
+		return;
 
-	TCHAR* currentKey = buffer;
+	TCHAR* currentKey = buffer.data();
 	while (*currentKey != 0) {
 		CString value = GetString(currentKey, _T(""));
 		if (!::WritePrivateProfileString(SECTION_NAME, currentKey, value, newINIFileName)) {
-			delete[] buffer;
+			::DeleteFile(newINIFileName);
 			return;
 		}
 		// go to next key
@@ -665,10 +681,19 @@ void CSettingsProvider::UpdateUserSettings() {
 		currentKey++;
 	}
 
-	delete[] buffer;
-	if (::MoveFile(sINIFileName, sINIFileName + _T(".old"))) {
-		::MoveFile(newINIFileName, sINIFileName);
+	// Flush the profile API cache and the file itself before replacing the
+	// active settings. ReplaceFile keeps the original intact if replacement
+	// fails and creates a recoverable .old backup on success.
+	::WritePrivateProfileString(nullptr, nullptr, nullptr, newINIFileName);
+	HANDLE newFile = ::CreateFile(newINIFileName, GENERIC_READ, FILE_SHARE_READ,
+		nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (newFile != INVALID_HANDLE_VALUE) {
+		::FlushFileBuffers(newFile);
+		::CloseHandle(newFile);
 	}
+	if (!::ReplaceFile(sINIFileName, newINIFileName, sINIFileName + _T(".old"),
+		REPLACEFILE_WRITE_THROUGH, nullptr, nullptr))
+		::DeleteFile(newINIFileName);
 }
 
 int CSettingsProvider::DeleteOpenWithCommand(CUserCommand* pCommand) {

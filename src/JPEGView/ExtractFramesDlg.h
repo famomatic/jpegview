@@ -43,6 +43,9 @@ private:
 	CComboBox m_cbFormat;
 
 	CString m_sDestFolder;
+	bool m_bExtracting;
+	bool m_bCancelRequested;
 
-	bool ExtractFrame(int nFrameIndex, LPCTSTR sDestFolder, LPCTSTR sBaseName, LPCTSTR sExt);
+	bool ExtractFrame(int nFrameIndex, LPCTSTR sDestFolder, LPCTSTR sBaseName, LPCTSTR sExt,
+		const uint8* pFileData, int nFileSize);
 };

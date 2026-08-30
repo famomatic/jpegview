@@ -182,10 +182,19 @@ static void PngMemWrite(png_structp png_ptr, png_bytep data, png_size_t len) {
 
 static void PngMemFlush(png_structp) {}
 
+struct MemReadCtx {
+	const uint8* cursor;
+	const uint8* end;
+};
+
 static void PngReadFromMemory(png_structp png_ptr, png_bytep out, png_size_t len) {
-	uint8** pp = (uint8**)png_get_io_ptr(png_ptr);
-	memcpy(out, *pp, len);
-	*pp += len;
+	MemReadCtx* ctx = static_cast<MemReadCtx*>(png_get_io_ptr(png_ptr));
+	if (ctx == NULL || ctx->cursor > ctx->end || len > static_cast<size_t>(ctx->end - ctx->cursor)) {
+		png_error(png_ptr, "truncated PNG cache entry");
+		return;
+	}
+	memcpy(out, ctx->cursor, len);
+	ctx->cursor += len;
 }
 
 // Decodes a PNG from memory into a freshly new[]'d BGRA buffer.
@@ -196,7 +205,7 @@ static uint8* DecodePngBGRAEx(const uint8* pBuffer, size_t nSize,
 	int& nWidth, int& nHeight,
 	int* pOrigWidth = NULL, int* pOrigHeight = NULL, int* pOrigChannels = NULL,
 	CStringA* psSignature = NULL, CStringA* psPathHash = NULL) {
-	if (png_sig_cmp((png_bytep)pBuffer, 0, 8) != 0) return NULL;
+	if (pBuffer == NULL || nSize < 8 || png_sig_cmp((png_bytep)pBuffer, 0, 8) != 0) return NULL;
 
 	png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
 	if (png_ptr == NULL) return NULL;
@@ -213,8 +222,8 @@ static uint8* DecodePngBGRAEx(const uint8* pBuffer, size_t nSize,
 		return NULL;
 	}
 
-	const uint8* pCursor = pBuffer + 8; // skip signature
-	png_set_read_fn(png_ptr, &pCursor, PngReadFromMemory);
+	MemReadCtx readCtx{ pBuffer + 8, pBuffer + nSize };
+	png_set_read_fn(png_ptr, &readCtx, PngReadFromMemory);
 	png_set_sig_bytes(png_ptr, 8);
 
 	png_read_info(png_ptr, info_ptr);
@@ -298,7 +307,8 @@ bool CThumbnailCache::TryGet(LPCTSTR sFilePath, __int64 nFileSize, const FILETIM
 	if (hFile == INVALID_HANDLE_VALUE) return false;
 
 	DWORD nSize = ::GetFileSize(hFile, NULL);
-	if (nSize == INVALID_FILE_SIZE || nSize == 0) {
+	static const DWORD MAX_CACHE_ENTRY_BYTES = 64 * 1024 * 1024;
+	if (nSize == INVALID_FILE_SIZE || nSize == 0 || nSize > MAX_CACHE_ENTRY_BYTES) {
 		::CloseHandle(hFile);
 		return false;
 	}
@@ -377,12 +387,23 @@ void CThumbnailCache::PutAsync(LPCTSTR sFilePath, int nThumbWidth, int nThumbHei
 	if (!m_bEnabled || sFilePath == NULL || *sFilePath == 0 || pBGRA == NULL) return;
 	if (nThumbWidth <= 0 || nThumbHeight <= 0 || nOrigWidth <= 0 || nOrigHeight <= 0) return;
 
-	AsyncPutJob job;
+	if (static_cast<size_t>(nThumbWidth) > SIZE_MAX / static_cast<size_t>(nThumbHeight) / 4) return;
+	AsyncPutJob job{};
 	job.sFilePath = sFilePath;
 	job.nThumbW = nThumbWidth;
 	job.nThumbH = nThumbHeight;
 	job.nOrigW = nOrigWidth;
 	job.nOrigH = nOrigHeight;
+	HANDLE hFile = ::CreateFile(sFilePath, FILE_READ_ATTRIBUTES,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+	if (hFile == INVALID_HANDLE_VALUE) return;
+	LARGE_INTEGER fileSize{};
+	const bool haveIdentity = ::GetFileSizeEx(hFile, &fileSize) != FALSE &&
+		::GetFileTime(hFile, NULL, NULL, &job.lastModTime) != FALSE;
+	::CloseHandle(hFile);
+	if (!haveIdentity || fileSize.QuadPart <= 0) return;
+	job.nFileSize = fileSize.QuadPart;
+
 	// Copy the pixels now - the caller's thumbnail can be freed at any time.
 	size_t nBytes = (size_t)nThumbWidth * nThumbHeight * 4;
 	job.pixels.assign((const unsigned char*)pBGRA, (const unsigned char*)pBGRA + nBytes);
@@ -399,6 +420,8 @@ void CThumbnailCache::PutAsync(LPCTSTR sFilePath, int nThumbWidth, int nThumbHei
 				return;
 			}
 		}
+		static const size_t MAX_PENDING_JOBS = 64;
+		if (m_jobs.size() >= MAX_PENDING_JOBS) m_jobs.pop_front();
 		m_jobs.push_back(std::move(job));
 		if (!m_worker.joinable()) {
 			m_worker = std::thread(&CThumbnailCache::WorkerLoop, this);
@@ -417,9 +440,10 @@ void CThumbnailCache::WorkerLoop() {
 			job = std::move(m_jobs.front());
 			m_jobs.pop_front();
 		}
-		// Resolve the source file identity (size + mtime) here on the worker,
-		// so the paint thread never touches the file system.
-		HANDLE hFile = ::CreateFile(job.sFilePath, GENERIC_READ, FILE_SHARE_READ, NULL,
+		// Verify that the pixels still match the source identity captured when
+		// they were copied. A changed source must not receive the old thumbnail.
+		HANDLE hFile = ::CreateFile(job.sFilePath, FILE_READ_ATTRIBUTES,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
 			OPEN_EXISTING, 0, NULL);
 		if (hFile == INVALID_HANDLE_VALUE) continue;
 		FILETIME ftMod;
@@ -427,9 +451,10 @@ void CThumbnailCache::WorkerLoop() {
 		bool bHaveStat = (::GetFileTime(hFile, NULL, NULL, &ftMod) != FALSE) &&
 			(::GetFileSizeEx(hFile, &liSize) != FALSE);
 		::CloseHandle(hFile);
-		if (!bHaveStat || liSize.QuadPart <= 0) continue;
+		if (!bHaveStat || liSize.QuadPart != job.nFileSize ||
+			CompareFileTime(&ftMod, &job.lastModTime) != 0) continue;
 
-		StoreEntry(job.sFilePath, liSize.QuadPart, ftMod, job.pixels.data(),
+		StoreEntry(job.sFilePath, job.nFileSize, job.lastModTime, job.pixels.data(),
 			job.nThumbW, job.nThumbH, job.nOrigW, job.nOrigH);
 	}
 }
@@ -494,7 +519,9 @@ void CThumbnailCache::StoreEntry(LPCTSTR sFilePath, __int64 nFileSize, const FIL
 		std::lock_guard<std::mutex> lock(m_csLock);
 		// Write atomically: temp file then rename, so a crash mid-write cannot
 		// leave a half-written cache entry that would fail to decode later.
-		CString sTemp = sCacheFile + _T(".tmp");
+		static volatile LONG sTempSequence = 0;
+		CString sTemp;
+		sTemp.Format(_T("%s.tmp.%lu.%ld"), sCacheFile.GetString(), ::GetCurrentProcessId(), ::InterlockedIncrement(&sTempSequence));
 		WIN32_FILE_ATTRIBUTE_DATA oldData;
 		__int64 oldSize = 0;
 		if (::GetFileAttributesEx(sCacheFile, GetFileExInfoStandard, &oldData))

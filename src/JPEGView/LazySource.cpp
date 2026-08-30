@@ -27,6 +27,7 @@ CLazySource::~CLazySource()
 
 void CLazySource::Release()
 {
+	CSourceLockGuard lock(*this);
 	if (m_bReleased)
 		return;
 	m_bReleased = true;
@@ -66,7 +67,10 @@ bool CLazySource::ReadSinglePixel(int x, int y, uint8 outBGRA[4])
 		{
 			try
 			{
-				m_singlePixelCache.resize((size_t)m_nTileWidth * m_nTileHeight * 4);
+				const size_t tilePixels = static_cast<size_t>(m_nTileWidth) * m_nTileHeight;
+				if (tilePixels / static_cast<size_t>(m_nTileWidth) != static_cast<size_t>(m_nTileHeight) || tilePixels > SIZE_MAX / 4)
+					return false;
+				m_singlePixelCache.resize(tilePixels * 4);
 			}
 			catch (const std::bad_alloc&)
 			{
@@ -90,6 +94,8 @@ bool CLazySource::ReadSinglePixel(int x, int y, uint8 outBGRA[4])
 		if (m_nRowsPerStrip <= 0 || m_nWidth <= 0)
 			return false;
 		int strip = y / m_nRowsPerStrip;
+		if (m_nWidth > INT_MAX / 4 || static_cast<size_t>(m_nRowsPerStrip) > SIZE_MAX / (static_cast<size_t>(m_nWidth) * 4))
+			return false;
 		int dstStride = m_nWidth * 4;
 		if (m_nCachedRevision != m_nSourceRevision || m_bCachedUnitTiled ||
 			m_nCachedUnitX != 0 || m_nCachedUnitY != strip)
@@ -118,14 +124,16 @@ bool CLazySource::ReadSinglePixel(int x, int y, uint8 outBGRA[4])
 
 bool CLazySource::SamplePoint(int x, int y, int zoomLevel, uint8 outBGRA[4])
 {
-	if (m_bReleased)
+	if (outBGRA == nullptr)
 		return false;
 
 	// Hold the source lock across the SetPyramidLevel + pixel read so another
 	// thread cannot switch the IFD between the level-set and the read. The
 	// lock is recursive so DecodeStrips/DecodeTile (which also lock) can be
 	// called while this outer lock is held.
-	LockSource();
+	CSourceLockGuard lock(*this);
+	if (m_bReleased)
+		return false;
 	bool bOk = false;
 	// zoomLevel > 0이면 임베디드 피라미드 레벨로 전환.
 	if (zoomLevel > 0 && zoomLevel < m_nPyramidLevels)
@@ -148,14 +156,13 @@ bool CLazySource::SamplePoint(int x, int y, int zoomLevel, uint8 outBGRA[4])
 		if (SetPyramidLevel(0) && x >= 0 && x < m_nWidth && y >= 0 && y < m_nHeight)
 			bOk = ReadSinglePixel(x, y, outBGRA);
 	}
-	UnlockSource();
 	return bOk;
 }
 
 bool CLazySource::DecodeRegion(const CRect& sourceRect, int zoomLevel,
                                 uint8* pDst, CSize dstSize)
 {
-	if (m_bReleased || pDst == nullptr)
+	if (pDst == nullptr)
 		return false;
 	if (dstSize.cx <= 0 || dstSize.cy <= 0)
 		return false;
@@ -164,7 +171,9 @@ bool CLazySource::DecodeRegion(const CRect& sourceRect, int zoomLevel,
 	// thread cannot switch the IFD between the level-set and the read. The
 	// lock is recursive so DecodeStrips/DecodeTile (which also lock) can be
 	// called while this outer lock is held.
-	LockSource();
+	CSourceLockGuard lock(*this);
+	if (m_bReleased)
+		return false;
 	bool bOk = false;
 	// 피라미드 레벨 전환.
 	if (zoomLevel > 0 && zoomLevel < m_nPyramidLevels)
@@ -195,14 +204,13 @@ bool CLazySource::DecodeRegion(const CRect& sourceRect, int zoomLevel,
 		else
 			bOk = DecodeRegionStripped(rect, zoomLevel, pDst, dstSize);
 	}
-	UnlockSource();
 	return bOk;
 }
 
 bool CLazySource::DecodeVisibleRegion(const CRect& viewportRect, int zoomLevel,
                                       uint8* pDst, CSize dstSize)
 {
-	if (m_bReleased || pDst == nullptr)
+	if (pDst == nullptr)
 		return false;
 	if (dstSize.cx <= 0 || dstSize.cy <= 0)
 		return false;
@@ -223,32 +231,40 @@ bool CLazySource::DecodeVisibleRegion(const CRect& viewportRect, int zoomLevel,
 bool CLazySource::DecodeResampledRegion(CSize fullTargetSize, CPoint targetOffset,
                                         CSize dstSize, uint8* pDst)
 {
-	if (m_bReleased || pDst == nullptr || fullTargetSize.cx <= 0 || fullTargetSize.cy <= 0 ||
+	if (pDst == nullptr || fullTargetSize.cx <= 0 || fullTargetSize.cy <= 0 ||
 		dstSize.cx <= 0 || dstSize.cy <= 0 || targetOffset.x < 0 || targetOffset.y < 0 ||
-		targetOffset.x + dstSize.cx > fullTargetSize.cx ||
-		targetOffset.y + dstSize.cy > fullTargetSize.cy)
+		dstSize.cx > fullTargetSize.cx || dstSize.cy > fullTargetSize.cy ||
+		targetOffset.x > fullTargetSize.cx - dstSize.cx ||
+		targetOffset.y > fullTargetSize.cy - dstSize.cy)
 		return false;
 
-	LockSource();
+	CSourceLockGuard lock(*this);
+	if (m_bReleased)
+		return false;
 	bool bOk = false;
 	try
 	{
 		// Prefer an embedded pyramid level that is still at least as large as
 		// the requested target.  Non-pyramidal TIFFs stay at level zero.
 		int level = 0;
-		while (level + 1 < m_nPyramidLevels) {
-			int nextW = max(1, m_nBaseWidth >> (level + 1));
-			int nextH = max(1, m_nBaseHeight >> (level + 1));
-			if (nextW < fullTargetSize.cx || nextH < fullTargetSize.cy)
+		// SUBIFD pyramids are not required to use exact powers of two. Probe
+		// their real dimensions instead of estimating them with a bit shift.
+		for (int candidate = 1; candidate < m_nPyramidLevels; ++candidate) {
+			if (!SetPyramidLevel(candidate))
 				break;
-			++level;
+			if (m_nWidth < fullTargetSize.cx || m_nHeight < fullTargetSize.cy) {
+				SetPyramidLevel(level);
+				break;
+			}
+			level = candidate;
 		}
 		if (!SetPyramidLevel(level) || m_nWidth <= 0 || m_nHeight <= 0)
 			throw std::runtime_error("invalid lazy image level");
 
 		std::vector<int> sourceX((size_t)dstSize.cx);
 		std::vector<int> sourceY((size_t)dstSize.cy);
-		const bool downsampling = fullTargetSize.cx <= m_nWidth;
+		const bool downsamplingX = fullTargetSize.cx <= m_nWidth;
+		const bool downsamplingY = fullTargetSize.cy <= m_nHeight;
 		auto fillCoordinates = [](std::vector<int>& coords, int sourceSize,
 			int targetSize, int targetStart, bool downsample) {
 			uint64_t increment;
@@ -265,8 +281,8 @@ bool CLazySource::DecodeResampledRegion(CSize fullTargetSize, CPoint targetOffse
 				position += increment;
 			}
 		};
-		fillCoordinates(sourceX, m_nWidth, fullTargetSize.cx, targetOffset.x, downsampling);
-		fillCoordinates(sourceY, m_nHeight, fullTargetSize.cy, targetOffset.y, downsampling);
+		fillCoordinates(sourceX, m_nWidth, fullTargetSize.cx, targetOffset.x, downsamplingX);
+		fillCoordinates(sourceY, m_nHeight, fullTargetSize.cy, targetOffset.y, downsamplingY);
 
 		bOk = m_bTiled ? ResampleTiled(sourceX, sourceY, pDst, dstSize)
 		                 : ResampleStripped(sourceX, sourceY, pDst, dstSize);
@@ -279,7 +295,6 @@ bool CLazySource::DecodeResampledRegion(CSize fullTargetSize, CPoint targetOffse
 	{
 		bOk = false;
 	}
-	UnlockSource();
 	return bOk;
 }
 

@@ -15,7 +15,8 @@ public:
 	static void* Compress(const void* buffer, // address of image in memory, format must be 3 bytes per pixel BRGBGR with padding to 4 byte boundary
 		int width, // width of image in pixels
 		int height, // height of image in pixels.
-		int& len); // returns length of compressed data
+		int& len, // returns length of compressed data
+		int nchannels = 3); // 3 for padded BGR, 4 for packed BGRA
 
 	static void FreeMemory(void* pointer);
 };

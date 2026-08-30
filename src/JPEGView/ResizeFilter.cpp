@@ -172,7 +172,7 @@ static void GetBicubicFilter(uint16 nFrac, int16* pFilterOut) {
 		dSum += dFilter[i];
 	}
 	for (int i = 0; i < BICUBIC_FILTER_LEN; i++) {
-		pFilterOut[i] = roundToInt16(CResizeFilter::FP_ONE * dFilter[i] / dSum);
+		pFilterOut[i] = roundToInt16(static_cast<double>(CResizeFilter::FP_ONE) * dFilter[i] / dSum);
 	}
 
 	NormalizeFilter(pFilterOut, BICUBIC_FILTER_LEN);
@@ -421,7 +421,7 @@ int16* CResizeFilter::GetFilter(uint16 nFrac, EFilterType eFilter) {
 	}
 	int nSum = 0;
 	for (int i = 0; i < m_nFilterLen; i++) {
-		m_Filter[i] = roundToInt16(FP_ONE * dFilter[i] / dSum);
+		m_Filter[i] = roundToInt16(static_cast<double>(FP_ONE) * dFilter[i] / dSum);
 		nSum += m_Filter[i];
 	}
 	m_Filter[0] += (int16)(FP_ONE - nSum);
@@ -435,14 +435,9 @@ int16* CResizeFilter::GetFilter(uint16 nFrac, EFilterType eFilter) {
 // CResizeFilterCache
 //////////////////////////////////////////////////////////////////////////////////////
 
-CResizeFilterCache* CResizeFilterCache::sm_instance;
-
 CResizeFilterCache& CResizeFilterCache::This() {
-	if (sm_instance == NULL) {
-		sm_instance = new CResizeFilterCache();
-		atexit(&Delete);
-	}
-	return *sm_instance;
+	static CResizeFilterCache instance;
+	return instance;
 }
 
 CResizeFilterCache::CResizeFilterCache()
@@ -599,7 +594,7 @@ FilterKernel CGaussFilter::CalculateKernel(double dRadius) {
 	filterKernel.FilterOffset = (nFilterLen - 1) >> 1; // center filter
 	int j = 0;
 	for (int i = filterKernel.FilterOffset; i >= 0; i--) {
-		filterKernel.Kernel[i] = roundToInt16(kernel[j] * FP_ONE);
+		filterKernel.Kernel[i] = roundToInt16(kernel[j] * static_cast<double>(FP_ONE));
 		filterKernel.Kernel[filterKernel.FilterOffset + j] = filterKernel.Kernel[i];
 		j++;
 	}

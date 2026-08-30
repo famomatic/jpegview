@@ -14,8 +14,11 @@ CWorkThread::CWorkThread(bool bCoInitialize)
 	m_bCoInitialize = bCoInitialize;
 	::InitializeCriticalSection(&m_csList);
 	m_wakeUp = ::CreateEvent(0, TRUE, FALSE, NULL);
-
-	m_hThread = (HANDLE)_beginthreadex(nullptr, 0, ThreadFunc, this, 0, nullptr);
+	m_hThread = m_wakeUp != NULL ? (HANDLE)_beginthreadex(nullptr, 0, ThreadFunc, this, 0, nullptr) : NULL;
+	if (m_hThread == NULL) {
+		m_bTerminate.store(true);
+		if (m_wakeUp != NULL) { ::CloseHandle(m_wakeUp); m_wakeUp = NULL; }
+	}
 }
 
 CWorkThread::~CWorkThread(void) {
@@ -28,35 +31,48 @@ CWorkThread::~CWorkThread(void) {
 	m_requestList.clear();
 	::LeaveCriticalSection(&m_csList);
 	::DeleteCriticalSection(&m_csList);
-	::CloseHandle(m_wakeUp);
+	if (m_wakeUp != NULL) ::CloseHandle(m_wakeUp);
 }
 
-void CWorkThread::ProcessAndWait(CRequestBase* pRequest) {
+bool CWorkThread::ProcessAndWait(CRequestBase* pRequest) {
+	if (pRequest == NULL) return false;
 	bool bCreateEvent = pRequest->EventFinished == NULL;
 	if (bCreateEvent) {
 		pRequest->EventFinished = ::CreateEvent(0, TRUE, FALSE, NULL);
+		if (pRequest->EventFinished == NULL) { delete pRequest; return false; }
 	}
 
-	ProcessAsync(pRequest);
-	::WaitForSingleObject(pRequest->EventFinished, INFINITE);
+	if (!ProcessAsync(pRequest)) {
+		if (bCreateEvent) ::CloseHandle(pRequest->EventFinished);
+		delete pRequest;
+		return false;
+	}
+	const DWORD waitResult = ::WaitForSingleObject(pRequest->EventFinished, INFINITE);
 
 	if (bCreateEvent) {
 		::CloseHandle(pRequest->EventFinished);
+		pRequest->EventFinished = NULL;
 	}
-	pRequest->Deleted = true; // make sure the request is removed from the queue
+	pRequest->Deleted.store(true, std::memory_order_release); // worker owns and removes it
+	return waitResult == WAIT_OBJECT_0;
 }
 
-void CWorkThread::ProcessAsync(CRequestBase* pRequest) {
+bool CWorkThread::ProcessAsync(CRequestBase* pRequest) {
+	if (pRequest == NULL) return false;
+	bool accepted = false;
 	::EnterCriticalSection(&m_csList);
-	m_requestList.push_back(pRequest);
+	if (!m_bTerminate.load(std::memory_order_acquire) && m_hThread != NULL) {
+		m_requestList.push_back(pRequest);
+		accepted = true;
+	}
 	::LeaveCriticalSection(&m_csList);
 
-	// there is something to process now
-	::SetEvent(m_wakeUp);
+	if (accepted) ::SetEvent(m_wakeUp);
+	return accepted;
 }
 
 void CWorkThread::Terminate() { 
-	m_bTerminate = true;
+	m_bTerminate.store(true, std::memory_order_release);
 	if (m_hThread != NULL) {
 		::SetEvent(m_wakeUp);
 		::WaitForSingleObject(m_hThread, INFINITE);
@@ -66,20 +82,7 @@ void CWorkThread::Terminate() {
 }
 
 void CWorkThread::Abort() {
-	try {
-		if (m_hThread != NULL) {
-			m_bTerminate = true;
-			::SetEvent(m_wakeUp);
-			if (WAIT_TIMEOUT == ::WaitForSingleObject(m_hThread, 100)) {
-				::TerminateThread(m_hThread, 1);
-				::WaitForSingleObject(m_hThread, INFINITE);
-			}
-			::CloseHandle(m_hThread);
-			m_hThread = NULL;
-		}
-	} catch (...) {
-		// do not crash
-	}
+	Terminate();
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -103,7 +106,7 @@ unsigned __stdcall CWorkThread::ThreadFunc(void* arg) {
 		int nNumUnprocessedRequests = 0;
 		std::list<CRequestBase*>::iterator iter;
 		for (iter = thisPtr->m_requestList.begin( ); iter != thisPtr->m_requestList.end( ); iter++ ) {
-			if ((*iter)->Processed == false) {
+			if (!(*iter)->Processed.load(std::memory_order_acquire)) {
 				requestHandled = *iter;
 				nNumUnprocessedRequests++;
 				// Process requests in FIFO order. Previously the loop kept
@@ -119,28 +122,17 @@ unsigned __stdcall CWorkThread::ThreadFunc(void* arg) {
 
 		// process this request
 		if (requestHandled != NULL) {
-			thisPtr->ProcessRequest(*requestHandled);
-			requestHandled->Processed = true;
-
-			// signal end of processing
-			if (requestHandled->EventFinished != NULL) {
-				if (requestHandled->EventFinishedCounter == NULL) {
-					::SetEvent(requestHandled->EventFinished);
-				} else {
-					LONG nNewValue = ::InterlockedDecrement(requestHandled->EventFinishedCounter);
-					if (nNewValue <= 0) {
-						::SetEvent(requestHandled->EventFinished);
-					}
-				}
-			}
-			if (!thisPtr->m_bTerminate) {
-				thisPtr->AfterFinishProcess(*requestHandled);
+			try { thisPtr->ProcessRequest(*requestHandled); } catch (...) { }
+			requestHandled->Processed.store(true, std::memory_order_release);
+			SignalRequest(requestHandled);
+			if (!thisPtr->m_bTerminate.load(std::memory_order_acquire)) {
+				try { thisPtr->AfterFinishProcess(*requestHandled); } catch (...) { }
 			}
 			nNumUnprocessedRequests--;
 		}
 
 		// if there are no more requests, sleep until woke up
-		if (nNumUnprocessedRequests == 0 && !thisPtr->m_bTerminate) {
+		if (nNumUnprocessedRequests == 0 && !thisPtr->m_bTerminate.load(std::memory_order_acquire)) {
 			// m_wakeUp is a manual-reset event. The classic lost-wakeup
 			// pattern here is: check the queue (empty) -> a producer posts a
 			// request and SetEvent() -> we ResetEvent() -> we wait forever.
@@ -155,7 +147,7 @@ unsigned __stdcall CWorkThread::ThreadFunc(void* arg) {
 				bStillEmpty = true;
 				std::list<CRequestBase*>::iterator iter2;
 				for (iter2 = thisPtr->m_requestList.begin(); iter2 != thisPtr->m_requestList.end(); iter2++) {
-					if ((*iter2)->Processed == false) {
+					if (!(*iter2)->Processed.load(std::memory_order_acquire)) {
 						bStillEmpty = false;
 						break;
 					}
@@ -166,7 +158,13 @@ unsigned __stdcall CWorkThread::ThreadFunc(void* arg) {
 				::WaitForSingleObject(thisPtr->m_wakeUp, INFINITE);
 			}
 		}
-	} while (!thisPtr->m_bTerminate);
+	} while (!thisPtr->m_bTerminate.load(std::memory_order_acquire));
+	// Wake callers waiting on requests that were queued but not started before termination.
+	::EnterCriticalSection(&thisPtr->m_csList);
+	for (CRequestBase* request : thisPtr->m_requestList) {
+		if (!request->Processed.exchange(true, std::memory_order_acq_rel)) SignalRequest(request);
+	}
+	::LeaveCriticalSection(&thisPtr->m_csList);
 	thisPtr->BeforeThreadExit();
 	if (thisPtr->m_bCoInitialize) {
 		::CoUninitialize();
@@ -180,11 +178,20 @@ void CWorkThread::DeleteAllRequestsMarkedForDeletion(CWorkThread* thisPtr) {
 	// when many requests were marked for deletion at once.
 	std::list<CRequestBase*>::iterator iter = thisPtr->m_requestList.begin();
 	while (iter != thisPtr->m_requestList.end()) {
-		if ((*iter)->Deleted) {
+		if ((*iter)->Deleted.load(std::memory_order_acquire)) {
 			delete *iter;
 			iter = thisPtr->m_requestList.erase(iter);
 		} else {
 			iter++;
 		}
+	}
+}
+
+void CWorkThread::SignalRequest(CRequestBase* request) {
+	if (request == NULL || request->EventFinished == NULL) return;
+	if (request->EventFinishedCounter == NULL) {
+		::SetEvent(request->EventFinished);
+	} else if (::InterlockedDecrement(request->EventFinishedCounter) <= 0) {
+		::SetEvent(request->EventFinished);
 	}
 }

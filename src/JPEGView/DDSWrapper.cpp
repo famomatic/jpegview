@@ -1,12 +1,10 @@
 #include "stdafx.h"
 #include "DDSWrapper.h"
 #include "MaxImageDef.h"
-#include "Helpers.h"
 #include <memory>
 
 // DDS (DirectDraw Surface) reader.
-// Supports uncompressed RGB/RGBA (DXGI_FORMAT_R8G8B8A8_UNORM, R8G8B8, B8G8R8, B8G8R8A8)
-// and the most common BC1/BC3/BC7 block-compressed formats used in game textures.
+// Supports uncompressed RGB/RGBA and BC1/BC2/BC3 block-compressed textures.
 // Reference: Microsoft DDS Programming Guide.
 
 #pragma pack(push,1)
@@ -64,20 +62,19 @@ static inline DWORD ColorRGBA(BYTE r, BYTE g, BYTE b, BYTE a) {
 	return (DWORD)(a << 24) | (DWORD)(r << 16) | (DWORD)(g << 8) | (DWORD)b; // BGRA
 }
 
-// Decode BC1 (DXT1) block into 4x4 BGRA pixels
-static void DecodeBC1(const BYTE* block, DWORD* out) {
+static void DecodeBCColor(const BYTE* block, DWORD* out, bool allowTransparentIndex) {
 	DWORD c0 = block[0] | (block[1] << 8);
 	DWORD c1 = block[2] | (block[3] << 8);
-	BYTE r0 = ((c0 >> 11) & 0x1F) << 3;
-	BYTE g0 = ((c0 >> 5) & 0x3F) << 2;
-	BYTE b0 = (c0 & 0x1F) << 3;
-	BYTE r1 = ((c1 >> 11) & 0x1F) << 3;
-	BYTE g1 = ((c1 >> 5) & 0x3F) << 2;
-	BYTE b1 = (c1 & 0x1F) << 3;
+	BYTE r0 = static_cast<BYTE>((((c0 >> 11) & 0x1F) * 255 + 15) / 31);
+	BYTE g0 = static_cast<BYTE>((((c0 >> 5) & 0x3F) * 255 + 31) / 63);
+	BYTE b0 = static_cast<BYTE>(((c0 & 0x1F) * 255 + 15) / 31);
+	BYTE r1 = static_cast<BYTE>((((c1 >> 11) & 0x1F) * 255 + 15) / 31);
+	BYTE g1 = static_cast<BYTE>((((c1 >> 5) & 0x3F) * 255 + 31) / 63);
+	BYTE b1 = static_cast<BYTE>(((c1 & 0x1F) * 255 + 15) / 31);
 	DWORD colors[4];
 	colors[0] = ColorRGBA(r0, g0, b0, 255);
 	colors[1] = ColorRGBA(r1, g1, b1, 255);
-	if (c0 > c1) {
+	if (c0 > c1 || !allowTransparentIndex) {
 		colors[2] = ColorRGBA((BYTE)((2*r0+r1)/3), (BYTE)((2*g0+g1)/3), (BYTE)((2*b0+b1)/3), 255);
 		colors[3] = ColorRGBA((BYTE)((r0+2*r1)/3), (BYTE)((g0+2*g1)/3), (BYTE)((b0+2*b1)/3), 255);
 	} else {
@@ -90,11 +87,17 @@ static void DecodeBC1(const BYTE* block, DWORD* out) {
 	}
 }
 
+// Decode BC1 (DXT1) block into 4x4 BGRA pixels.
+static void DecodeBC1(const BYTE* block, DWORD* out) {
+	DecodeBCColor(block, out, true);
+}
+
 // Decode BC3 (DXT5) block into 4x4 BGRA pixels
 static void DecodeBC3(const BYTE* block, DWORD* out) {
 	BYTE a0 = block[0];
 	BYTE a1 = block[1];
-	DWORD aIdx = block[2] | (block[3] << 8) | (block[4] << 16) | (block[5] << 24);
+	uint64_t aIdx = 0;
+	for (int i = 0; i < 6; ++i) aIdx |= static_cast<uint64_t>(block[2 + i]) << (8 * i);
 	BYTE alphas[8];
 	alphas[0] = a0; alphas[1] = a1;
 	if (a0 > a1) {
@@ -106,20 +109,31 @@ static void DecodeBC3(const BYTE* block, DWORD* out) {
 	}
 	// color block starts at offset 8
 	DWORD colors[16];
-	DecodeBC1(block + 8, colors);
+	DecodeBCColor(block + 8, colors, false);
 	for (int i = 0; i < 16; i++) {
-		BYTE a = alphas[(aIdx >> (i*3)) & 7];
+		BYTE a = alphas[(aIdx >> (i * 3)) & 7];
 		out[i] = (colors[i] & 0x00FFFFFF) | (DWORD)(a << 24);
 	}
 }
 
-// Decode BC7 block (simplified: full BC7 spec is complex; this handles common modes)
-// For full correctness we'd need the complete BC7 decoder; here we implement the
-// standard mode-based decode used by DirectXTex.
-static void DecodeBC7(const BYTE* block, DWORD* out) {
-	// BC7 is complex; fall back to transparent magenta to signal unsupported
-	// rather than risk incorrect output. A future enhancement can add full BC7.
-	for (int i = 0; i < 16; i++) out[i] = ColorRGBA(255, 0, 255, 128);
+static void DecodeBC2(const BYTE* block, DWORD* out) {
+	DecodeBCColor(block + 8, out, false);
+	for (int i = 0; i < 16; ++i) {
+		const BYTE alpha = static_cast<BYTE>(((block[i / 2] >> ((i & 1) * 4)) & 0x0F) * 17);
+		out[i] = (out[i] & 0x00FFFFFF) | (static_cast<DWORD>(alpha) << 24);
+	}
+}
+
+static void UnpremultiplyBlock(DWORD* pixels) {
+	for (int i = 0; i < 16; ++i) {
+		const DWORD pixel = pixels[i];
+		const BYTE alpha = static_cast<BYTE>(pixel >> 24);
+		if (alpha == 0 || alpha == 255) continue;
+		const BYTE b = static_cast<BYTE>(min(255u, ((pixel & 0xFFu) * 255u + alpha / 2u) / alpha));
+		const BYTE g = static_cast<BYTE>(min(255u, (((pixel >> 8) & 0xFFu) * 255u + alpha / 2u) / alpha));
+		const BYTE r = static_cast<BYTE>(min(255u, (((pixel >> 16) & 0xFFu) * 255u + alpha / 2u) / alpha));
+		pixels[i] = ColorRGBA(r, g, b, alpha);
+	}
 }
 
 void* DdsReader::ReadImage(int& width, int& height, int& bpp, bool& outOfMemory,
@@ -130,36 +144,44 @@ void* DdsReader::ReadImage(int& width, int& height, int& bpp, bool& outOfMemory,
 	width = 0;
 	height = 0;
 
-	if (sizebytes < 12) return NULL;
-	const BYTE* p = (const BYTE*)buffer;
-	DWORD magic = *(DWORD*)p;
+	if (buffer == NULL || sizebytes < static_cast<int>(4 + sizeof(DDS_HEADER))) return NULL;
+	const BYTE* p = static_cast<const BYTE*>(buffer);
+	DWORD magic = 0;
+	memcpy(&magic, p, sizeof(magic));
 	if (magic != DDS_MAGIC) return NULL;
 
-	const DDS_HEADER* hdr = (const DDS_HEADER*)(p + 4);
-	if (hdr->dwSize != 124) return NULL;
+	DDS_HEADER header{};
+	memcpy(&header, p + 4, sizeof(header));
+	const DDS_HEADER* hdr = &header;
+	if (hdr->dwSize != sizeof(DDS_HEADER) || hdr->ddspf.dwSize != sizeof(DDS_PIXELFORMAT)) return NULL;
 
 	int w = (int)hdr->dwWidth;
 	int h = (int)hdr->dwHeight;
 	if (w <= 0 || h <= 0 || w > (int)MAX_IMAGE_DIMENSION || h > (int)MAX_IMAGE_DIMENSION) return NULL;
 	if ((double)w * h > MAX_IMAGE_PIXELS) { outOfMemory = true; return NULL; }
 
-	const BYTE* pImageData = p + 4 + 124;
+	size_t dataOffset = 4 + sizeof(DDS_HEADER);
 	DWORD dxgiFormat = DXGI_FORMAT_UNKNOWN;
-	bool isCompressed = false;
 	int blockSize = 0; // bytes per 4x4 block
 
 	// Check for DX10 header
 	if ((hdr->ddspf.dwFlags & DDPF_FOURCC) && hdr->ddspf.dwFourCC == '01XD') { // "DX10"
-		if (sizebytes < 4 + 124 + 20) return NULL;
-		const DDS_HEADER_DXT10* dx10 = (const DDS_HEADER_DXT10*)(p + 4 + 124);
-		dxgiFormat = dx10->dxgiFormat;
-		pImageData = p + 4 + 124 + 20;
+		if (static_cast<size_t>(sizebytes) < dataOffset + sizeof(DDS_HEADER_DXT10)) return NULL;
+		DDS_HEADER_DXT10 dx10{};
+		memcpy(&dx10, p + dataOffset, sizeof(dx10));
+		if (dx10.arraySize == 0 || dx10.resourceDimension == 0) return NULL;
+		dxgiFormat = dx10.dxgiFormat;
+		dataOffset += sizeof(DDS_HEADER_DXT10);
 	}
+	const BYTE* pImageData = p + dataOffset;
+	const size_t nDataBytes = static_cast<size_t>(sizebytes) - dataOffset;
 
-	DWORD* pPixelData = new(std::nothrow) DWORD[w * h];
+	const size_t pixelCount = static_cast<size_t>(w) * static_cast<size_t>(h);
+	if (pixelCount > SIZE_MAX / sizeof(DWORD)) { outOfMemory = true; return NULL; }
+	DWORD* pPixelData = new(std::nothrow) DWORD[pixelCount];
 	if (pPixelData == NULL) { outOfMemory = true; return NULL; }
 	// Initialize to transparent
-	memset(pPixelData, 0, w * h * 4);
+	memset(pPixelData, 0, pixelCount * sizeof(DWORD));
 
 	auto putBlock = [&](DWORD* blockPixels, int bx, int by) {
 		for (int y = 0; y < 4; y++) {
@@ -176,7 +198,9 @@ void* DdsReader::ReadImage(int& width, int& height, int& bpp, bool& outOfMemory,
 	if (dxgiFormat == DXGI_FORMAT_R8G8B8A8_UNORM || dxgiFormat == DXGI_FORMAT_B8G8R8A8_UNORM ||
 		dxgiFormat == DXGI_FORMAT_B8G8R8X8_UNORM) {
 		// Uncompressed 32-bit
-		int srcBpp = 4;
+		const size_t required = pixelCount * 4;
+		if (required > nDataBytes) { delete[] pPixelData; return NULL; }
+		const int srcBpp = 4;
 		bool bgr = (dxgiFormat != DXGI_FORMAT_R8G8B8A8_UNORM);
 		for (int y = 0; y < h; y++) {
 			for (int x = 0; x < w; x++) {
@@ -190,33 +214,40 @@ void* DdsReader::ReadImage(int& width, int& height, int& bpp, bool& outOfMemory,
 		}
 	} else if (hdr->ddspf.dwFlags & DDPF_FOURCC) {
 		DWORD fourcc = hdr->ddspf.dwFourCC;
-		if (fourcc == '1TXD') { isCompressed = true; blockSize = 8; }       // DXT1
-		else if (fourcc == '3TXD') { isCompressed = true; blockSize = 16; } // DXT3
-		else if (fourcc == '5TXD') { isCompressed = true; blockSize = 16; } // DXT5
-		else if (fourcc == '2TXD' || fourcc == '4TXD') { isCompressed = true; blockSize = 16; } // DXT2/4
+		if (fourcc == '1TXD') { blockSize = 8; }       // DXT1 / BC1
+		else if (fourcc == '2TXD' || fourcc == '3TXD' || fourcc == '4TXD' || fourcc == '5TXD') { blockSize = 16; }
 		else {
-			// Unknown FourCC; try BC7 via DX10 already handled above, else fail
+			// BC4-BC7 and other DX10 formats are rejected until a complete decoder is available.
 			delete[] pPixelData;
 			return NULL;
 		}
 
-		int blocksX = (w + 3) / 4;
-		int blocksY = (h + 3) / 4;
+		const size_t blocksX = (static_cast<size_t>(w) + 3) / 4;
+		const size_t blocksY = (static_cast<size_t>(h) + 3) / 4;
+		if (blocksX > SIZE_MAX / blocksY || blocksX * blocksY > nDataBytes / static_cast<size_t>(blockSize)) {
+			delete[] pPixelData;
+			return NULL;
+		}
 		const BYTE* pBlock = pImageData;
 		DWORD blockPixels[16];
-		for (int by = 0; by < blocksY; by++) {
-			for (int bx = 0; bx < blocksX; bx++) {
+		for (size_t by = 0; by < blocksY; by++) {
+			for (size_t bx = 0; bx < blocksX; bx++) {
 				if (fourcc == '1TXD') DecodeBC1(pBlock, blockPixels);
-				else if (fourcc == '5TXD') DecodeBC3(pBlock, blockPixels);
-				else if (fourcc == '3TXD') DecodeBC3(pBlock, blockPixels); // DXT3 approximated as BC3 alpha
-				else DecodeBC7(pBlock, blockPixels);
-				putBlock(blockPixels, bx * 4, by * 4);
+				else if (fourcc == '2TXD' || fourcc == '3TXD') DecodeBC2(pBlock, blockPixels);
+				else DecodeBC3(pBlock, blockPixels);
+				if (fourcc == '2TXD' || fourcc == '4TXD') UnpremultiplyBlock(blockPixels);
+				putBlock(blockPixels, static_cast<int>(bx * 4), static_cast<int>(by * 4));
 				pBlock += blockSize;
 			}
 		}
 	} else if (hdr->ddspf.dwFlags & DDPF_RGB) {
 		// Uncompressed RGB with bit masks
-		int srcBpp = hdr->ddspf.dwRGBBitCount / 8;
+		if (hdr->ddspf.dwRGBBitCount != 8 && hdr->ddspf.dwRGBBitCount != 16 &&
+			hdr->ddspf.dwRGBBitCount != 24 && hdr->ddspf.dwRGBBitCount != 32) {
+			delete[] pPixelData;
+			return NULL;
+		}
+		const size_t srcBpp = hdr->ddspf.dwRGBBitCount / 8;
 		DWORD rMask = hdr->ddspf.dwRBitMask;
 		DWORD gMask = hdr->ddspf.dwGBitMask;
 		DWORD bMask = hdr->ddspf.dwBBitMask;
@@ -227,15 +258,20 @@ void* DdsReader::ReadImage(int& width, int& height, int& bpp, bool& outOfMemory,
 		int rBits = getBits(rMask), gBits = getBits(gMask), bBits = getBits(bMask), aBits = getBits(aMask);
 		auto scale = [](DWORD v, int bits) -> BYTE {
 			if (bits == 0) return 0;
-			if (bits >= 8) return (BYTE)(v >> (bits - 8));
-			return (BYTE)(v << (8 - bits));
+			if (bits >= 8) return static_cast<BYTE>(v >> (bits - 8));
+			const DWORD maxValue = (1u << bits) - 1u;
+			return static_cast<BYTE>((v * 255u + maxValue / 2u) / maxValue);
 		};
-		int rowBytes = (w * srcBpp + 3) & ~3; // DWORD aligned
+		const size_t rowBytes = (static_cast<size_t>(w) * srcBpp + 3) & ~static_cast<size_t>(3);
+		if (rowBytes > SIZE_MAX / static_cast<size_t>(h) || rowBytes * static_cast<size_t>(h) > nDataBytes) {
+			delete[] pPixelData;
+			return NULL;
+		}
 		for (int y = 0; y < h; y++) {
 			const BYTE* row = pImageData + y * rowBytes;
 			for (int x = 0; x < w; x++) {
 				DWORD pix = 0;
-				memcpy(&pix, row + x * srcBpp, srcBpp);
+				memcpy(&pix, row + static_cast<size_t>(x) * srcBpp, srcBpp);
 				BYTE r = scale((pix & rMask) >> rShift, rBits);
 				BYTE g = scale((pix & gMask) >> gShift, gBits);
 				BYTE b = scale((pix & bMask) >> bShift, bBits);

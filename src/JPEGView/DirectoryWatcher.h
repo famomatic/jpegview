@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 
 // Watcher thread for a directory. Sends the two messages WM_DISPLAYED_FILE_CHANGED_ON_DISK and WM_ACTIVE_DIRECTORY_FILELIST_CHANGED
 // to the specified window.
@@ -22,7 +23,7 @@ private:
 	HANDLE m_newDirectoryEvent; // New directory needs to be watched
 	HANDLE m_hThread; // watchdog thread
 	HWND m_hTargetWindow;
-	bool m_bTerminate;
+	std::atomic_bool m_bTerminate;
 
 	CString m_sCurrentDirectory;
 	CString m_sCurrentFile;
