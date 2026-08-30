@@ -20,13 +20,17 @@ jobs:
         shell: cmd
         run: git submodule update --init deps/WTL-sf extras/third_party/qoi
 
-      - name: Fetch vcpkg baseline commit
+      - name: Fetch and bootstrap vcpkg baseline
         shell: powershell
         run: |
           $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
           Write-Host "Fetching vcpkg baseline commit $baseline into $env:VCPKG_ROOT"
           git -C $env:VCPKG_ROOT fetch --depth=1 origin $baseline
           git -C $env:VCPKG_ROOT checkout $baseline
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) {
+            throw "vcpkg bootstrap failed with exit code $LASTEXITCODE"
+          }
 
       - name: Configure (CMake + vcpkg manifest mode)
         shell: cmd
