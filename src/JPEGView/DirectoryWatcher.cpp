@@ -36,11 +36,11 @@ CDirectoryWatcher::CDirectoryWatcher(HWND hTargetWindow)
 	m_newDirectoryEvent = ::CreateEvent(0, TRUE, FALSE, NULL);
 	m_bModificationTimeValid = FALSE;
 
-	m_hThread = (HANDLE)_beginthread(ThreadFunc, 0, this);
+	m_hThread = (HANDLE)_beginthreadex(nullptr, 0, ThreadFunc, this, 0, nullptr);
 }
 
 CDirectoryWatcher::~CDirectoryWatcher(void) {
-	Abort();
+	Terminate();
 	::DeleteCriticalSection(&m_lock);
 	::CloseHandle(m_terminateEvent);
 	::CloseHandle(m_newDirectoryEvent);
@@ -50,7 +50,8 @@ void CDirectoryWatcher::Terminate() {
 	m_bTerminate = true;
 	if (m_hThread != NULL) {
 		::SetEvent(m_terminateEvent);
-		::WaitForSingleObject(m_hThread, 1000);
+		::WaitForSingleObject(m_hThread, INFINITE);
+		::CloseHandle(m_hThread);
 		m_hThread = NULL;
 	}
 }
@@ -58,11 +59,13 @@ void CDirectoryWatcher::Terminate() {
 void CDirectoryWatcher::Abort() {
 	try {
 		if (m_hThread != NULL) {
+			m_bTerminate = true;
 			::SetEvent(m_terminateEvent);
 			if (WAIT_TIMEOUT == ::WaitForSingleObject(m_hThread, 100)) {
 				::TerminateThread(m_hThread, 1);
-				::WaitForSingleObject(m_hThread, 100);
+				::WaitForSingleObject(m_hThread, INFINITE);
 			}
+			::CloseHandle(m_hThread);
 			m_hThread = NULL;
 		}
 	} catch (...) {
@@ -97,7 +100,7 @@ void CDirectoryWatcher::SetCurrentDirectory(LPCTSTR directoryName)
 // Private
 /////////////////////////////////////////////////////////////////////////////////////////////
 
-void CDirectoryWatcher::ThreadFunc(void* arg) {
+unsigned __stdcall CDirectoryWatcher::ThreadFunc(void* arg) {
 
 	CDirectoryWatcher* thisPtr = (CDirectoryWatcher*) arg;
 	bool bTerminate = false;
@@ -226,5 +229,5 @@ void CDirectoryWatcher::ThreadFunc(void* arg) {
 		}
 	} while (!bTerminate);
 
-	_endthread();
+	return 0;
 }

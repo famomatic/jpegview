@@ -14,7 +14,7 @@ struct AvifReader::avif_cache {
 	void* transform;
 };
 
-AvifReader::avif_cache AvifReader::cache = { 0 };
+thread_local AvifReader::avif_cache AvifReader::cache = { 0 };
 
 void* AvifReader::ReadImage(int& width,
 	int& height,
@@ -74,13 +74,22 @@ void* AvifReader::ReadImage(int& width,
 	cache.rgb.format = AVIF_RGB_FORMAT_BGRA;
 	cache.rgb.maxThreads = nthreads;
 
-	width = cache.rgb.width;
-	height = cache.rgb.height;
+	const uint64_t decodedWidth = cache.rgb.width;
+	const uint64_t decodedHeight = cache.rgb.height;
+	if (decodedWidth == 0 || decodedHeight == 0 ||
+		decodedWidth > MAX_IMAGE_DIMENSION || decodedHeight > MAX_IMAGE_DIMENSION ||
+		decodedWidth * decodedHeight > MAX_IMAGE_PIXELS) {
+		outOfMemory = true;
+		DeleteCache();
+		return NULL;
+	}
+	width = (int)decodedWidth;
+	height = (int)decodedHeight;
 	has_animation = cache.decoder->imageCount > 1;
 	frame_count = cache.decoder->imageCount;
 	frame_time = (int)(cache.decoder->imageTiming.duration * 1000.0);
 
-	size_t size = width * nchannels * height;
+	size_t size = (size_t)width * nchannels * height;
 	cache.rgb.pixels = new(std::nothrow) unsigned char[size];
 	if (cache.rgb.pixels == NULL) {
 		outOfMemory = true;
@@ -101,8 +110,8 @@ void* AvifReader::ReadImage(int& width,
 		avifCropRect crop;
 		avifDiagnostics diag;
 		if (avifCropRectConvertCleanApertureBox(&crop, clap, width, height, cache.decoder->image->yuvFormat, &diag)) {
-			POINT point = { crop.x, crop.y };
-			SIZE sz = { crop.width, crop.height };
+			POINT point = { (LONG)crop.x, (LONG)crop.y };
+			SIZE sz = { (LONG)crop.width, (LONG)crop.height };
 			void* pixels = CBasicProcessing::Crop32bpp(width, height, cache.rgb.pixels, CRect(point, sz));
 			if (pixels != NULL) {
 				delete[] cache.rgb.pixels;

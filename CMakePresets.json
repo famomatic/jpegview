@@ -21,7 +21,8 @@
       "inherits": "base",
       "architecture": "x64",
       "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-jpegview",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
         "JPEGVIEW_BUILD_TESTS": "ON"
       }
     },
@@ -30,7 +31,8 @@
       "inherits": "base",
       "architecture": "x64",
       "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "x64-windows-static"
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-jpegview",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets"
       }
     },
     {

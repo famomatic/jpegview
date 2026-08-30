@@ -30,5 +30,5 @@ public:
 
 private:
 	struct webp_cache;
-	static webp_cache cache;
+	static thread_local webp_cache cache;
 };

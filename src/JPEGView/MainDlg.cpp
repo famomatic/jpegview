@@ -1162,7 +1162,8 @@ LRESULT CMainDlg::OnDropFiles(UINT /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/, B
 		const int BUFF_SIZE = 512;
 		TCHAR buff[BUFF_SIZE];
 		if (::DragQueryFile(hDrop, 0, (LPTSTR) &buff, BUFF_SIZE - 1) > 0) {
-			if (::GetFileAttributes(buff) & FILE_ATTRIBUTE_DIRECTORY) {
+			DWORD attributes = ::GetFileAttributes(buff);
+			if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
 				_tcsncat_s(buff, BUFF_SIZE, _T("\\"), BUFF_SIZE);
 			}
 			OpenFile(buff, false);
@@ -1188,13 +1189,14 @@ LRESULT CMainDlg::OnTimer(UINT /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/, BOOL&
 		}
 		// Goto next image if no other messages to process are pending
 		if (!::PeekMessage(&msg, this->m_hWnd, 0, 0, PM_NOREMOVE)) {
-			int nRealDisplayTimeMs = ::GetTickCount() - m_nLastSlideShowImageTickCount;
+			DWORD nRealDisplayTimeMs = ::GetTickCount() - m_nLastSlideShowImageTickCount;
 			if (m_nCurrentTimeout > CSettingsProvider::This().SlideShowMinDisplayTimeMs() && wParam == SLIDESHOW_TIMER_EVENT_ID) {
-				if (m_nCurrentTimeout - nRealDisplayTimeMs > 100) {
-					// restart timer
-					::Sleep(m_nCurrentTimeout - nRealDisplayTimeMs);
+				if (nRealDisplayTimeMs < (DWORD)m_nCurrentTimeout &&
+					(DWORD)m_nCurrentTimeout - nRealDisplayTimeMs > 100) {
 					::KillTimer(this->m_hWnd, SLIDESHOW_TIMER_EVENT_ID);
-					::SetTimer(this->m_hWnd, SLIDESHOW_TIMER_EVENT_ID, m_nCurrentTimeout, NULL);
+					::SetTimer(this->m_hWnd, SLIDESHOW_TIMER_EVENT_ID,
+						(UINT)((DWORD)m_nCurrentTimeout - nRealDisplayTimeMs), NULL);
+					return 0;
 				}
 			}
 			GotoImage((wParam == ANIMATION_TIMER_EVENT_ID) ? POS_NextAnimation : POS_NextSlideShow, NO_REMOVE_KEY_MSG);
@@ -1202,6 +1204,8 @@ LRESULT CMainDlg::OnTimer(UINT /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/, BOOL&
 				AnimateTransition();
 			}
 			if (wParam != ANIMATION_TIMER_EVENT_ID) {
+				::KillTimer(this->m_hWnd, SLIDESHOW_TIMER_EVENT_ID);
+				::SetTimer(this->m_hWnd, SLIDESHOW_TIMER_EVENT_ID, m_nCurrentTimeout, NULL);
 				m_nLastSlideShowImageTickCount = ::GetTickCount();
 			}
 		}
@@ -4481,7 +4485,7 @@ void CMainDlg::AnimateTransition() {
 
 	// paint to memory DC
 	int nW = m_clientRect.Width(), nH = m_clientRect.Height();
-	CDC paintDC(::GetDC(m_hWnd));
+	CClientDC paintDC(m_hWnd);
 	CDC memDC;
 	memDC.CreateCompatibleDC(paintDC);
 	CBitmap memDCBitmap;

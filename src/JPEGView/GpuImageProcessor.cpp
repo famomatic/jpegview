@@ -230,12 +230,23 @@ void* GpuImageProcessor::ResampleHQ(CSize fullTargetSize, CPoint fullTargetOffse
         return CpuFallbackResample(fullTargetSize, fullTargetOffset, clippedTargetSize,
             sourceSize, pPixels, nChannels, dSharpen, eFilter, bUpsampling);
     }
-    if (pPixels == nullptr || clippedTargetSize.cx <= 0 || clippedTargetSize.cy <= 0 ||
+	if (pPixels == nullptr || clippedTargetSize.cx <= 0 || clippedTargetSize.cy <= 0 ||
         sourceSize.cx < 2 || sourceSize.cy < 2 || fullTargetSize.cx < 2 || fullTargetSize.cy < 2 ||
         (nChannels != 3 && nChannels != 4)) {
-        return CpuFallbackResample(fullTargetSize, fullTargetOffset, clippedTargetSize,
-            sourceSize, pPixels, nChannels, dSharpen, eFilter, bUpsampling);
-    }
+		return CpuFallbackResample(fullTargetSize, fullTargetOffset, clippedTargetSize,
+			sourceSize, pPixels, nChannels, dSharpen, eFilter, bUpsampling);
+	}
+	// FL 11.x textures are limited to 16384 in either dimension.  Reject an
+	// unsupported job before compiling filters or attempting allocations.  A
+	// lazy source is reduced to a viewport-sized DIB before reaching this
+	// backend; eager images safely use the CPU fallback here.
+	if (sourceSize.cx > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+		sourceSize.cy > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+		clippedTargetSize.cx > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+		clippedTargetSize.cy > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) {
+		return CpuFallbackResample(fullTargetSize, fullTargetOffset, clippedTargetSize,
+			sourceSize, pPixels, nChannels, dSharpen, eFilter, bUpsampling);
+	}
 
     ID3D11Device* device = CGpuDevice::Instance().Device();
     ID3D11DeviceContext* ctx = CGpuDevice::Instance().ImmediateContext();
@@ -243,6 +254,7 @@ void* GpuImageProcessor::ResampleHQ(CSize fullTargetSize, CPoint fullTargetOffse
         return CpuFallbackResample(fullTargetSize, fullTargetOffset, clippedTargetSize,
             sourceSize, pPixels, nChannels, dSharpen, eFilter, bUpsampling);
     }
+	std::unique_lock<std::mutex> contextLock = CGpuDevice::Instance().LockImmediateContext();
 
     // Build X and Y resize filters from the legacy CResizeFilter (same kernel
     // generation as the CPU path). Upsampling uses bicubic; downsampling uses
@@ -333,7 +345,11 @@ void* GpuImageProcessor::ResampleHQ(CSize fullTargetSize, CPoint fullTargetOffse
             sourceSize, pPixels, nChannels, dSharpen, eFilter, bUpsampling);
     }
 
-    gpu_tex::UploadBGRA(ctx, texSrc, srcW, srcH, srcData);
+    if (!gpu_tex::UploadBGRA(ctx, texSrc, srcW, srcH, srcData)) {
+        texSrc->Release(); texX->Release(); texOut->Release(); delete[] srcBGRA;
+        return CpuFallbackResample(fullTargetSize, fullTargetOffset, clippedTargetSize,
+            sourceSize, pPixels, nChannels, dSharpen, eFilter, bUpsampling);
+    }
 
     // Run the X pass: texSrc -> texX, using filterX kernels. Filters the
     // clipped target columns over the source-row band [firstY, lastY].
@@ -381,12 +397,19 @@ struct KernelBuffers {
 static KernelBuffers BuildKernelBuffers(ID3D11Device* device,
     const FilterKernelBlock& kernels, int nTargetColumns, int nKernelOffset) {
     KernelBuffers kb;
+    if (device == nullptr || nTargetColumns <= 0 || nKernelOffset < 0 ||
+        kernels.Indices == nullptr || kernels.Kernels == nullptr || kernels.NumKernels <= 0) {
+        return kb;
+    }
     kb.descs.resize((size_t)nTargetColumns * 3);
     int valueBase = 0;
     for (int i = 0; i < nTargetColumns; ++i) {
         // Kernels are generated for the full target dimension; a clipped
         // render uses the sub-range starting at the target offset.
         const FilterKernel* pk = kernels.Indices[nKernelOffset + i];
+        if (pk == nullptr || pk->FilterLen <= 0 || pk->FilterLen > MAX_FILTER_LEN) {
+            return kb;
+        }
         kb.descs[(size_t)i * 3 + 0] = pk->FilterOffset;
         kb.descs[(size_t)i * 3 + 1] = pk->FilterLen;
         kb.descs[(size_t)i * 3 + 2] = valueBase;
@@ -408,11 +431,16 @@ static KernelBuffers BuildKernelBuffers(ID3D11Device* device,
     // Use stride 4 (int) and index as i*3 in shader to avoid alignment issues.
     dd.StructureByteStride = sizeof(int);
     D3D11_SUBRESOURCE_DATA di{}; di.pSysMem = kb.descs.data();
-    device->CreateBuffer(&dd, &di, &kb.descBuf);
+    if (FAILED(device->CreateBuffer(&dd, &di, &kb.descBuf)) || kb.descBuf == nullptr)
+        return kb;
     D3D11_SHADER_RESOURCE_VIEW_DESC dsrv{}; dsrv.Format = DXGI_FORMAT_UNKNOWN;
     dsrv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
     dsrv.Buffer.NumElements = (UINT)kb.descs.size();
-    device->CreateShaderResourceView(kb.descBuf, &dsrv, &kb.descSrv);
+    if (FAILED(device->CreateShaderResourceView(kb.descBuf, &dsrv, &kb.descSrv)) || kb.descSrv == nullptr) {
+        kb.descBuf->Release();
+        kb.descBuf = nullptr;
+        return kb;
+    }
 
     D3D11_BUFFER_DESC vd{};
     vd.ByteWidth = (UINT)(kb.vals.size() * sizeof(float));
@@ -421,11 +449,19 @@ static KernelBuffers BuildKernelBuffers(ID3D11Device* device,
     vd.StructureByteStride = sizeof(float);
     vd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
     D3D11_SUBRESOURCE_DATA vi{}; vi.pSysMem = kb.vals.data();
-    device->CreateBuffer(&vd, &vi, &kb.valBuf);
+    if (FAILED(device->CreateBuffer(&vd, &vi, &kb.valBuf)) || kb.valBuf == nullptr) {
+        kb.descSrv->Release(); kb.descBuf->Release();
+        kb.descSrv = nullptr; kb.descBuf = nullptr;
+        return kb;
+    }
     D3D11_SHADER_RESOURCE_VIEW_DESC vsrv{}; vsrv.Format = DXGI_FORMAT_UNKNOWN;
     vsrv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
     vsrv.Buffer.NumElements = (UINT)kb.vals.size();
-    device->CreateShaderResourceView(kb.valBuf, &vsrv, &kb.valSrv);
+    if (FAILED(device->CreateShaderResourceView(kb.valBuf, &vsrv, &kb.valSrv)) || kb.valSrv == nullptr) {
+        kb.valBuf->Release(); kb.descSrv->Release(); kb.descBuf->Release();
+        kb.valBuf = nullptr; kb.descSrv = nullptr; kb.descBuf = nullptr;
+        return kb;
+    }
 
     kb.ok = (kb.descBuf && kb.valBuf && kb.descSrv && kb.valSrv);
     return kb;
@@ -553,6 +589,7 @@ void* GpuImageProcessor::UnsharpMask(CSize fullSize, CPoint offset, CSize rect,
         return CBasicProcessing::UnsharpMask(fullSize, offset, rect, dAmount, dThreshold,
             pGrayImage, pSmoothedGrayImage, pSourcePixels, pTargetPixels, nChannels);
     }
+	std::unique_lock<std::mutex> contextLock = CGpuDevice::Instance().LockImmediateContext();
 
     // Build threshold LUT (duplicates CalculateThresholdLUT: 2048 int16,
     // centered at 1024). The CPU path uses nNumEntriesPerSide=1024.
@@ -742,6 +779,7 @@ int16* GpuImageProcessor::GaussFilter16bpp1Channel(CSize fullSize, CPoint offset
     if (device == nullptr || ctx == nullptr) {
         return CBasicProcessing::GaussFilter16bpp1Channel(fullSize, offset, rect, dRadius, pPixels);
     }
+	std::unique_lock<std::mutex> contextLock = CGpuDevice::Instance().LockImmediateContext();
 
     // Kernel sets mirror the CPU path exactly:
     //   X: CGaussFilter(fullSize.cx, dRadius), kernels indexed [i + offset.x]
@@ -826,6 +864,7 @@ void* GpuImageProcessor::ApplyLDC32bpp(CSize fullTargetSize, CPoint fullTargetOf
             clippedTargetSize, ldcMapSize, pDIBPixels, pSatLUTs, pLUT, pLDCMap,
             fBlackPt, fWhitePt, fBlackPtSteepness);
     }
+	std::unique_lock<std::mutex> contextLock = CGpuDevice::Instance().LockImmediateContext();
 
     // Build pMulLUT (256 int32) - duplicates BasicProcessing::CreateMulLUT so
     // the GPU result matches the CPU reference exactly.
@@ -1007,6 +1046,7 @@ void* GpuImageProcessor::ApplySaturationAnd3ChannelLUT32bpp(int nWidth, int nHei
         return CBasicProcessing::ApplySaturationAnd3ChannelLUT32bpp(nWidth, nHeight,
             pDIBPixels, pSatLUTs, pLUT);
     }
+	std::unique_lock<std::mutex> contextLock = CGpuDevice::Instance().LockImmediateContext();
 
     // GPU textures: input SRV, output UAV, both R8G8B8A8_UINT so the shader
     // reads/writes raw 0..255 byte values (byte-exact match to the CPU path).
@@ -1158,6 +1198,7 @@ void* GpuImageProcessor::Apply3ChannelLUT32bpp(int nWidth, int nHeight,
     if (device == nullptr || ctx == nullptr) {
         return CBasicProcessing::Apply3ChannelLUT32bpp(nWidth, nHeight, pDIBPixels, pLUT);
     }
+	std::unique_lock<std::mutex> contextLock = CGpuDevice::Instance().LockImmediateContext();
 
     // GPU textures: input SRV, output UAV, both R8G8B8A8_UINT so the shader
     // reads/writes raw 0..255 byte values (byte-exact match to the CPU path).

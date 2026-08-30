@@ -23,7 +23,7 @@ struct JxlReader::jxl_cache {
 	std::vector<uint8_t> exif;
 };
 
-JxlReader::jxl_cache JxlReader::cache = { 0 };
+thread_local JxlReader::jxl_cache JxlReader::cache = { 0 };
 
 // based on https://github.com/libjxl/libjxl/blob/main/examples/decode_oneshot.cc
 // and https://github.com/libjxl/libjxl/blob/main/examples/decode_exif_metadata.cc

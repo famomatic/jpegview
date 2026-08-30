@@ -28,7 +28,7 @@ LRESULT CHelpDlg::OnInitDialog(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam
 	int inflateX = (windowRect.Width() - clientRect.Width()) / 2;
 	int inflateY = (windowRect.Height() - clientRect.Height()) / 2;
 
-	CDC dc(this->GetDC());
+	CClientDC dc(m_hWnd);
 	CHelpDisplayCtl helpDisplayCtl(m_pOwner, dc, m_pOwner->GetImageProcessingParams());
 	CRect panelRect = helpDisplayCtl.PanelRect();
 	SetScrollSize(panelRect.Width() - 1, panelRect.Height() - 1);

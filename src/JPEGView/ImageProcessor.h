@@ -35,6 +35,7 @@
 #include "ProcessParams.h"
 
 #include <memory>
+#include <mutex>
 
 class IImageProcessor {
 public:
@@ -111,4 +112,5 @@ public:
 private:
     // Owns the process-wide singleton slot. Defined in ImageProcessor.cpp.
     static std::unique_ptr<IImageProcessor>& ActiveBackend();
+	static std::mutex& BackendMutex();
 };

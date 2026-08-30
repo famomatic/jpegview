@@ -56,6 +56,8 @@ CProcessingThreadPool& CProcessingThreadPool::This() {
 }
 
 void CProcessingThreadPool::CreateThreadPoolThreads() {
+	if (m_threads != NULL)
+		StopAllThreads();
 	m_nNumThreads = CSettingsProvider::This().NumberOfCoresToUse() - 1;
 	if (m_nNumThreads > 0) {
 		m_threads = new CProcessingThread*[m_nNumThreads];
@@ -72,17 +74,19 @@ void CProcessingThreadPool::StopAllThreads() {
 		m_threads[i]->Terminate();
 		delete m_threads[i];
 	}
+	delete[] m_threads;
 	m_nNumThreads = 0;
 	m_threads = NULL;
 }
 
 bool CProcessingThreadPool::Process(CProcessingRequest* pRequest) {
+	std::lock_guard<std::mutex> processLock(m_processMutex);
 	int nTargetCX = pRequest->ClippedTargetSize.cx;
 	int nTargetCY = pRequest->ClippedTargetSize.cy;
 	if (m_nNumThreads == 0) {
 		CProcessingThread::DoProcess(pRequest, 0, nTargetCY);
 	} else {
-		if (nTargetCX * nTargetCY < 100000 || nTargetCY <= 12) {
+		if ((size_t)nTargetCX * nTargetCY < 100000 || nTargetCY <= 12) {
 			CProcessingThread::DoProcess(pRequest, 0, nTargetCY);
 		} else {
 			// Important: All slices must have a height dividable by 'StripPadding', except the last one

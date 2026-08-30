@@ -19,6 +19,7 @@ public:
 		Deleted = false;
 		Type = 0;
 	}
+	virtual ~CRequestBase() = default;
 
 	int Type; // Can be used to set the type of the request, default is 0
 	HANDLE EventFinished; // Event signaled when processing is finished
@@ -62,6 +63,7 @@ protected:
 
 	// Called in the context of the worker thread after it has been signaled that the request has been processed
 	virtual void AfterFinishProcess(CRequestBase& request) {}
+	virtual void BeforeThreadExit() {}
 
 	std::list<CRequestBase*> m_requestList; // list of requests, also contains processed requests not yet removed by client
 	CRITICAL_SECTION m_csList; // the critical section protecting the request list (m_requestList)
@@ -70,7 +72,7 @@ protected:
 	volatile bool m_bTerminate; // flags termination for thread
 
 private:
-	static void  __cdecl ThreadFunc(void* arg);
+	static unsigned __stdcall ThreadFunc(void* arg);
 	static void DeleteAllRequestsMarkedForDeletion(CWorkThread* thisPtr);
 
 	bool m_bCoInitialize;

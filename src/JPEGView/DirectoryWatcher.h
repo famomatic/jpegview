@@ -29,5 +29,5 @@ private:
 	BOOL m_bModificationTimeValid;
 	FILETIME m_modificationTimeCurrentFile;
 
-	static void  __cdecl ThreadFunc(void* arg);
+	static unsigned __stdcall ThreadFunc(void* arg);
 };

@@ -92,17 +92,16 @@ CJPEGImage* CJPEGProvider::RequestImage(CFileList* pFileList, EReadAheadDirectio
 		Helpers::CAutoCriticalSection lock(m_csRequestList);
 		GetLoadedImageFromWorkThread(pRequest);
 	} else {
-		CJPEGImage* pImage = pRequest->Image;
-		if (pImage != NULL) {
-			// make sure the initial parameters are reset as when keep params was on before they are wrong
-			EProcessingFlags procFlags = processParams.ProcFlags;
-			pImage->RestoreInitialParameters(strFileName, processParams.ImageProcParams, procFlags, 
-				processParams.RotationParams.Rotation, processParams.Zoom, processParams.Offsets, 
-				CSize(processParams.TargetWidth, processParams.TargetHeight), processParams.MonitorSize);
-		}
 #ifdef DEBUG
 		::OutputDebugString(_T("Found in cache: ")); ::OutputDebugString(pRequest->FileName); ::OutputDebugString(_T("\n"));
 #endif
+	}
+	CJPEGImage* pImage = pRequest->Image;
+	if (pImage != NULL) {
+		EProcessingFlags procFlags = processParams.ProcFlags;
+		pImage->RestoreInitialParameters(strFileName, processParams.ImageProcParams, procFlags,
+			processParams.RotationParams.Rotation, processParams.Zoom, processParams.Offsets,
+			CSize(processParams.TargetWidth, processParams.TargetHeight), processParams.MonitorSize);
 	}
 
 	bool bRetryOOM;
@@ -184,18 +183,18 @@ void CJPEGProvider::ClearAllRequests() {
 }
 
 bool CJPEGProvider::FreeAllPossibleMemoryLocked() {
-	std::list<CImageRequest*>::iterator iter;
-	for (iter = m_requestList.begin( ); iter != m_requestList.end( ); iter++ ) {
+	bool removed = false;
+	for (std::list<CImageRequest*>::iterator iter = m_requestList.begin(); iter != m_requestList.end();) {
 		CImageRequest* pRequest = *iter;
 		if (!pRequest->InUse && pRequest->Ready) {
-			DeleteElementAt(iter);
-			// Recurse to continue from a valid iterator. The list is small
-			// (bounded by m_nNumBuffers) so recursion depth is shallow.
-			FreeAllPossibleMemoryLocked();
-			return true;
+			std::list<CImageRequest*>::iterator toDelete = iter++;
+			DeleteElementAt(toDelete);
+			removed = true;
+		} else {
+			++iter;
 		}
 	}
-	return false;
+	return removed;
 }
 
 bool CJPEGProvider::FreeAllPossibleMemory() {

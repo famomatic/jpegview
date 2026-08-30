@@ -686,13 +686,39 @@ void* CJPEGImage::Resample(CSize fullTargetSize, CSize clippingSize, CPoint targ
 
 EFilterType filter = CSettingsProvider::This().DownsamplingFilter();
 
-if (fullTargetSize.cx > MAX_IMAGE_DIMENSION || fullTargetSize.cy > MAX_IMAGE_DIMENSION) return NULL;
+if (fullTargetSize.cx < 1 || fullTargetSize.cy < 1 ||
+	fullTargetSize.cx > MAX_IMAGE_DIMENSION || fullTargetSize.cy > MAX_IMAGE_DIMENSION ||
+	clippingSize.cx < 1 || clippingSize.cy < 1 || targetOffset.x < 0 || targetOffset.y < 0 ||
+	targetOffset.x + clippingSize.cx > fullTargetSize.cx ||
+	targetOffset.y + clippingSize.cy > fullTargetSize.cy) return NULL;
 
-// Lazy (partially-loaded) source: m_pOrigPixels is NULL, so the normal
-// ResampleHQ/PointSample paths would receive a NULL pixel pointer and return a
-// blank DIB. Decode the whole image once into m_pOrigPixels (4-channel BGRA)
-// so every path below reads real pixels with the correct channel count.
+// Render a lazy source directly into the clipped viewport.  A 93761x26305 TIFF
+// would require over 9 GiB just for one BGRA buffer; materializing it also made
+// the strip decoder allocate a second buffer of the same size.  The lazy path
+// decodes one source strip/tile at a time and uses the exact PointSample source
+// coordinate mapping, keeping memory proportional to the viewport.
 if (OriginalPixels() == NULL && m_pSourceData != NULL) {
+	const __int64 sourcePixels = (__int64)m_nOrigWidth * m_nOrigHeight;
+	const __int64 sourceBytes = sourcePixels * 4;
+	const __int64 roiThreshold = (__int64)max(1, CSettingsProvider::This().ROIDecodeThresholdMP()) * 1000000;
+	const bool roiRequested = CSettingsProvider::This().EnableROIDecode() && sourcePixels >= roiThreshold;
+	// Never try to create a multi-gigabyte contiguous source buffer even when
+	// ROI decoding was disabled in the configuration.
+	const bool streamingRequired = m_nOrigWidth > 65535 || m_nOrigHeight > 65535 ||
+		sourceBytes > 512LL * 1024 * 1024;
+	if ((roiRequested || streamingRequired) && fabs(dRotation) <= 1e-3) {
+		const size_t rowBytes = (size_t)clippingSize.cx * 4;
+		if (rowBytes / 4 != (size_t)clippingSize.cx ||
+			(size_t)clippingSize.cy > SIZE_MAX / rowBytes) return NULL;
+		uint8* pResult = new(std::nothrow) uint8[rowBytes * (size_t)clippingSize.cy];
+		if (pResult == NULL) return NULL;
+		if (m_pSourceData->DecodeResampledRegion(fullTargetSize, targetOffset, clippingSize, pResult))
+			return pResult;
+		delete[] pResult;
+		// An unsupported transform must fail safely instead of falling through
+		// to a 10+ GiB allocation that can exhaust the process or machine.
+		if (streamingRequired) return NULL;
+	}
 	if (!MaterializeLazySource()) return NULL;
 }
 
@@ -737,11 +763,11 @@ if (GetProcessingFlag(eProcFlags, PFLAG_HighQualityResampling) &&
 // m_nOriginalChannels could be 1/3) and avoids re-decoding the entire image on
 // every pan/zoom frame.
 //
-// True viewport/ROI partial decode was considered but rejected here: the
-// resamplers' fixed-point source mapping is derived from the full source size,
-// so a sub-buffer of a different size would remap the whole image and distort
-// it. Full decode is always correct; the MAX_IMAGE_PIXELS guard in the loaders
-// bounds the worst case, and ROI decode is reserved for a future path.
+// Ultra-large sources normally bypass this method through
+// DecodeResampledRegion(), which preserves the full-image coordinate mapping
+// while decoding one strip/tile at a time. This materialization fallback is
+// retained for moderate lazy images and transforms that require random access
+// to the complete source.
 bool CJPEGImage::MaterializeLazySource() {
 	if (m_pOrigPixels != NULL) {
 		// Already materialized. Drop the source if it is somehow still held so

@@ -219,8 +219,19 @@ CImageLoadThread::CImageLoadThread(void) : CWorkThread(true) {
 	m_pLastBitmap = NULL;
 }
 
+CImageLoadThread::CRequest::~CRequest()
+{
+	delete Image;
+}
+
 CImageLoadThread::~CImageLoadThread(void) {
+	Terminate();
+}
+
+void CImageLoadThread::BeforeThreadExit()
+{
 	DeleteCachedGDIBitmap();
+	DeleteCachedTiffDecoder();
 	DeleteCachedWebpDecoder();
 	DeleteCachedPngDecoder();
 	DeleteCachedJxlDecoder();
@@ -245,6 +256,7 @@ CImageData CImageLoadThread::GetLoadedImage(int nHandle) {
 		CRequest* pRequest = (CRequest*)(*iter);
 		if (pRequest->Processed && pRequest->Deleted == false && pRequest->RequestHandle == nHandle) {
 			imageFound = pRequest->Image;
+			pRequest->Image = nullptr;
 			bFailedMemory = pRequest->OutOfMemory;
 			bFailedException = pRequest->ExceptionError;
 			// only mark as deleted
@@ -283,176 +295,80 @@ void CImageLoadThread::ProcessRequest(CRequestBase& request) {
 		if (rq.FileName == m_sLastAvifFileName) {
 			DeleteCachedAvifDecoder();
 		}
+		DeleteCachedTiffDecoder();
 		return;
 	}
 
 	CRequest& rq = (CRequest&)request;
 	double dStartTime = Helpers::GetExactTickCount(); 
 	// Get image format and read the image
-	switch (GetImageFormat(rq.FileName)) {
+	EImageFormat imageFormat = GetImageFormat(rq.FileName);
+	DeleteCachedDecodersExcept((int)imageFormat);
+	switch (imageFormat) {
 		case IF_JPEG :
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadJPEGRequest(&rq);
 			break;
 		case IF_WindowsBMP :
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadBMPRequest(&rq);
 			break;
 		case IF_TGA :
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadTGARequest(&rq);
 			break;
 		case IF_WEBP:
-			DeleteCachedGDIBitmap();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadWEBPRequest(&rq);
 			break;
 		case IF_PNG:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadPNGRequest(&rq);
 			break;
 #ifndef WINXP
 		case IF_JXL:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadJXLRequest(&rq);
 			break;
 		case IF_AVIF:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
 			ProcessReadAVIFRequest(&rq);
 			break;
 		case IF_HEIF:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadHEIFRequest(&rq);
 			break;
 		case IF_PSD:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadPSDRequest(&rq);
 			break;
 		case IF_CameraRAW:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadRAWRequest(&rq);
 			break;
 #endif
 		case IF_TIFF:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadTIFFRequest(&rq);
 			break;
 		case IF_QOI:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadQOIRequest(&rq);
 			break;
 		case IF_SVG:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadSVGRequest(&rq);
 			break;
 		case IF_ICO:
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadGDIPlusRequest(&rq);
 			break;
 		case IF_DDS:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadDDSRequest(&rq);
 			break;
 		case IF_JP2:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadJP2Request(&rq);
 			break;
 		case IF_EXR:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadEXRRequest(&rq);
 			break;
 		case IF_HDR:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadHDRRequest(&rq);
 			break;
 		case IF_JXR:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadJXRRequest(&rq);
 			break;
 		case IF_WIC:
-			DeleteCachedGDIBitmap();
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadWICRequest(&rq);
 			break;
 		default:
 			// try with GDI+
-			DeleteCachedWebpDecoder();
-			DeleteCachedPngDecoder();
-			DeleteCachedJxlDecoder();
-			DeleteCachedAvifDecoder();
 			ProcessReadGDIPlusRequest(&rq);
 			break;
 	}
@@ -499,6 +415,9 @@ void CImageLoadThread::DeleteCachedGDIBitmap() {
 	}
 	m_pLastBitmap = NULL;
 	m_sLastFileName.Empty();
+}
+
+void CImageLoadThread::DeleteCachedTiffDecoder() {
 	TiffReader::ReleaseCache();
 }
 
@@ -530,6 +449,24 @@ void CImageLoadThread::DeleteCachedAvifDecoder() {
 	} catch (...) {}
 	SetErrorMode(nPrevErrorMode);
 	m_sLastAvifFileName.Empty();
+#endif
+}
+
+void CImageLoadThread::DeleteCachedDecodersExcept(int imageFormat)
+{
+	if (imageFormat != IF_ICO && imageFormat != IF_Unknown)
+		DeleteCachedGDIBitmap();
+	if (imageFormat != IF_TIFF)
+		DeleteCachedTiffDecoder();
+	if (imageFormat != IF_WEBP)
+		DeleteCachedWebpDecoder();
+	if (imageFormat != IF_PNG)
+		DeleteCachedPngDecoder();
+#ifndef WINXP
+	if (imageFormat != IF_JXL)
+		DeleteCachedJxlDecoder();
+	if (imageFormat != IF_AVIF)
+		DeleteCachedAvifDecoder();
 #endif
 }
 
@@ -895,6 +832,7 @@ void CImageLoadThread::ProcessReadJXLRequest(CRequest* request) {
 #ifndef WINXP
 void CImageLoadThread::ProcessReadAVIFRequest(CRequest* request) {
 	bool bSuccess = false;
+	bool bTriedHeifBuffer = false;
 	bool bUseCachedDecoder = false;
 	const wchar_t* sFileName;
 	sFileName = (const wchar_t*)request->FileName;
@@ -949,6 +887,10 @@ void CImageLoadThread::ProcessReadAVIFRequest(CRequest* request) {
 			} else {
 				DeleteCachedAvifDecoder();
 			}
+			if (!bSuccess && !bUseCachedDecoder) {
+				bTriedHeifBuffer = true;
+				bSuccess = ProcessReadHEIFBuffer(request, pBuffer, (int)nFileSize);
+			}
 		}
 	}
 	catch (...) {
@@ -961,12 +903,33 @@ void CImageLoadThread::ProcessReadAVIFRequest(CRequest* request) {
 		::CloseHandle(hFile);
 		delete[] pBuffer;
 	}
-	if (!bSuccess)
+	if (!bSuccess && !bTriedHeifBuffer)
 		return ProcessReadHEIFRequest(request);
 }
 #endif
 
 #ifndef WINXP
+bool CImageLoadThread::ProcessReadHEIFBuffer(CRequest* request, const void* pBuffer, int nFileSize)
+{
+	try {
+		int nWidth, nHeight, nBPP, nFrameCount = 1, nFrameTimeMs = 0;
+		void* pEXIFData = nullptr;
+		uint8* pPixelData = (uint8*)HeifReader::ReadImage(nWidth, nHeight, nBPP,
+			nFrameCount, pEXIFData, request->OutOfMemory, request->FrameIndex, pBuffer, nFileSize);
+		if (pPixelData == nullptr)
+			return false;
+		request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, pEXIFData, nBPP,
+			0, IF_HEIF, false, request->FrameIndex, nFrameCount, nFrameTimeMs);
+		free(pEXIFData);
+		return true;
+	} catch (heif::Error&) {
+		return false;
+	} catch (...) {
+		request->ExceptionError = true;
+		return false;
+	}
+}
+
 void CImageLoadThread::ProcessReadHEIFRequest(CRequest* request) {
 	HANDLE hFile;
 	hFile = ::CreateFile(request->FileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
@@ -992,22 +955,8 @@ void CImageLoadThread::ProcessReadHEIFRequest(CRequest* request) {
 			return;
 		}
 		if (::ReadFile(hFile, pBuffer, nFileSize, (LPDWORD)&nNumBytesRead, NULL) && nNumBytesRead == nFileSize) {
-			int nWidth, nHeight, nBPP, nFrameCount, nFrameTimeMs;
-			nFrameCount = 1;
-			nFrameTimeMs = 0;
-			void* pEXIFData;
-			uint8* pPixelData = (uint8*)HeifReader::ReadImage(nWidth, nHeight, nBPP, nFrameCount, pEXIFData, request->OutOfMemory, request->FrameIndex, pBuffer, nFileSize);
-			if (pPixelData != NULL) {
-				// Alpha channel preserved (no flattening); background composited at render time.
-
-				request->Image = new CJPEGImage(nWidth, nHeight, pPixelData, pEXIFData, nBPP, 0, IF_HEIF, false, request->FrameIndex, nFrameCount, nFrameTimeMs);
-				free(pEXIFData);
-			}
+			ProcessReadHEIFBuffer(request, pBuffer, (int)nFileSize);
 		}
-	} catch(heif::Error he) {
-		// invalid image
-		delete request->Image;
-		request->Image = NULL;
 	} catch (...) {
 		delete request->Image;
 		request->Image = NULL;
@@ -1377,8 +1326,8 @@ bool CImageLoadThread::ProcessImageAfterLoad(CRequest * request) {
 		newSize = CSize((int)(nWidth*dZoom + 0.5), (int)(nHeight*dZoom + 0.5));
 	}
 
-	newSize.cx = max(1, min(MAX_IMAGE_DIMENSION, newSize.cx));
-	newSize.cy = max(1, min(MAX_IMAGE_DIMENSION, newSize.cy)); // max size must not be bigger than this after zoom
+	newSize.cx = max(1, min((int)MAX_IMAGE_DIMENSION, newSize.cx));
+	newSize.cy = max(1, min((int)MAX_IMAGE_DIMENSION, newSize.cy)); // max size must not be bigger than this after zoom
 
 	// clip to target rectangle
 	CSize clippedSize(min(request->ProcessParams.TargetWidth, newSize.cx), 

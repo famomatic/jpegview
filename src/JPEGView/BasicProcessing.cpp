@@ -292,7 +292,7 @@ int16* CBasicProcessing::Create1Channel16bppGrayscaleImage(int nWidth, int nHeig
 		LUTs[512 + i] = (uint32)(0.114 * i * cdScaler + 0.5);
 	}
 
-	int16* pNewImage = new(std::nothrow) int16[nWidth * nHeight];
+	int16* pNewImage = new(std::nothrow) int16[(size_t)nWidth * nHeight];
 	if (pNewImage == NULL) return NULL;
 	int nPadSrc = Helpers::DoPadding(nWidth*nChannels, 4) - nWidth*nChannels;
 	int16* pTarget = pNewImage;
@@ -312,7 +312,7 @@ void* CBasicProcessing::Apply3ChannelLUT32bpp(int nWidth, int nHeight, const voi
 		return NULL;
 	}
 
-	uint32* pTarget = new(std::nothrow) uint32[nWidth * nHeight];
+	uint32* pTarget = new(std::nothrow) uint32[(size_t)nWidth * nHeight];
 	if (pTarget == NULL) return NULL;
 	const uint32* pSrc = (uint32*)pDIBPixels;
 	uint32* pTgt = pTarget;
@@ -334,7 +334,7 @@ void* CBasicProcessing::ApplySaturationAnd3ChannelLUT32bpp(int nWidth, int nHeig
 
 	const int cnScaler = 1 << 16;
 	const int cnMax = 255 * cnScaler;
-	uint32* pTarget = new(std::nothrow) uint32[nWidth * nHeight];
+	uint32* pTarget = new(std::nothrow) uint32[(size_t)nWidth * nHeight];
 	if (pTarget == NULL) return NULL;
 	const uint32* pSrc = (uint32*)pDIBPixels;
 	uint32* pTgt = pTarget;
@@ -490,7 +490,7 @@ void* CBasicProcessing::ApplyLDC32bpp(CSize fullTargetSize, CPoint fullTargetOff
 		return Apply3ChannelLUT32bpp(clippedTargetSize.cx, clippedTargetSize.cy, pDIBPixels, pLUT);
 	}
 
-	uint32* pTarget = new(std::nothrow) uint32[clippedTargetSize.cx * clippedTargetSize.cy];
+	uint32* pTarget = new(std::nothrow) uint32[(size_t)clippedTargetSize.cx * clippedTargetSize.cy];
 	if (pTarget == NULL) return NULL;
 	CProcessingThreadPool& threadPool = CProcessingThreadPool::This();
 	CRequestLDC request(pDIBPixels, clippedTargetSize, pTarget, fullTargetSize, fullTargetOffset,
@@ -576,7 +576,7 @@ static void RotateBlock32bpp(const uint32* pSrc, uint32* pTgt, int nWidth, int n
 
 // 180 degrees rotation
 static void* Rotate32bpp180(int nWidth, int nHeight, const void* pDIBPixels) {
-	uint32* pTarget = new(std::nothrow) uint32[nWidth * nHeight];
+	uint32* pTarget = new(std::nothrow) uint32[(size_t)nWidth * nHeight];
 	if (pTarget == NULL) return NULL;
 	const uint32* pSource = (uint32*)pDIBPixels;
 	for (uint32 i = 0; i < nHeight; i++) {
@@ -601,7 +601,7 @@ void* CBasicProcessing::Rotate32bpp(int nWidth, int nHeight, const void* pDIBPix
 		return Rotate32bpp180(nWidth, nHeight, pDIBPixels);
 	}
 
-	uint32* pTarget = new(std::nothrow) uint32[nHeight * nWidth];
+	uint32* pTarget = new(std::nothrow) uint32[(size_t)nHeight * nWidth];
 	if (pTarget == NULL) return NULL;
 	const uint32* pSource = (uint32*)pDIBPixels;
 
@@ -628,7 +628,7 @@ void* CBasicProcessing::Mirror32bpp(int nWidth, int nHeight, const void* pDIBPix
 }
 
 void* CBasicProcessing::MirrorH32bpp(int nWidth, int nHeight, const void* pDIBPixels) {
-	uint32* pTarget = new(std::nothrow) uint32[nWidth * nHeight];
+	uint32* pTarget = new(std::nothrow) uint32[(size_t)nWidth * nHeight];
 	if (pTarget == NULL) return NULL;
 	uint32* pTgt = pTarget;
 	for (int j = 0; j < nHeight; j++) {
@@ -642,7 +642,7 @@ void* CBasicProcessing::MirrorH32bpp(int nWidth, int nHeight, const void* pDIBPi
 }
 
 void* CBasicProcessing::MirrorV32bpp(int nWidth, int nHeight, const void* pDIBPixels) {
-	uint32* pTarget = new(std::nothrow) uint32[nWidth * nHeight];
+	uint32* pTarget = new(std::nothrow) uint32[(size_t)nWidth * nHeight];
 	if (pTarget == NULL) return NULL;
 	uint32* pTgt = pTarget;
 	for (int j = 0; j < nHeight; j++) {
@@ -686,7 +686,7 @@ void* CBasicProcessing::Convert8bppTo32bppDIB(int nWidth, int nHeight, const voi
 	}
 	int nPaddedWidthS = Helpers::DoPadding(nWidth, 4);
 	int nPadS = nPaddedWidthS - nWidth;
-	uint32* pNewDIB = new(std::nothrow) uint32[nWidth * nHeight];
+	uint32* pNewDIB = new(std::nothrow) uint32[(size_t)nWidth * nHeight];
 	if (pNewDIB == NULL) return NULL;
 	uint32* pTargetDIB = pNewDIB;
 	const uint8* pSourceDIB = (uint8*)pDIBPixels;
@@ -730,7 +730,7 @@ void* CBasicProcessing::Convert1To4Channels(int nWidth, int nHeight, const void*
 		return NULL;
 	}
 	int nPadSrc = Helpers::DoPadding(nWidth, 4) - nWidth;
-	uint32* pNewDIB = new(std::nothrow) uint32[nWidth * nHeight];
+	uint32* pNewDIB = new(std::nothrow) uint32[(size_t)nWidth * nHeight];
 	if (pNewDIB == NULL) return NULL;
 	uint32* pTarget = pNewDIB;
 	const uint8* pSource = (uint8*)pPixels;
@@ -745,7 +745,7 @@ void* CBasicProcessing::Convert1To4Channels(int nWidth, int nHeight, const void*
 }
 
 void* CBasicProcessing::Convert16bppGrayTo32bppDIB(int nWidth, int nHeight, const int16* pPixels) {
-	uint32* pNewDIB = new(std::nothrow) uint32[nWidth * nHeight];
+	uint32* pNewDIB = new(std::nothrow) uint32[(size_t)nWidth * nHeight];
 	if (pNewDIB == NULL) return NULL;
 	uint32* pTarget = pNewDIB;
 	const int16* pSource = pPixels;
@@ -764,7 +764,7 @@ void* CBasicProcessing::Convert3To4Channels(int nWidth, int nHeight, const void*
 		return NULL;
 	}
 	int nPadSrc = Helpers::DoPadding(nWidth*3, 4) - nWidth*3;
-	uint32* pNewDIB = new(std::nothrow) uint32[nWidth * nHeight];
+	uint32* pNewDIB = new(std::nothrow) uint32[(size_t)nWidth * nHeight];
 	if (pNewDIB == NULL) return NULL;
 	uint32* pTarget = pNewDIB;
 	const uint8* pSource = (uint8*)pIJLPixels;
@@ -782,7 +782,7 @@ void* CBasicProcessing::Convert3To4Channels(int nWidth, int nHeight, const void*
 		if (pGdiplusPixels == NULL || nWidth*4 > abs(nStride)) {
 			return NULL;
 		}
-		uint32* pNewDIB = new(std::nothrow) uint32[nWidth * nHeight];
+		uint32* pNewDIB = new(std::nothrow) uint32[(size_t)nWidth * nHeight];
 		if (pNewDIB == NULL) return NULL;
 		uint32* pTgt = pNewDIB;
 		const uint8* pSrc = (const uint8*)pGdiplusPixels;
@@ -799,7 +799,7 @@ void* CBasicProcessing::Convert3To4Channels(int nWidth, int nHeight, const void*
 		if (pGdiplusPixels == NULL || nWidth*4 > abs(nStride)) {
 			return NULL;
 		}
-		uint32* pNewDIB = new(std::nothrow) uint32[nWidth * nHeight];
+		uint32* pNewDIB = new(std::nothrow) uint32[(size_t)nWidth * nHeight];
 		if (pNewDIB == NULL) return NULL;
 		uint32* pTgt = pNewDIB;
 		const uint8* pSrc = (const uint8*)pGdiplusPixels;
@@ -824,7 +824,7 @@ void* CBasicProcessing::Convert3To4Channels(int nWidth, int nHeight, const void*
 	uint32* pSourceDIB = (uint32*)pSource;
 	uint32* pTargetDIB = (uint32*)pTarget;
 	if (pTargetDIB == NULL) {
-		pTargetDIB = new(std::nothrow) uint32[targetSize.cx * targetSize.cy];
+		pTargetDIB = new(std::nothrow) uint32[(size_t)targetSize.cx * targetSize.cy];
 		if (pTargetDIB == NULL) return NULL;
 		pTarget = pTargetDIB;
 	}
@@ -864,7 +864,7 @@ void* CBasicProcessing::PointSample(CSize fullTargetSize, CPoint fullTargetOffse
 		return NULL;
 	}
 
-	uint8* pDIB = new(std::nothrow) uint8[clippedTargetSize.cx*4 * clippedTargetSize.cy];
+	uint8* pDIB = new(std::nothrow) uint8[(size_t)clippedTargetSize.cx * 4 * clippedTargetSize.cy];
 	if (pDIB == NULL) return NULL;
 
 	// 플랫폼별 고정소수점: x64는 64비트(초고화질 지원), x86은 32비트(65535 제한 유지)
@@ -974,7 +974,7 @@ void* CBasicProcessing::PointSampleWithRotation(CSize fullTargetSize, CPoint ful
 		return NULL;
 	}
 
-	uint8* pDIB = new(std::nothrow) uint8[clippedTargetSize.cx*4 * clippedTargetSize.cy];
+	uint8* pDIB = new(std::nothrow) uint8[(size_t)clippedTargetSize.cx * 4 * clippedTargetSize.cy];
 	if (pDIB == NULL) return NULL;
 
 	uint32 nBackColor = (GetRValue(backColor) << 16) + (GetGValue(backColor) << 8) + GetBValue(backColor) + ALPHA_OPAQUE;
@@ -1125,7 +1125,7 @@ void* CBasicProcessing::PointSampleTrapezoid(CSize fullTargetSize, const CTrapez
 		return NULL;
 	}
 
-	uint8* pDIB = new(std::nothrow) uint8[clippedTargetSize.cx*4 * clippedTargetSize.cy];
+	uint8* pDIB = new(std::nothrow) uint8[(size_t)clippedTargetSize.cx * 4 * clippedTargetSize.cy];
 	if (pDIB == NULL) return NULL;
 
 	int* pTableY = CalculateTrapezoidYIntersectionTable(fullTargetTrapezoid, clippedTargetSize.cy, sourceSize.cy, fullTargetSize.cy, fullTargetOffset.y);
@@ -1345,7 +1345,7 @@ void* CBasicProcessing::RotateHQ(CPoint targetOffset, CSize targetSize, double d
 		return NULL;
 	}
 
-	uint8* pTargetPixels = new(std::nothrow) uint8[targetSize.cx * 4 * targetSize.cy];
+	uint8* pTargetPixels = new(std::nothrow) uint8[(size_t)targetSize.cx * 4 * targetSize.cy];
 	if (pTargetPixels == NULL) return NULL;
 
 	CProcessingThreadPool& threadPool = CProcessingThreadPool::This();
@@ -1446,7 +1446,7 @@ void* TrapezoidHQ_Core(CPoint targetOffset, CSize targetSize, const CTrapezoid& 
 	int nSourceSizeXFP16 = (sourceSize.cx - 1) << 16;
 
 	int* pTableY = CalculateTrapezoidYIntersectionTable(trapezoid, targetSize.cy, sourceSize.cy, trapezoid.Height() + 1, targetOffset.y);
-	uint16* pLine = new uint16[sourceSize.cx * 3];
+	uint16* pLine = new uint16[(size_t)sourceSize.cx * 3];
 	
 	int16* pKernels = new int16[NUM_KERNELS_BICUBIC * 4];
 	CResizeFilter::GetBicubicFilterKernels(NUM_KERNELS_BICUBIC, pKernels);
@@ -1496,7 +1496,7 @@ void* CBasicProcessing::TrapezoidHQ(CPoint targetOffset, CSize targetSize, const
 		return NULL;
 	}
 
-	uint8* pTargetPixels = new(std::nothrow) uint8[targetSize.cx * 4 * targetSize.cy];
+	uint8* pTargetPixels = new(std::nothrow) uint8[(size_t)targetSize.cx * 4 * targetSize.cy];
 	if (pTargetPixels == NULL) return NULL;
 
 	CProcessingThreadPool& threadPool = CProcessingThreadPool::This();
@@ -1529,7 +1529,7 @@ static uint8* ApplyFilter(int nSourceWidth, int nTargetWidth, int nHeight,
 						  int nFilterOffset,
 						  const uint8* pSource) {
 
-	uint8* pTarget = new(std::nothrow) uint8[nTargetWidth*4*nHeight];
+	uint8* pTarget = new(std::nothrow) uint8[(size_t)nTargetWidth * 4 * nHeight];
 	if (pTarget == NULL) return NULL;
 
 	// width of new image is (after rotation) : nHeight
@@ -1628,7 +1628,7 @@ int16* CBasicProcessing::GaussFilter16bpp1Channel(CSize fullSize, CPoint offset,
 
 	// Gauss filter x-direction
 	CProcessingThreadPool& threadPool = CProcessingThreadPool::This();
-	int16* pIntermediate = new(std::nothrow) int16[rect.cx * rect.cy];
+	int16* pIntermediate = new(std::nothrow) int16[(size_t)rect.cx * rect.cy];
 	if (pIntermediate == NULL) return NULL;
 	CRequestGauss requestX(pPixels, fullSize, offset, rect, dRadius, pIntermediate);
 	if (!threadPool.Process(&requestX)) {
@@ -1637,7 +1637,7 @@ int16* CBasicProcessing::GaussFilter16bpp1Channel(CSize fullSize, CPoint offset,
 	}
 
 	// Gauss filter y-direction
-	int16* pTargetPixels = new(std::nothrow) int16[rect.cx * rect.cy];
+	int16* pTargetPixels = new(std::nothrow) int16[(size_t)rect.cx * rect.cy];
 	if (pTargetPixels == NULL) {
 		delete[] pIntermediate;
 		return NULL;
@@ -1922,7 +1922,7 @@ static void* RotateToDIB(const CXMMImage* pSourceImg, int simdPixelsPerRegister,
 	int nChannels = pSourceImg->GetNumChannels();
 	const int16* pSource = (const int16*) pSourceImg->AlignedPtr();
 	if (pTarget == NULL) {
-		pTarget = new(std::nothrow) uint8[pSourceImg->GetHeight() * 4 * Helpers::DoPadding(pSourceImg->GetWidth(), simdPixelsPerRegister)];
+		pTarget = new(std::nothrow) uint8[(size_t)pSourceImg->GetHeight() * 4 * Helpers::DoPadding(pSourceImg->GetWidth(), simdPixelsPerRegister)];
 		if (pTarget == NULL) return NULL;
 	}
 
@@ -2061,7 +2061,7 @@ void* CBasicProcessing::SampleDown_HQ_SIMD(CSize fullTargetSize, CPoint fullTarg
 	}
 	// Highway pads strips to 16 rows; the target buffer is sized for the padded height
 	// so partial strips written by the worker threads stay in bounds.
-	uint8* pTarget = new(std::nothrow) uint8[clippedTargetSize.cx * 4 * Helpers::DoPadding(clippedTargetSize.cy, 16)];
+	uint8* pTarget = new(std::nothrow) uint8[(size_t)clippedTargetSize.cx * 4 * Helpers::DoPadding(clippedTargetSize.cy, 16)];
 	if (pTarget == NULL) return NULL;
 	CProcessingThreadPool& threadPool = CProcessingThreadPool::This();
 	CRequestUpDownSampling request(pPixels, sourceSize,
@@ -2077,7 +2077,7 @@ void* CBasicProcessing::SampleUp_HQ_SIMD(CSize fullTargetSize, CPoint fullTarget
 	if (pPixels == NULL || fullTargetSize.cx < 2 || fullTargetSize.cy < 2 || clippedTargetSize.cx <= 0 || clippedTargetSize.cy <= 0) {
 		return NULL;
 	}
-	uint8* pTarget = new(std::nothrow) uint8[clippedTargetSize.cx * 4 * Helpers::DoPadding(clippedTargetSize.cy, 16)];
+	uint8* pTarget = new(std::nothrow) uint8[(size_t)clippedTargetSize.cx * 4 * Helpers::DoPadding(clippedTargetSize.cy, 16)];
 	if (pTarget == NULL) return NULL;
 	CProcessingThreadPool& threadPool = CProcessingThreadPool::This();
 	CRequestUpDownSampling request(pPixels, sourceSize,

@@ -234,30 +234,35 @@ void CResizeFilter::GetBicubicFilterKernels(int nNumKernels, int16* pKernels) {
 void CResizeFilter::CalculateFilterKernels() {
 	CalculateFilterParams(m_eFilter);
 
-	if ((m_nTargetSize > m_nSourceSize && m_eFilter != Filter_Upsampling_Bicubic) || 
-		m_nTargetSize == 0 || m_nSourceSize > 65535 || m_nTargetSize > 65535) {
+	if ((m_nTargetSize > m_nSourceSize && m_eFilter != Filter_Upsampling_Bicubic) ||
+		m_nTargetSize <= 0 || m_nSourceSize <= 0) {
 		return;
 	}
 
 	// Calculate the increment here as the number of increments in one pixel
 	// gives the number of border kernels we need.
 	// The exact increment depends on the filter
-	uint32 nIncrementX;
-	uint32 nX;
+	// Source/target dimensions can exceed 65535 on x64.  The old uint32
+	// 16.16 position overflowed in that case and the function returned without
+	// creating any kernels; CalculateXMMFilterKernels then dereferenced a null
+	// Indices array.  Keep the fractional part at 16 bits, but calculate the
+	// absolute source position in 64 bits.
+	uint64_t nIncrementX;
+	uint64_t nX;
 	if (m_eFilter == Filter_Upsampling_Bicubic) {
 		if (m_nSourceSize == 1 || m_nTargetSize == 1) {
-			nIncrementX = (uint32)(m_nSourceSize << 16)/m_nTargetSize;
+			nIncrementX = ((uint64_t)m_nSourceSize << 16) / m_nTargetSize;
 		} else {
-			nIncrementX = (uint32)((m_nSourceSize - 1) << 16)/(m_nTargetSize - 1);
+			nIncrementX = ((uint64_t)(m_nSourceSize - 1) << 16) / (m_nTargetSize - 1);
 		}
-		nIncrementX = max(1, nIncrementX);
+		nIncrementX = max((uint64_t)1, nIncrementX);
 		nX = 0;
 	} else {
-		nIncrementX = (uint32)(m_nSourceSize << 16)/m_nTargetSize + 1;
+		nIncrementX = ((uint64_t)m_nSourceSize << 16) / m_nTargetSize + 1;
 		nX = (nIncrementX - 65536) >> 1;
 	}
 
-	int nBorderKernelsPerPixel = (int)(max(1.0f, 65536.0f/nIncrementX) + 0.999999f);
+	int nBorderKernelsPerPixel = (int)(max(1.0, 65536.0 / (double)nIncrementX) + 0.999999);
 	int nTotalKernels = NUM_KERNELS_RESIZE + nBorderKernelsPerPixel*(2*m_nFilterOffset + 1);
 	m_kernels.Indices = new FilterKernel*[m_nTargetSize];
 	m_kernels.Kernels = new FilterKernel[nTotalKernels];
@@ -277,24 +282,25 @@ void CResizeFilter::CalculateFilterKernels() {
 
 	int nIdxBorderKernel = NUM_KERNELS_RESIZE;
 	for (int i = 0; i < m_nTargetSize; i++) {
-		uint32 nXInt = nX >> 16;
+		uint64_t nXInt = nX >> 16;
 		uint32 nXFrac = nX & 0xFFFF;
-		if ((int)nXInt < m_nFilterOffset) {
+		if (nXInt < (uint64_t)m_nFilterOffset) {
 			// left border handling, the (m_nFilterOffset - nXInt) left elements are cut from the filter
-			int16* pBorderFilter = GetFilter((uint16)nXFrac, m_eFilter) + (m_nFilterOffset - nXInt);
-			int nFilterLen = m_nFilterLen - (m_nFilterOffset - nXInt);
+			int nLeftCut = m_nFilterOffset - (int)nXInt;
+			int16* pBorderFilter = GetFilter((uint16)nXFrac, m_eFilter) + nLeftCut;
+			int nFilterLen = m_nFilterLen - nLeftCut;
 			nFilterLen = min(nFilterLen, m_nSourceSize);
 			NormalizeFilter(pBorderFilter, nFilterLen);
 			FilterKernel* pThisKernel = &(m_kernels.Kernels[nIdxBorderKernel]);
 			pThisKernel->FilterLen = nFilterLen;
-			pThisKernel->FilterOffset = nXInt;
+			pThisKernel->FilterOffset = (int)nXInt;
 			memcpy(&(pThisKernel->Kernel), pBorderFilter, nFilterLen * sizeof(int16));
 			m_kernels.Indices[i] = pThisKernel;
 			nIdxBorderKernel++;
-		} else if ((int)nXInt - m_nFilterOffset + m_nFilterLen > m_nSourceSize) {
+		} else if (nXInt - m_nFilterOffset + m_nFilterLen > (uint64_t)m_nSourceSize) {
 			// right border handling
 			int16* pBorderFilter = GetFilter((uint16)nXFrac, m_eFilter);
-			int nFilterLen =  m_nSourceSize - nXInt + m_nFilterOffset;
+			int nFilterLen = m_nSourceSize - (int)nXInt + m_nFilterOffset;
 			nFilterLen = min(nFilterLen, m_nSourceSize);
 			NormalizeFilter(pBorderFilter, nFilterLen);
 			FilterKernel* pThisKernel = &(m_kernels.Kernels[nIdxBorderKernel]);
@@ -315,7 +321,8 @@ void CResizeFilter::CalculateFilterKernels() {
 
 void CResizeFilter::CalculateXMMFilterKernels() {
 	CalculateFilterKernels();
-	if (m_nTargetSize == 0) {
+	if (m_nTargetSize <= 0 || m_kernels.Indices == nullptr ||
+		m_kernels.Kernels == nullptr || m_kernels.NumKernels <= 0) {
 		return;
 	}
 

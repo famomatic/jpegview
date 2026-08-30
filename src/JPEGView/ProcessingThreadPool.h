@@ -2,6 +2,7 @@
 
 #include "WorkThread.h"
 #include "Helpers.h"
+#include <mutex>
 
 class CProcessingThread;
 
@@ -61,6 +62,7 @@ private:
 
 	CProcessingThread** m_threads;
 	int m_nNumThreads;
+	std::mutex m_processMutex;
 
 	CProcessingThreadPool(void);
 };

@@ -32,7 +32,7 @@ public:
 #ifndef WINXP
 private:
 	struct png_cache;
-	static png_cache cache;
+	static thread_local png_cache cache;
 	static bool BeginReading(void* buffer, size_t sizebytes, bool& outOfMemory);
 	static void* ReadNextFrame(void** exif_chunk, unsigned int* exif_size);
 	static void DeleteCacheInternal(bool free_buffer);

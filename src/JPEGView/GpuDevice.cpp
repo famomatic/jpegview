@@ -28,9 +28,6 @@
 // ===========================================================================
 
 namespace {
-// DXGI description strings can be wide; keep a static buffer for logging.
-wchar_t g_descBuf[128] = L"none";
-
 // Intel is the dominant iGPU vendor. AMD iGPUs are distinguished from dGPUs by
 // small dedicated video memory; NVIDIA has no consumer iGPU.
 bool IsLikelyIntegratedGPU(const DXGI_ADAPTER_DESC1& desc) {
@@ -96,7 +93,7 @@ bool CGpuDevice::TryCreateOnAdapter(IDXGIAdapter1* adapter1) {
     }
 
     const D3D_FEATURE_LEVEL requestedLevels[] = { D3D_FEATURE_LEVEL_11_0 };
-    UINT flags = 0;
+    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
     // BGRA support is required for Direct2D interop (Step 4 output path)
     // and is harmless for pure compute. Always request it.
     D3D_FEATURE_LEVEL obtainedLevel = D3D_FEATURE_LEVEL_9_1;
@@ -198,10 +195,5 @@ const wchar_t* CGpuDevice::AdapterDescription() const {
     if (!m_haveDesc) {
         return L"none";
     }
-    int n = 0;
-    for (; n < 127 && m_adapterDesc.Description[n] != 0; ++n) {
-        g_descBuf[n] = m_adapterDesc.Description[n];
-    }
-    g_descBuf[n] = 0;
-    return g_descBuf;
+    return m_adapterDesc.Description;
 }

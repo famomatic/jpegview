@@ -7,7 +7,7 @@
 #include "MaxImageDef.h"
 #include <stdexcept>
 #include <zlib.h>
-#include <mutex>
+#include <limits>
 
 // Uncomment to build without APNG support
 //#undef PNG_APNG_SUPPORTED
@@ -62,7 +62,7 @@ struct PngReader::png_cache {
 	unsigned char* p_image;
 	unsigned char* p_frame;
 	unsigned char* p_temp;
-	unsigned int size;
+	size_t size;
 	unsigned int width;
 	unsigned int height;
 	unsigned int channels;
@@ -73,13 +73,7 @@ struct PngReader::png_cache {
 	size_t buffer_offset;
 };
 
-PngReader::png_cache PngReader::cache = { 0 };
-
-// Guards the process-global PngReader::cache. CJPEGProvider runs multiple
-// CImageLoadThread instances, and each of them can reach PngReader::ReadImage
-// concurrently. The cache holds libpng state and pixel buffers that are not
-// safe to touch from more than one thread at a time.
-static std::mutex g_pngCacheMutex;
+thread_local PngReader::png_cache PngReader::cache = { 0 };
 
 #ifdef PNG_APNG_SUPPORTED
 void BlendOver(unsigned char** rows_dst, unsigned char** rows_src, unsigned int x, unsigned int y, unsigned int w, unsigned int h)
@@ -148,11 +142,13 @@ void* PngReader::ReadNextFrame(void** exif_chunk, png_uint_32* exif_size)
 		for (j = 0; j < cache.h0; j++)
 			memcpy(cache.rows_image[j + cache.y0] + cache.x0 * 4, cache.rows_frame[j], cache.w0 * 4);
 
-	void* pixels = malloc(cache.width * cache.height * cache.channels);
+	const size_t pixelBytes = (size_t)cache.width * cache.height * cache.channels;
+	void* pixels = malloc(pixelBytes);
 	if (pixels == NULL)
 		return NULL;
 	for (j = 0; j < cache.height; j++)
-		memcpy((char*)pixels + j * cache.width * cache.channels, cache.rows_image[j], cache.width * cache.channels);
+		memcpy((char*)pixels + (size_t)j * cache.width * cache.channels,
+			cache.rows_image[j], (size_t)cache.width * cache.channels);
 
 #ifdef PNG_APNG_SUPPORTED
 	if (cache.dop == PNG_DISPOSE_OP_PREVIOUS)
@@ -169,7 +165,8 @@ void* PngReader::ReadNextFrame(void** exif_chunk, png_uint_32* exif_size)
 
 bool PngReader::BeginReading(void* buffer, size_t sizebytes, bool& outOfMemory)
 {
-	unsigned int    width, height, channels, rowbytes, size, j;
+	unsigned int    width, height, channels, j;
+	size_t          rowbytes, size;
 	png_bytepp      rows_image;
 	png_bytepp      rows_frame;
 	unsigned char*  p_image;
@@ -231,8 +228,13 @@ bool PngReader::BeginReading(void* buffer, size_t sizebytes, bool& outOfMemory)
 			png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
 			return false;
 		}
-		rowbytes = (unsigned int)png_get_rowbytes(png_ptr, info_ptr);
-		size = height * rowbytes;
+		rowbytes = png_get_rowbytes(png_ptr, info_ptr);
+		if (rowbytes == 0 || height > (std::numeric_limits<size_t>::max)() / rowbytes) {
+			png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+			outOfMemory = true;
+			return false;
+		}
+		size = (size_t)height * rowbytes;
 		p_image = (unsigned char*)malloc(size);
 		p_frame = (unsigned char*)malloc(size);
 		p_temp = (unsigned char*)malloc(size);
@@ -293,6 +295,7 @@ bool PngReader::BeginReading(void* buffer, size_t sizebytes, bool& outOfMemory)
 		free(rows_frame);
 		free(p_frame);
 		free(p_temp);
+		outOfMemory = true;
 	}
 	png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
 	return false;
@@ -309,7 +312,6 @@ void* PngReader::ReadImage(int& width,
 	void* buffer,
 	size_t sizebytes)
 {
-	std::lock_guard<std::mutex> lock(g_pngCacheMutex);
 	exif_chunk = NULL;
 	if (!cache.buffer) {
 		if (sizebytes < 8)
@@ -385,7 +387,6 @@ void PngReader::DeleteCacheInternal(bool free_buffer)
 }
 
 void PngReader::DeleteCache() {
-	std::lock_guard<std::mutex> lock(g_pngCacheMutex);
 	DeleteCacheInternal(true);
 }
 

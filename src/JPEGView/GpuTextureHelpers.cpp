@@ -1,4 +1,5 @@
 #include "GpuTextureHelpers.h"
+#include <climits>
 #include <cstring>
 #include <new>
 
@@ -19,6 +20,11 @@ ID3D11Texture2D* CreateTexture(ID3D11Device* device, int width, int height,
 ID3D11Texture2D* CreateTextureFmt(ID3D11Device* device, int width, int height,
     UINT bindFlags, bool bStaging, D3D11_CPU_ACCESS_FLAG cpuAccess,
     DXGI_FORMAT format) {
+	if (device == nullptr || width <= 0 || height <= 0 ||
+		width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+		height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) {
+		return nullptr;
+	}
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = width;
     desc.Height = height;
@@ -42,7 +48,9 @@ ID3D11Texture2D* CreateTextureFmt(ID3D11Device* device, int width, int height,
 
 bool UploadBGRA(ID3D11DeviceContext* ctx, ID3D11Texture2D* dstGPU,
     int width, int height, const void* srcPixels) {
-    if (ctx == nullptr || dstGPU == nullptr || srcPixels == nullptr) {
+    if (ctx == nullptr || dstGPU == nullptr || srcPixels == nullptr ||
+        width <= 0 || height <= 0 || width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || width > INT_MAX / 4) {
         return false;
     }
     // Use UpdateSubresource for the simple case: it handles the internal
@@ -64,7 +72,9 @@ bool UploadBGRA(ID3D11DeviceContext* ctx, ID3D11Texture2D* dstGPU,
 
 void* ReadbackBGRA(ID3D11DeviceContext* ctx, ID3D11Texture2D* srcGPU,
     int width, int height) {
-    if (ctx == nullptr || srcGPU == nullptr) {
+    if (ctx == nullptr || srcGPU == nullptr || width <= 0 || height <= 0 ||
+        width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || width > INT_MAX / 4) {
         return nullptr;
     }
 

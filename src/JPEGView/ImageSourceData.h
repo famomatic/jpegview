@@ -61,6 +61,14 @@ public:
 	virtual bool DecodeRegion(const CRect& sourceRect, int zoomLevel,
 	                          uint8* pDst, CSize dstSize) = 0;
 
+	// Decode and point-resample a clipped target viewport directly from the
+	// source.  Lazy sources override this to avoid materializing the complete
+	// image.  Coordinates match CBasicProcessing::PointSample: fullTargetSize
+	// describes the complete scaled image and targetOffset locates the clipped
+	// viewport inside it.  Eager sources may keep the default unsupported result.
+	virtual bool DecodeResampledRegion(CSize fullTargetSize, CPoint targetOffset,
+	                                  CSize dstSize, uint8* pDst) { return false; }
+
 	// --- 포인트 샘플 (LDC/히스토그램용) ---
 	//
 	// (x, y) 한 픽셀의 BGRA 값을 반환한다. 전체 디코드 없이 임의 좌표를

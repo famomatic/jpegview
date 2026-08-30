@@ -74,6 +74,14 @@ target_include_directories(HighwayLaneTest PRIVATE "${WTL_INCLUDE_DIR}")
 target_compile_definitions(HighwayLaneTest PRIVATE
     WIN32 _WINDOWS STRICT UNICODE _UNICODE _CRT_SECURE_NO_DEPRECATE)
 
+# Verify direct viewport resampling from lazy strip/tile sources without a
+# full-image BGRA allocation. This is the critical ultra-high-resolution path.
+add_gpu_test(LazySourceTest SOURCES LazySourceTest.cpp
+    "${_gpu_src_dir}/LazySource.cpp" REGISTER_TEST)
+target_include_directories(LazySourceTest PRIVATE "${WTL_INCLUDE_DIR}")
+target_compile_definitions(LazySourceTest PRIVATE
+    WIN32 _WINDOWS STRICT UNICODE _UNICODE _CRT_SECURE_NO_DEPRECATE)
+
 # ShaderDiag prints D3DCompile errors for debugging. Dev-only, not a test.
 # Off by default so it never appears in any output tree; enable explicitly
 # during development with -DJPEGVIEW_BUILD_SHADER_DIAG=ON.

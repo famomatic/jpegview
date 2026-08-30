@@ -42,6 +42,7 @@ public:
 private:
 	CTiffLazySource();
 	bool OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex);
+	bool UpdateDirectoryLayout();
 	int DetectPyramidLevels();
 	bool DecodeSingleStrip(int stripIndex, uint8* pDst, int dstStride);
 	void ConvertStripToBGRA(const uint8* pSrc, uint8* pDst,

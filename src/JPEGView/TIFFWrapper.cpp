@@ -32,9 +32,9 @@
 // multi-page document so navigating pages does not reopen/reparse the file.
 // This mirrors the cached-decoder pattern used for WebP/PNG/HEIF.
 // ---------------------------------------------------------------------------
-static TIFF* g_pCachedTiff = nullptr;
-static CString g_sCachedFileName;
-static int g_nCachedPageCount = 0;
+static thread_local TIFF* g_pCachedTiff = nullptr;
+static thread_local CString g_sCachedFileName;
+static thread_local int g_nCachedPageCount = 0;
 
 static void CloseCachedTiff()
 {

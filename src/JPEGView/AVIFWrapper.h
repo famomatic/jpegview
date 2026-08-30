@@ -27,5 +27,5 @@ public:
 
 private:
 	struct avif_cache;
-	static avif_cache cache;
+	static thread_local avif_cache cache;
 };

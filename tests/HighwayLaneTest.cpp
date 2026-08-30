@@ -16,6 +16,7 @@
 #include "StdAfx.h"
 #include "BasicProcessing.h"
 #include "Helpers.h"
+#include "ResizeFilter.h"
 #include "SettingsProvider.h"
 #include <cstdio>
 #include <cmath>
@@ -146,6 +147,31 @@ static bool RunSuite(const char* tag) {
     return ok;
 }
 
+static bool RunLargeDimensionKernelTest() {
+    bool ok = true;
+    {
+        CResizeFilter filter(93761, 1920, 0.15,
+            Filter_Downsampling_Best_Quality, FilterSIMDType_SSE);
+        const FilterKernelBlock& scalar = filter.GetFilterKernels();
+        const XMMFilterKernelBlock& simd = filter.GetXMMFilterKernels();
+        ok &= scalar.NumKernels > 0 && scalar.Indices != nullptr && scalar.Kernels != nullptr;
+        ok &= simd.NumKernels > 0 && simd.Indices != nullptr && simd.Kernels != nullptr;
+        for (int i = 0; ok && i < 1920; ++i) {
+            ok &= scalar.Indices[i] != nullptr && scalar.Indices[i]->FilterLen > 0 &&
+                scalar.Indices[i]->FilterLen <= MAX_FILTER_LEN && simd.Indices[i] != nullptr;
+        }
+    }
+    {
+        CResizeFilter filter(1920, 93761, 0.0,
+            Filter_Upsampling_Bicubic, FilterSIMDType_SSE);
+        const FilterKernelBlock& scalar = filter.GetFilterKernels();
+        ok &= scalar.NumKernels > 0 && scalar.Indices != nullptr && scalar.Kernels != nullptr;
+        ok &= scalar.Indices[0] != nullptr && scalar.Indices[93760] != nullptr;
+    }
+    printf("%-52s %s\n", "resize kernels across the 65535 boundary", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
 int main() {
     setvbuf(stdout, NULL, _IONBF, 0);
     int64_t sup = hwy::SupportedTargets();
@@ -153,6 +179,7 @@ int main() {
     printf("hwy best target: %s\n", hwy::TargetName(best));
 
     bool all = true;
+	all &= RunLargeDimensionKernelTest();
 
     // Default (best) dispatch.
     all &= RunSuite("best");

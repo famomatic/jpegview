@@ -41,7 +41,8 @@ CThumbnailCache& CThumbnailCache::This() {
 }
 
 CThumbnailCache::CThumbnailCache()
-	: m_bEnabled(false), m_nMaxBytes(0), m_bShutdown(false) {
+	: m_bEnabled(false), m_nMaxBytes(0), m_nKnownCacheBytes(0)
+	, m_nStoresSinceSweep(0), m_bCacheSizeKnown(false), m_bShutdown(false) {
 	m_bEnabled = CSettingsProvider::This().ThumbnailCacheEnabled();
 	// INI gives the limit in megabytes; convert to bytes. 0 means disabled.
 	int nMB = CSettingsProvider::This().ThumbnailCacheMaxMB();
@@ -325,6 +326,7 @@ bool CThumbnailCache::TryGet(LPCTSTR sFilePath, __int64 nFileSize, const FILETIM
 		// Stale/incompatible cache entry - discard it.
 		delete[] pPixels;
 		::DeleteFile(sCacheFile);
+		m_bCacheSizeKnown = false;
 		return false;
 	}
 
@@ -434,10 +436,6 @@ void CThumbnailCache::WorkerLoop() {
 
 void CThumbnailCache::StoreEntry(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& lastModTime,
 	const unsigned char* pBGRA, int nThumbWidth, int nThumbHeight, int nOrigWidth, int nOrigHeight) {
-	// Hold the lock across encode + write + eviction so a concurrent TryGet
-	// for the same key never sees a half-written temp file.
-	std::lock_guard<std::mutex> lock(m_csLock);
-
 	int nThumbW = nThumbWidth;
 	int nThumbH = nThumbHeight;
 
@@ -492,30 +490,37 @@ void CThumbnailCache::StoreEntry(LPCTSTR sFilePath, __int64 nFileSize, const FIL
 
 	png_destroy_write_struct(&png_ptr, &info_ptr);
 
-	if (!bFailed && ctx.buffer != NULL && ctx.size > 0) {
+	if (!bFailed && ctx.buffer != NULL && ctx.size > 0 && ctx.size <= MAXDWORD) {
+		std::lock_guard<std::mutex> lock(m_csLock);
 		// Write atomically: temp file then rename, so a crash mid-write cannot
 		// leave a half-written cache entry that would fail to decode later.
-	CString sTemp = sCacheFile + _T(".tmp");
-	HANDLE hFile = ::CreateFile(sTemp, GENERIC_WRITE, 0, NULL,
-		CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (hFile != INVALID_HANDLE_VALUE) {
-		DWORD nWritten = 0;
-		BOOL bOk = ::WriteFile(hFile, ctx.buffer, (DWORD)ctx.size, &nWritten, NULL);
-		::CloseHandle(hFile);
-		if (bOk && nWritten == (DWORD)ctx.size) {
-			::SetFileAttributes(sCacheFile, FILE_ATTRIBUTE_NORMAL);
-			BOOL bMove = ::MoveFileEx(sTemp, sCacheFile, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-			if (!bMove) {
-				::DeleteFile(sTemp);
-			}
+		CString sTemp = sCacheFile + _T(".tmp");
+		WIN32_FILE_ATTRIBUTE_DATA oldData;
+		__int64 oldSize = 0;
+		if (::GetFileAttributesEx(sCacheFile, GetFileExInfoStandard, &oldData))
+			oldSize = ((__int64)oldData.nFileSizeHigh << 32) | oldData.nFileSizeLow;
+		HANDLE hFile = ::CreateFile(sTemp, GENERIC_WRITE, 0, NULL,
+			CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (hFile != INVALID_HANDLE_VALUE) {
+			DWORD nWritten = 0;
+			BOOL bOk = ::WriteFile(hFile, ctx.buffer, (DWORD)ctx.size, &nWritten, NULL);
+			::CloseHandle(hFile);
+			if (bOk && nWritten == (DWORD)ctx.size) {
+				::SetFileAttributes(sCacheFile, FILE_ATTRIBUTE_NORMAL);
+				BOOL bMove = ::MoveFileEx(sTemp, sCacheFile, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+				if (bMove && m_bCacheSizeKnown)
+					m_nKnownCacheBytes += (__int64)ctx.size - oldSize;
+				if (!bMove)
+					::DeleteFile(sTemp);
 			} else {
 				::DeleteFile(sTemp);
 			}
 		}
+		++m_nStoresSinceSweep;
+		if (!m_bCacheSizeKnown || m_nKnownCacheBytes > m_nMaxBytes || m_nStoresSinceSweep >= 32)
+			EnforceSizeLimit();
 	}
 	free(ctx.buffer);
-
-	EnforceSizeLimit();
 }
 
 void CThumbnailCache::Invalidate(LPCTSTR sFilePath) {
@@ -594,6 +599,7 @@ void CThumbnailCache::Invalidate(LPCTSTR sFilePath) {
 			}
 		}
 	}
+	m_bCacheSizeKnown = false;
 }
 
 void CThumbnailCache::EnforceSizeLimit() {
@@ -607,7 +613,12 @@ void CThumbnailCache::EnforceSizeLimit() {
 
 	WIN32_FIND_DATA fd;
 	HANDLE hFind = ::FindFirstFile(sPattern, &fd);
-	if (hFind == INVALID_HANDLE_VALUE) return;
+	if (hFind == INVALID_HANDLE_VALUE) {
+		m_nKnownCacheBytes = 0;
+		m_nStoresSinceSweep = 0;
+		m_bCacheSizeKnown = true;
+		return;
+	}
 
 	struct CacheEntry {
 		CString sPath;
@@ -629,7 +640,12 @@ void CThumbnailCache::EnforceSizeLimit() {
 	} while (::FindNextFile(hFind, &fd));
 	::FindClose(hFind);
 
-	if (nTotal <= m_nMaxBytes) return;
+	if (nTotal <= m_nMaxBytes) {
+		m_nKnownCacheBytes = nTotal;
+		m_nStoresSinceSweep = 0;
+		m_bCacheSizeKnown = true;
+		return;
+	}
 
 	// Sort oldest first (by mtime) and delete until within budget.
 	std::sort(entries.begin(), entries.end(), [](const CacheEntry& a, const CacheEntry& b) {
@@ -645,4 +661,7 @@ void CThumbnailCache::EnforceSizeLimit() {
 			nTotal -= e.nSize;
 		}
 	}
+	m_nKnownCacheBytes = nTotal;
+	m_nStoresSinceSweep = 0;
+	m_bCacheSizeKnown = true;
 }

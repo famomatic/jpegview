@@ -26,7 +26,7 @@ public:
 
 private:
 	struct jxl_cache;
-	static jxl_cache cache;
+	static thread_local jxl_cache cache;
 	static bool DecodeJpegXlOneShot(const uint8_t* jxl, size_t size, std::vector<uint8_t>* pixels, int& xsize,
 		int& ysize, bool& have_animation, int& frame_count, int& frame_time, std::vector<uint8_t>* icc_profile, bool& outOfMemory);
 };

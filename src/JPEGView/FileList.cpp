@@ -5,6 +5,8 @@
 #include "Helpers.h"
 #include "DirectoryWatcher.h"
 #include "Shlwapi.h"
+#include <mutex>
+#include <random>
 
 ///////////////////////////////////////////////////////////////////////////////////
 // Helpers
@@ -37,6 +39,18 @@ static void AddToFileList(std::list<CFileDesc> & fileList, CFindFile & fileFind,
 
 static bool s_bUseLogicalStringCompare = true;
 static bool s_bUseLogicalStringCompareValid = false;
+
+static uint64_t NextRandomOrderNumber()
+{
+	static std::mt19937_64 generator([] {
+		std::random_device rd;
+		std::seed_seq seed{ rd(), rd(), rd(), rd() };
+		return std::mt19937_64(seed);
+	}());
+	static std::mutex generatorMutex;
+	std::lock_guard<std::mutex> lock(generatorMutex);
+	return generator();
+}
 
 // Used by method below
 static bool IsNoLogicalStrCmpSetInRegistryHive(HKEY hKeyRoot) {
@@ -76,7 +90,7 @@ CFileDesc::CFileDesc(const CString & sName, const FILETIME* lastModTime, const F
 	m_sTitle = (LPCTSTR)m_sName + sName.ReverseFind(_T('\\')) + 1;
 	memcpy(&m_lastModTime, lastModTime, sizeof(FILETIME));
 	memcpy(&m_creationTime, creationTime, sizeof(FILETIME));
-	m_nRandomOrderNumber = rand();
+	m_nRandomOrderNumber = NextRandomOrderNumber();
 	m_fileSize = fileSize;
 }
 
@@ -92,7 +106,9 @@ bool CFileDesc::SortAscending(const CFileDesc& other) const {
 			return pTime->dwLowDateTime < pTimeOther->dwLowDateTime;
 		}
 	} else if (sm_eSorting == Helpers::FS_Random) {
-		return m_nRandomOrderNumber < other.m_nRandomOrderNumber;
+		if (m_nRandomOrderNumber != other.m_nRandomOrderNumber)
+			return m_nRandomOrderNumber < other.m_nRandomOrderNumber;
+		return _tcsicmp(m_sName, other.m_sName) < 0;
 	} else if (sm_eSorting == Helpers::FS_FileSize) {
 		return m_fileSize < other.m_fileSize;
 	} else {
@@ -107,7 +123,7 @@ bool CFileDesc::SortAscending(const CFileDesc& other) const {
 }
 
 bool CFileDesc::operator < (const CFileDesc& other) const {
-	return SortAscending(other) ^ (!sm_bSortAscending);
+	return sm_bSortAscending ? SortAscending(other) : other.SortAscending(*this);
 }
 
 
@@ -202,7 +218,9 @@ CFileList::CFileList(const CString & sInitialFile, CDirectoryWatcher & directory
 	int nPos = sInitialFile.ReverseFind(_T('\\'));
 	m_sDirectory = (nPos > 0) ? sInitialFile.Left(nPos) : CString(_T("")); // the backslash is stripped away!
 	nPos = sInitialFile.ReverseFind(_T('.'));
-	bool bIsDirectory = (::GetFileAttributes(sInitialFile) & FILE_ATTRIBUTE_DIRECTORY) != 0;
+	DWORD initialAttributes = ::GetFileAttributes(sInitialFile);
+	bool bIsDirectory = initialAttributes != INVALID_FILE_ATTRIBUTES &&
+		(initialAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 	CString sExtensionInitialFile = (nPos > 0) ? sInitialFile.Right(sInitialFile.GetLength()-nPos-1) : CString(_T(""));
 	sExtensionInitialFile.MakeLower();
 	bool bImageFile = !bIsDirectory && IsImageFile(sExtensionInitialFile);

@@ -65,8 +65,13 @@ bool CUpdateCheck::FetchLatestTag(CString& sTag) {
 	HINTERNET hSession = ::WinHttpOpen(L"JPEGView", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
 		WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
 	if (hSession == NULL) {
+		hSession = ::WinHttpOpen(L"JPEGView", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+			WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+	}
+	if (hSession == NULL) {
 		return false;
 	}
+	::WinHttpSetTimeouts(hSession, 10000, 10000, 10000, 10000);
 	HINTERNET hConnect = ::WinHttpConnect(hSession, UPDATE_CHECK_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0);
 	if (hConnect != NULL) {
 		HINTERNET hRequest = ::WinHttpOpenRequest(hConnect, L"GET", UPDATE_CHECK_PATH,

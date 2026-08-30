@@ -14,15 +14,14 @@
 // cannot provide FL 11_0, init fails and the caller falls back to the CPU
 // backend without ever presenting a GPU surface.
 //
-// Thread safety: the device is created once and then treated as
-// single-threaded from the caller's perspective (JPEGView processes images on
-// its processing thread pool, not concurrently from the UI). The D3D11 device
-// itself is thread-safe by default only with the D3D11_CREATE_DEVICE_BGRA_SUPPORT
-// flag set for Direct2D interop, which is enabled here in preparation for the
-// Step 4 output backend.
+// Thread safety: the device is created once. Callers serialize immediate-
+// context command recording with LockImmediateContext(); the device itself
+// remains safe for concurrent resource creation. BGRA support is enabled for
+// Direct2D interop.
 
 #include <d3d11.h>
 #include <dxgi.h>
+#include <mutex>
 
 class CGpuDevice {
 public:
@@ -37,6 +36,7 @@ public:
 
     ID3D11Device* Device() { return m_pDevice; }
     ID3D11DeviceContext* ImmediateContext() { return m_pImmediateContext; }
+	std::unique_lock<std::mutex> LockImmediateContext() { return std::unique_lock<std::mutex>(m_contextMutex); }
     IDXGIAdapter* Adapter() { return m_pAdapter; }
 
     // Human-readable description of the selected adapter (or "none"), for
@@ -56,4 +56,5 @@ private:
     IDXGIAdapter* m_pAdapter;
     DXGI_ADAPTER_DESC m_adapterDesc;
     bool m_haveDesc;
+	std::mutex m_contextMutex;
 };

@@ -16,6 +16,7 @@
 
 #include "ImageSourceData.h"
 #include <cstring>
+#include <vector>
 
 class CLazySource : public IImageSourceData
 {
@@ -28,8 +29,8 @@ public:
 	CLazySource& operator=(const CLazySource&) = delete;
 
 	// --- IImageSourceData 공통 구현 ---
-	int  Width() const override { return m_nWidth; }
-	int  Height() const override { return m_nHeight; }
+	int  Width() const override { return m_nBaseWidth; }
+	int  Height() const override { return m_nBaseHeight; }
 	int  Channels() const override { return m_nChannels; }
 	int  BitsPerSample() const override { return m_nBitsPerSample; }
 	bool HasAlpha() const override { return m_bHasAlpha; }
@@ -38,6 +39,8 @@ public:
 
 	bool DecodeRegion(const CRect& sourceRect, int zoomLevel,
 	                  uint8* pDst, CSize dstSize) override;
+	bool DecodeResampledRegion(CSize fullTargetSize, CPoint targetOffset,
+	                          CSize dstSize, uint8* pDst) override;
 	bool SamplePoint(int x, int y, int zoomLevel,
 	                 uint8 outBGRA[4]) override;
 
@@ -58,6 +61,8 @@ protected:
 	// --- 서브클래스가 채울 필드 ---
 	int  m_nWidth;
 	int  m_nHeight;
+	int  m_nBaseWidth;
+	int  m_nBaseHeight;
 	int  m_nChannels;
 	int  m_nBitsPerSample;
 	bool m_bHasAlpha;
@@ -89,6 +94,7 @@ protected:
 	virtual bool DecodeTile(int tileX, int tileY, uint8* pDst) = 0;
 	virtual bool SetPyramidLevel(int level) = 0;
 	virtual bool ReadSinglePixel(int x, int y, uint8 outBGRA[4]);
+	void InvalidateSinglePixelCache();
 
 	// Acquire/release the source's internal serialization lock around a
 	// SetPyramidLevel + decode sequence so another thread cannot switch the
@@ -99,7 +105,20 @@ protected:
 	virtual void LockSource() {}
 	virtual void UnlockSource() {}
 
+	std::vector<uint8> m_singlePixelCache;
+	int m_nSourceRevision;
+	int m_nCachedRevision;
+	int m_nCachedUnitX;
+	int m_nCachedUnitY;
+	bool m_bCachedUnitTiled;
+
 private:
+	bool ResampleStripped(const std::vector<int>& sourceX,
+	                     const std::vector<int>& sourceY,
+	                     uint8* pDst, CSize dstSize);
+	bool ResampleTiled(const std::vector<int>& sourceX,
+	                  const std::vector<int>& sourceY,
+	                  uint8* pDst, CSize dstSize);
 	bool DecodeRegionStripped(const CRect& sourceRect, int zoomLevel,
 	                          uint8* pDst, CSize dstSize);
 	bool DecodeRegionTiled(const CRect& sourceRect, int zoomLevel,

@@ -94,6 +94,9 @@ private:
 	mutable CString m_sCacheDir;
 	bool m_bEnabled;
 	__int64 m_nMaxBytes;
+	__int64 m_nKnownCacheBytes;
+	unsigned int m_nStoresSinceSweep;
+	bool m_bCacheSizeKnown;
 	// Guards all cache file I/O and m_sCacheDir lazy init: CreateThumbnailImage()
 	// can be reached from both the UI thread and the read-ahead loader thread,
 	// so Put/TryGet/Invalidate/EnforceSizeLimit must be serialized.

@@ -15,13 +15,18 @@ CWorkThread::CWorkThread(bool bCoInitialize)
 	::InitializeCriticalSection(&m_csList);
 	m_wakeUp = ::CreateEvent(0, TRUE, FALSE, NULL);
 
-	m_hThread = (HANDLE)_beginthread(ThreadFunc, 0, this);
+	m_hThread = (HANDLE)_beginthreadex(nullptr, 0, ThreadFunc, this, 0, nullptr);
 }
 
 CWorkThread::~CWorkThread(void) {
 	if (!m_bTerminate) {
 		Terminate();
 	}
+	::EnterCriticalSection(&m_csList);
+	for (CRequestBase* request : m_requestList)
+		delete request;
+	m_requestList.clear();
+	::LeaveCriticalSection(&m_csList);
 	::DeleteCriticalSection(&m_csList);
 	::CloseHandle(m_wakeUp);
 }
@@ -54,7 +59,8 @@ void CWorkThread::Terminate() {
 	m_bTerminate = true;
 	if (m_hThread != NULL) {
 		::SetEvent(m_wakeUp);
-		::WaitForSingleObject(m_hThread, 10000);
+		::WaitForSingleObject(m_hThread, INFINITE);
+		::CloseHandle(m_hThread);
 		m_hThread = NULL;
 	}
 }
@@ -62,11 +68,13 @@ void CWorkThread::Terminate() {
 void CWorkThread::Abort() {
 	try {
 		if (m_hThread != NULL) {
+			m_bTerminate = true;
 			::SetEvent(m_wakeUp);
 			if (WAIT_TIMEOUT == ::WaitForSingleObject(m_hThread, 100)) {
 				::TerminateThread(m_hThread, 1);
-				::WaitForSingleObject(m_hThread, 100);
+				::WaitForSingleObject(m_hThread, INFINITE);
 			}
+			::CloseHandle(m_hThread);
 			m_hThread = NULL;
 		}
 	} catch (...) {
@@ -78,7 +86,7 @@ void CWorkThread::Abort() {
 // Private
 /////////////////////////////////////////////////////////////////////////////////////////////
 
-void CWorkThread::ThreadFunc(void* arg) {
+unsigned __stdcall CWorkThread::ThreadFunc(void* arg) {
 
 	CWorkThread* thisPtr = (CWorkThread*) arg;
 	if (thisPtr->m_bCoInitialize) {
@@ -159,10 +167,11 @@ void CWorkThread::ThreadFunc(void* arg) {
 			}
 		}
 	} while (!thisPtr->m_bTerminate);
+	thisPtr->BeforeThreadExit();
 	if (thisPtr->m_bCoInitialize) {
 		::CoUninitialize();
 	}
-	_endthread();
+	return 0;
 }
 
 void CWorkThread::DeleteAllRequestsMarkedForDeletion(CWorkThread* thisPtr) {

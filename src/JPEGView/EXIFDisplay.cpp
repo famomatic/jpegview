@@ -157,7 +157,7 @@ void CEXIFDisplay::AddLine(LPCTSTR sDescription, const Rational &number) {
 
 CRect CEXIFDisplay::PanelRect() {
 	if (m_nLineHeight == 0) {
-		CDC dc(::GetDC(m_hWnd));
+		CClientDC dc(m_hWnd);
 		HelpersGUI::SelectDefaultGUIFont(dc);
 		if (m_hTitleFont == 0)
 			m_hTitleFont = HelpersGUI::CreateBoldFontOfSelectedFont(dc);
@@ -411,5 +411,4 @@ LPCTSTR CEXIFDisplay::ShowHistogramTooltip(void* pContext) {
 		return CNLS::GetString(_T("Show histogram"));
 	}
 }
-
 

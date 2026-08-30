@@ -255,7 +255,7 @@ void CNavigationPanelCtl::DoNavPanelAnimation() {
 
 	if (bDoAnimation) {
 		CRect rectNavPanel = PanelRect();
-		CDC screenDC = m_pMainDlg->GetDC();
+		CClientDC screenDC(m_pMainDlg->m_hWnd);
 		// Recreate the off-screen bitmap when the nav panel rect changed
 		// since the last frame (zoom/resize moves or resizes the panel).
 		// Reusing a stale bitmap of the wrong size makes BitBlt draw into a

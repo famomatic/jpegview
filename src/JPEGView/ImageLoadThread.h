@@ -66,6 +66,7 @@ private:
 			OutOfMemory = false;
 			ExceptionError = false;
 		}
+		~CRequest() override;
 
 		CString FileName;
 		int FrameIndex;
@@ -101,11 +102,14 @@ private:
 
 	virtual void ProcessRequest(CRequestBase& request);
 	virtual void AfterFinishProcess(CRequestBase& request);
+	void BeforeThreadExit() override;
 	void DeleteCachedGDIBitmap();
+	void DeleteCachedTiffDecoder();
 	void DeleteCachedWebpDecoder();
 	void DeleteCachedPngDecoder();
 	void DeleteCachedJxlDecoder();
 	void DeleteCachedAvifDecoder();
+	void DeleteCachedDecodersExcept(int imageFormat);
 
 	void ProcessReadJPEGRequest(CRequest * request);
 	void ProcessReadPNGRequest(CRequest * request);
@@ -115,6 +119,7 @@ private:
 	void ProcessReadJXLRequest(CRequest* request);
 	void ProcessReadAVIFRequest(CRequest* request);
 	void ProcessReadHEIFRequest(CRequest * request);
+	bool ProcessReadHEIFBuffer(CRequest* request, const void* pBuffer, int nFileSize);
 	void ProcessReadQOIRequest(CRequest * request);
 	void ProcessReadPSDRequest(CRequest * request);
 	void ProcessReadRAWRequest(CRequest * request);

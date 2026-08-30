@@ -6,10 +6,9 @@
 #include "GpuDevice.h"
 #include "GpuImageProcessor.h"
 
-// Activates the GPU backend when the EnableGPUImageProcessing INI setting is
-// true (or the legacy JPEGVIEW_ENABLE_GPU env var is set), AND a usable FL
-// 11_0 adapter is present. Any init failure leaves the CPU backend in place
-// so the viewer always produces a valid image.
+// Activates the GPU backend by default when a usable FL 11_0 adapter is
+// present. EnableGPUImageProcessing=false remains an explicit CPU opt-out;
+// any initialization or per-operation failure falls back to the CPU backend.
 namespace {
 bool IsGpuRequested() {
     if (CSettingsProvider::This().EnableGPUImageProcessing()) return true;
@@ -131,13 +130,17 @@ std::unique_ptr<IImageProcessor>& CImageProcessorFactory::ActiveBackend() {
     return s_pBackend;
 }
 
+std::mutex& CImageProcessorFactory::BackendMutex() {
+	static std::mutex s_mutex;
+	return s_mutex;
+}
+
 IImageProcessor& CImageProcessorFactory::Get() {
+	std::lock_guard<std::mutex> lock(BackendMutex());
     auto& pSlot = ActiveBackend();
     if (!pSlot) {
-        // GPU backend is opt-in: selected when EnableGPUImageProcessing is set
-        // (or the legacy JPEGVIEW_ENABLE_GPU env var is present) AND a usable
-        // FL 11_0 adapter initializes. Any failure leaves the CPU backend in
-        // place so the viewer always renders a correct image.
+        // Select the GPU backend when requested and available. Any failure
+        // leaves the CPU backend in place so the viewer always renders.
         if (IsGpuRequested() && CGpuDevice::Instance().IsAvailable()) {
             pSlot = std::make_unique<GpuImageProcessor>();
         } else {
@@ -148,9 +151,11 @@ IImageProcessor& CImageProcessorFactory::Get() {
 }
 
 void CImageProcessorFactory::SetBackend(std::unique_ptr<IImageProcessor> pBackend) {
+	std::lock_guard<std::mutex> lock(BackendMutex());
     ActiveBackend() = std::move(pBackend);
 }
 
 void CImageProcessorFactory::Shutdown() {
+	std::lock_guard<std::mutex> lock(BackendMutex());
     ActiveBackend().reset();
 }

@@ -17,7 +17,7 @@ struct WebpReaderWriter::webp_cache {
 	void* transform;
 };
 
-WebpReaderWriter::webp_cache WebpReaderWriter::cache = { 0 };
+thread_local WebpReaderWriter::webp_cache WebpReaderWriter::cache = { 0 };
 
 void* WebpReaderWriter::ReadImage(int& width,
 	int& height,

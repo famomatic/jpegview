@@ -36,6 +36,7 @@ CTiffLazySource::~CTiffLazySource()
 
 void CTiffLazySource::Release()
 {
+	std::lock_guard<std::recursive_mutex> lock(m_tifLock);
 	if (m_bReleased)
 		return;
 	m_bReleased = true;
@@ -106,38 +107,26 @@ bool CTiffLazySource::OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex)
 	TiffGetOrDefault(m_tif, TIFFTAG_PLANARCONFIG,  m_planarConfig,  (uint16)PLANARCONFIG_CONTIG);
 	TiffGetOrDefault(m_tif, TIFFTAG_SAMPLEFORMAT,  m_sampleFormat,  (uint16)SAMPLEFORMAT_UINT);
 	TiffGetOrDefault(m_tif, TIFFTAG_COMPRESSION,   m_compression,   (uint16)COMPRESSION_NONE);
+	if (width == 0 || height == 0 || samplesPerPixel == 0 || samplesPerPixel > 4 ||
+		width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION ||
+		(uint64_t)width * height > MAX_IMAGE_PIXELS)
+		return false;
 
 	m_nWidth = (int)width;
 	m_nHeight = (int)height;
+	m_nBaseWidth = m_nWidth;
+	m_nBaseHeight = m_nHeight;
 	m_nBitsPerSample = bitsPerSample;
 	m_nChannels = samplesPerPixel;
 
 	// 타일 vs 스트라이프 확인.
-	uint32 tileWidth = 0, tileHeight = 0;
-	if (TIFFGetField(m_tif, TIFFTAG_TILEWIDTH, &tileWidth) == 1 &&
-	    TIFFGetField(m_tif, TIFFTAG_TILELENGTH, &tileHeight) == 1 &&
-	    tileWidth > 0 && tileHeight > 0)
-	{
-		m_bTiled = true;
-		m_nTileWidth = (int)tileWidth;
-		m_nTileHeight = (int)tileHeight;
-		m_nTilesPerImage = TIFFNumberOfTiles(m_tif);
-	}
-	else
-	{
-		m_bTiled = false;
-		uint32 rowsPerStrip = 0;
-		TiffGetOrDefault(m_tif, TIFFTAG_ROWSPERSTRIP, rowsPerStrip, (uint32)0);
-		if (rowsPerStrip == 0)
-			rowsPerStrip = m_nHeight; // 단일 스트립
-		m_nRowsPerStrip = (int)rowsPerStrip;
-		m_nStripsPerImage = TIFFNumberOfStrips(m_tif);
-	}
+	if (!UpdateDirectoryLayout())
+		return false;
 
 	// 알파 채널 감지.
 	uint16 extraSamples = 0;
-	// EXTRASAMPLES is a count+array tag; read just the count (1 arg).
-	if (TIFFGetField(m_tif, TIFFTAG_EXTRASAMPLES, &extraSamples) != 1)
+	uint16* extraSampleTypes = nullptr;
+	if (TIFFGetField(m_tif, TIFFTAG_EXTRASAMPLES, &extraSamples, &extraSampleTypes) != 1)
 		extraSamples = 0;
 	m_bHasAlpha = (extraSamples > 0);
 
@@ -186,6 +175,47 @@ bool CTiffLazySource::OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex)
 	m_nPyramidLevels = DetectPyramidLevels();
 
 	return true;
+}
+
+bool CTiffLazySource::UpdateDirectoryLayout()
+{
+	uint32 width = 0, height = 0;
+	TiffGetOrDefault(m_tif, TIFFTAG_IMAGEWIDTH, width, (uint32)0);
+	TiffGetOrDefault(m_tif, TIFFTAG_IMAGELENGTH, height, (uint32)0);
+	if (width == 0 || height == 0 ||
+		width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION ||
+		(uint64_t)width * height > MAX_IMAGE_PIXELS)
+		return false;
+
+	m_nWidth = (int)width;
+	m_nHeight = (int)height;
+	m_nTileWidth = m_nTileHeight = m_nTilesPerImage = 0;
+	m_nRowsPerStrip = m_nStripsPerImage = 0;
+
+	uint32 tileWidth = 0, tileHeight = 0;
+	int hasTileWidth = TIFFGetField(m_tif, TIFFTAG_TILEWIDTH, &tileWidth);
+	int hasTileHeight = TIFFGetField(m_tif, TIFFTAG_TILELENGTH, &tileHeight);
+	if (hasTileWidth == 1 || hasTileHeight == 1)
+	{
+		if (hasTileWidth != 1 || hasTileHeight != 1 || tileWidth == 0 || tileHeight == 0 ||
+			tileWidth > MAX_IMAGE_DIMENSION || tileHeight > MAX_IMAGE_DIMENSION ||
+			(uint64_t)tileWidth * tileHeight > MAX_IMAGE_PIXELS)
+			return false;
+		m_bTiled = true;
+		m_nTileWidth = (int)tileWidth;
+		m_nTileHeight = (int)tileHeight;
+		m_nTilesPerImage = TIFFNumberOfTiles(m_tif);
+		return m_nTilesPerImage > 0;
+	}
+
+	m_bTiled = false;
+	uint32 rowsPerStrip = 0;
+	TiffGetOrDefault(m_tif, TIFFTAG_ROWSPERSTRIP, rowsPerStrip, (uint32)0);
+	if (rowsPerStrip == 0 || rowsPerStrip > height)
+		rowsPerStrip = height;
+	m_nRowsPerStrip = (int)rowsPerStrip;
+	m_nStripsPerImage = TIFFNumberOfStrips(m_tif);
+	return m_nRowsPerStrip > 0 && m_nStripsPerImage > 0;
 }
 
 int CTiffLazySource::DetectPyramidLevels()
@@ -253,6 +283,9 @@ int CTiffLazySource::DetectPyramidLevels()
 
 bool CTiffLazySource::SetPyramidLevel(int level)
 {
+	std::lock_guard<std::recursive_mutex> lock(m_tifLock);
+	if (m_tif == nullptr || m_bReleased)
+		return false;
 	// Caller must hold m_tifLock (via LockSource). This method switches the
 	// TIFF directory and updates metadata; it must run atomically with the
 	// subsequent decode to prevent another thread from switching the IFD
@@ -267,49 +300,45 @@ bool CTiffLazySource::SetPyramidLevel(int level)
 		return (level == 0);
 
 	tdir_t targetDir = (tdir_t)m_pyramidIFDs[level];
+	tdir_t previousDir = TIFFCurrentDirectory(m_tif);
 	if (TIFFSetDirectory(m_tif, targetDir) == 0)
 		return false;
 
 	// 레벨 전환 후 메타데이터 갱신.
-	uint32 width = 0, height = 0;
-	TiffGetOrDefault(m_tif, TIFFTAG_IMAGEWIDTH,  width,  (uint32)0);
-	TiffGetOrDefault(m_tif, TIFFTAG_IMAGELENGTH, height, (uint32)0);
-	m_nWidth = (int)width;
-	m_nHeight = (int)height;
-
-	if (m_bTiled)
-	{
-		uint32 tw = 0, th = 0;
-		TIFFGetField(m_tif, TIFFTAG_TILEWIDTH, &tw);
-		TIFFGetField(m_tif, TIFFTAG_TILELENGTH, &th);
-		m_nTileWidth = (int)tw;
-		m_nTileHeight = (int)th;
-		m_nTilesPerImage = TIFFNumberOfTiles(m_tif);
-	}
-	else
-	{
-		uint32 rps = 0;
-		TiffGetOrDefault(m_tif, TIFFTAG_ROWSPERSTRIP, rps, (uint32)0);
-		if (rps == 0) rps = m_nHeight;
-		m_nRowsPerStrip = (int)rps;
-		m_nStripsPerImage = TIFFNumberOfStrips(m_tif);
+	if (!UpdateDirectoryLayout()) {
+		TIFFSetDirectory(m_tif, previousDir);
+		UpdateDirectoryLayout();
+		return false;
 	}
 
 	m_nCurrentPyramidLevel = level;
+	InvalidateSinglePixelCache();
 	return true;
 }
 
 bool CTiffLazySource::SetFrame(int nFrame)
 {
+	std::lock_guard<std::recursive_mutex> lock(m_tifLock);
+	if (m_tif == nullptr || m_bReleased)
+		return false;
 	// Caller must hold m_tifLock (via LockSource).
 	if (nFrame < 0 || nFrame >= m_nFrameCount)
 		return false;
 	if (nFrame == m_nCurrentFrame)
 		return true;
+	tdir_t previousDir = TIFFCurrentDirectory(m_tif);
 	if (TIFFSetDirectory(m_tif, (tdir_t)nFrame) == 0)
 		return false;
+	if (!UpdateDirectoryLayout()) {
+		TIFFSetDirectory(m_tif, previousDir);
+		UpdateDirectoryLayout();
+		return false;
+	}
+	m_nBaseWidth = m_nWidth;
+	m_nBaseHeight = m_nHeight;
 	m_nCurrentFrame = nFrame;
 	m_nCurrentPyramidLevel = 0;
+	InvalidateSinglePixelCache();
 	return true;
 }
 

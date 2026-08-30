@@ -281,7 +281,7 @@ HighQualityResampling=true
 ; backend on the GPU. Requires a graphics adapter with Direct3D 11 feature level
 ; 11_0 support. When the GPU is unavailable or a pass fails, JPEGView falls
 ; back to the CPU path automatically, so image output is never affected.
-EnableGPUImageProcessing=false
+EnableGPUImageProcessing=true
 
 ; DownSamplingFilter can be BestQuality, NoAliasing or Narrow
 ; The BestQuality filter produces a very small amount of aliasing.
@@ -701,7 +701,7 @@ Units=auto
 
 ; --- v1.7 feature settings -----------------------------------------------
 ; Region-of-interest (ROI) decode for ultra-high-res images.
-EnableROIDecode=false
+EnableROIDecode=true
 ROIDecodeThresholdMP=50
 MaxZoomHistory=20
 ShowPixelProbeByDefault=false

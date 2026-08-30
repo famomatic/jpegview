@@ -1,9 +1,12 @@
 #include "stdafx.h"
 #include "LazySource.h"
 #include <algorithm>
+#include <cstdint>
+#include <stdexcept>
 
 CLazySource::CLazySource()
-	: m_nWidth(0), m_nHeight(0), m_nChannels(4), m_nBitsPerSample(8)
+	: m_nWidth(0), m_nHeight(0), m_nBaseWidth(0), m_nBaseHeight(0)
+	, m_nChannels(4), m_nBitsPerSample(8)
 	, m_bHasAlpha(false), m_nFrameCount(1), m_nCurrentFrame(0)
 	, m_nPyramidLevels(1)
 	, m_bTiled(false), m_nRowsPerStrip(0), m_nTileWidth(0), m_nTileHeight(0)
@@ -12,6 +15,8 @@ CLazySource::CLazySource()
 	, m_pEXIFData(nullptr), m_nEXIFSize(0)
 	, m_pRawMetadata(nullptr)
 	, m_bReleased(false)
+	, m_nSourceRevision(0), m_nCachedRevision(-1)
+	, m_nCachedUnitX(-1), m_nCachedUnitY(-1), m_bCachedUnitTiled(false)
 {
 }
 
@@ -36,6 +41,14 @@ void CLazySource::Release()
 
 	delete m_pRawMetadata;
 	m_pRawMetadata = nullptr;
+	m_singlePixelCache.clear();
+}
+
+void CLazySource::InvalidateSinglePixelCache()
+{
+	++m_nSourceRevision;
+	m_nCachedRevision = -1;
+	m_singlePixelCache.clear();
 }
 
 bool CLazySource::ReadSinglePixel(int x, int y, uint8 outBGRA[4])
@@ -44,39 +57,61 @@ bool CLazySource::ReadSinglePixel(int x, int y, uint8 outBGRA[4])
 	// 서브클래스가 더 효율적인 방법을 제공하면 오버라이드한다.
 	if (m_bTiled)
 	{
+		if (m_nTileWidth <= 0 || m_nTileHeight <= 0)
+			return false;
 		int tileX = x / m_nTileWidth;
 		int tileY = y / m_nTileHeight;
-		uint8* pTile = new (std::nothrow) uint8[(size_t)m_nTileWidth * m_nTileHeight * 4];
-		if (pTile == nullptr)
-			return false;
-		if (!DecodeTile(tileX, tileY, pTile))
+		if (m_nCachedRevision != m_nSourceRevision || !m_bCachedUnitTiled ||
+			m_nCachedUnitX != tileX || m_nCachedUnitY != tileY)
 		{
-			delete[] pTile;
-			return false;
+			try
+			{
+				m_singlePixelCache.resize((size_t)m_nTileWidth * m_nTileHeight * 4);
+			}
+			catch (const std::bad_alloc&)
+			{
+				return false;
+			}
+			if (!DecodeTile(tileX, tileY, m_singlePixelCache.data()))
+				return false;
+			m_nCachedRevision = m_nSourceRevision;
+			m_nCachedUnitX = tileX;
+			m_nCachedUnitY = tileY;
+			m_bCachedUnitTiled = true;
 		}
 		int localX = x % m_nTileWidth;
 		int localY = y % m_nTileHeight;
-		const uint8* p = pTile + ((size_t)localY * m_nTileWidth + localX) * 4;
+		const uint8* p = m_singlePixelCache.data() + ((size_t)localY * m_nTileWidth + localX) * 4;
 		outBGRA[0] = p[0]; outBGRA[1] = p[1]; outBGRA[2] = p[2]; outBGRA[3] = p[3];
-		delete[] pTile;
 		return true;
 	}
 	else
 	{
+		if (m_nRowsPerStrip <= 0 || m_nWidth <= 0)
+			return false;
 		int strip = y / m_nRowsPerStrip;
 		int dstStride = m_nWidth * 4;
-		uint8* pStrip = new (std::nothrow) uint8[(size_t)m_nRowsPerStrip * dstStride];
-		if (pStrip == nullptr)
-			return false;
-		if (!DecodeStrips(strip, 1, pStrip, dstStride))
+		if (m_nCachedRevision != m_nSourceRevision || m_bCachedUnitTiled ||
+			m_nCachedUnitX != 0 || m_nCachedUnitY != strip)
 		{
-			delete[] pStrip;
-			return false;
+			try
+			{
+				m_singlePixelCache.resize((size_t)m_nRowsPerStrip * dstStride);
+			}
+			catch (const std::bad_alloc&)
+			{
+				return false;
+			}
+			if (!DecodeStrips(strip, 1, m_singlePixelCache.data(), dstStride))
+				return false;
+			m_nCachedRevision = m_nSourceRevision;
+			m_nCachedUnitX = 0;
+			m_nCachedUnitY = strip;
+			m_bCachedUnitTiled = false;
 		}
 		int localY = y % m_nRowsPerStrip;
-		const uint8* p = pStrip + ((size_t)localY * m_nWidth + x) * 4;
+		const uint8* p = m_singlePixelCache.data() + ((size_t)localY * m_nWidth + x) * 4;
 		outBGRA[0] = p[0]; outBGRA[1] = p[1]; outBGRA[2] = p[2]; outBGRA[3] = p[3];
-		delete[] pStrip;
 		return true;
 	}
 }
@@ -98,12 +133,12 @@ bool CLazySource::SamplePoint(int x, int y, int zoomLevel, uint8 outBGRA[4])
 		if (SetPyramidLevel(zoomLevel))
 		{
 			// 피라미드 레벨에서의 좌표로 변환.
-			int scaledW = m_nWidth >> zoomLevel;
-			int scaledH = m_nHeight >> zoomLevel;
-			if (scaledW < 1) scaledW = 1;
-			if (scaledH < 1) scaledH = 1;
-			if (x >= scaledW) x = scaledW - 1;
-			if (y >= scaledH) y = scaledH - 1;
+			if (m_nBaseWidth > 0 && m_nBaseHeight > 0) {
+				x = (int)((int64_t)x * m_nWidth / m_nBaseWidth);
+				y = (int)((int64_t)y * m_nHeight / m_nBaseHeight);
+			}
+			if (x >= m_nWidth) x = m_nWidth - 1;
+			if (y >= m_nHeight) y = m_nHeight - 1;
 			if (x >= 0 && x < m_nWidth && y >= 0 && y < m_nHeight)
 				bOk = ReadSinglePixel(x, y, outBGRA);
 		}
@@ -146,6 +181,12 @@ bool CLazySource::DecodeRegion(const CRect& sourceRect, int zoomLevel,
 	{
 		// sourceRect를 현재 레벨의 이미지 경계로 클립.
 		CRect rect = sourceRect;
+		if (zoomLevel > 0 && m_nBaseWidth > 0 && m_nBaseHeight > 0) {
+			rect.left = (int)((int64_t)rect.left * m_nWidth / m_nBaseWidth);
+			rect.top = (int)((int64_t)rect.top * m_nHeight / m_nBaseHeight);
+			rect.right = (int)(((int64_t)rect.right * m_nWidth + m_nBaseWidth - 1) / m_nBaseWidth);
+			rect.bottom = (int)(((int64_t)rect.bottom * m_nHeight + m_nBaseHeight - 1) / m_nBaseHeight);
+		}
 		rect.IntersectRect(rect, CRect(0, 0, m_nWidth, m_nHeight));
 		if (rect.Width() <= 0 || rect.Height() <= 0)
 			bOk = false;
@@ -172,11 +213,155 @@ bool CLazySource::DecodeVisibleRegion(const CRect& viewportRect, int zoomLevel,
 	// the full image. The caller is responsible for zeroing the buffer first
 	// so areas outside the viewport remain transparent.
 	CRect rect = viewportRect;
-	rect.IntersectRect(rect, CRect(0, 0, m_nWidth, m_nHeight));
+	rect.IntersectRect(rect, CRect(0, 0, m_nBaseWidth, m_nBaseHeight));
 	if (rect.Width() <= 0 || rect.Height() <= 0)
 		return false;
 
 	return DecodeRegion(rect, zoomLevel, pDst, dstSize);
+}
+
+bool CLazySource::DecodeResampledRegion(CSize fullTargetSize, CPoint targetOffset,
+                                        CSize dstSize, uint8* pDst)
+{
+	if (m_bReleased || pDst == nullptr || fullTargetSize.cx <= 0 || fullTargetSize.cy <= 0 ||
+		dstSize.cx <= 0 || dstSize.cy <= 0 || targetOffset.x < 0 || targetOffset.y < 0 ||
+		targetOffset.x + dstSize.cx > fullTargetSize.cx ||
+		targetOffset.y + dstSize.cy > fullTargetSize.cy)
+		return false;
+
+	LockSource();
+	bool bOk = false;
+	try
+	{
+		// Prefer an embedded pyramid level that is still at least as large as
+		// the requested target.  Non-pyramidal TIFFs stay at level zero.
+		int level = 0;
+		while (level + 1 < m_nPyramidLevels) {
+			int nextW = max(1, m_nBaseWidth >> (level + 1));
+			int nextH = max(1, m_nBaseHeight >> (level + 1));
+			if (nextW < fullTargetSize.cx || nextH < fullTargetSize.cy)
+				break;
+			++level;
+		}
+		if (!SetPyramidLevel(level) || m_nWidth <= 0 || m_nHeight <= 0)
+			throw std::runtime_error("invalid lazy image level");
+
+		std::vector<int> sourceX((size_t)dstSize.cx);
+		std::vector<int> sourceY((size_t)dstSize.cy);
+		const bool downsampling = fullTargetSize.cx <= m_nWidth;
+		auto fillCoordinates = [](std::vector<int>& coords, int sourceSize,
+			int targetSize, int targetStart, bool downsample) {
+			uint64_t increment;
+			if (downsample) {
+				increment = ((uint64_t)sourceSize << 16) / targetSize + 1;
+			} else {
+				increment = (targetSize == 1) ? 0 :
+					(65536ULL * (uint64_t)(sourceSize - 1) + 65535) / (targetSize - 1);
+			}
+			uint64_t position = (uint64_t)targetStart * increment;
+			for (size_t i = 0; i < coords.size(); ++i) {
+				uint64_t value = position >> 16;
+				coords[i] = (int)min((uint64_t)(sourceSize - 1), value);
+				position += increment;
+			}
+		};
+		fillCoordinates(sourceX, m_nWidth, fullTargetSize.cx, targetOffset.x, downsampling);
+		fillCoordinates(sourceY, m_nHeight, fullTargetSize.cy, targetOffset.y, downsampling);
+
+		bOk = m_bTiled ? ResampleTiled(sourceX, sourceY, pDst, dstSize)
+		                 : ResampleStripped(sourceX, sourceY, pDst, dstSize);
+	}
+	catch (const std::bad_alloc&)
+	{
+		bOk = false;
+	}
+	catch (const std::exception&)
+	{
+		bOk = false;
+	}
+	UnlockSource();
+	return bOk;
+}
+
+bool CLazySource::ResampleStripped(const std::vector<int>& sourceX,
+	                                const std::vector<int>& sourceY,
+	                                uint8* pDst, CSize dstSize)
+{
+	if (m_nRowsPerStrip <= 0 || m_nWidth <= 0 || sourceX.empty() || sourceY.empty())
+		return false;
+
+	const size_t stride = (size_t)m_nWidth * 4;
+	const size_t stripBytes = stride * (size_t)m_nRowsPerStrip;
+	if (stride / 4 != (size_t)m_nWidth || stripBytes / stride != (size_t)m_nRowsPerStrip)
+		return false;
+	std::vector<uint8> strip(stripBytes);
+
+	int outY = 0;
+	while (outY < dstSize.cy) {
+		int stripIndex = sourceY[(size_t)outY] / m_nRowsPerStrip;
+		if (stripIndex < 0 || stripIndex >= m_nStripsPerImage ||
+			!DecodeStrips(stripIndex, 1, strip.data(), (int)stride))
+			return false;
+
+		int nextY = outY + 1;
+		while (nextY < dstSize.cy && sourceY[(size_t)nextY] / m_nRowsPerStrip == stripIndex)
+			++nextY;
+		for (int dy = outY; dy < nextY; ++dy) {
+			int localY = sourceY[(size_t)dy] - stripIndex * m_nRowsPerStrip;
+			const uint8* srcRow = strip.data() + (size_t)localY * stride;
+			uint8* dstRow = pDst + (size_t)dy * dstSize.cx * 4;
+			for (int dx = 0; dx < dstSize.cx; ++dx) {
+				const uint8* src = srcRow + (size_t)sourceX[(size_t)dx] * 4;
+				memcpy(dstRow + (size_t)dx * 4, src, 4);
+			}
+		}
+		outY = nextY;
+	}
+	return true;
+}
+
+bool CLazySource::ResampleTiled(const std::vector<int>& sourceX,
+	                             const std::vector<int>& sourceY,
+	                             uint8* pDst, CSize dstSize)
+{
+	if (m_nTileWidth <= 0 || m_nTileHeight <= 0 || sourceX.empty() || sourceY.empty())
+		return false;
+	const size_t tilePixels = (size_t)m_nTileWidth * m_nTileHeight;
+	if (tilePixels / (size_t)m_nTileWidth != (size_t)m_nTileHeight ||
+		tilePixels > SIZE_MAX / 4)
+		return false;
+	std::vector<uint8> tile(tilePixels * 4);
+
+	int yBegin = 0;
+	while (yBegin < dstSize.cy) {
+		int tileY = sourceY[(size_t)yBegin] / m_nTileHeight;
+		int yEnd = yBegin + 1;
+		while (yEnd < dstSize.cy && sourceY[(size_t)yEnd] / m_nTileHeight == tileY)
+			++yEnd;
+
+		int xBegin = 0;
+		while (xBegin < dstSize.cx) {
+			int tileX = sourceX[(size_t)xBegin] / m_nTileWidth;
+			int xEnd = xBegin + 1;
+			while (xEnd < dstSize.cx && sourceX[(size_t)xEnd] / m_nTileWidth == tileX)
+				++xEnd;
+			if (!DecodeTile(tileX, tileY, tile.data()))
+				return false;
+
+			for (int dy = yBegin; dy < yEnd; ++dy) {
+				int localY = sourceY[(size_t)dy] - tileY * m_nTileHeight;
+				uint8* dstRow = pDst + (size_t)dy * dstSize.cx * 4;
+				for (int dx = xBegin; dx < xEnd; ++dx) {
+					int localX = sourceX[(size_t)dx] - tileX * m_nTileWidth;
+					const uint8* src = tile.data() + ((size_t)localY * m_nTileWidth + localX) * 4;
+					memcpy(dstRow + (size_t)dx * 4, src, 4);
+				}
+			}
+			xBegin = xEnd;
+		}
+		yBegin = yEnd;
+	}
+	return true;
 }
 
 

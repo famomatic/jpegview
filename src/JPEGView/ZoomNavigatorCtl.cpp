@@ -101,13 +101,13 @@ bool CZoomNavigatorCtl::OnMouseMove(int nOldX, int nOldY) {
 	}
 	if (mousePos.x != nOldX || mousePos.y != nOldY) {
 		if (IsPointInZoomNavigatorThumbnail(mousePos)) {
-			CDC dc(m_pMainDlg->GetDC());
+			CClientDC dc(m_pMainDlg->m_hWnd);
 			m_zoomNavigator.PaintPanRectangle(dc, CPoint(-1, -1));
 			m_zoomNavigator.PaintPanRectangle(dc, mousePos);
 			m_pMainDlg->GetNavPanelCtl()->StartNavPanelAnimation(true, true);
 			return true;
 	} else if (m_zoomNavigator.LastPanRectPoint() != CPoint(-1, -1)) {
-		CDC dc(m_pMainDlg->GetDC());
+		CClientDC dc(m_pMainDlg->m_hWnd);
 		m_zoomNavigator.PaintPanRectangle(dc, CPoint(-1, -1));
 	}
 	}

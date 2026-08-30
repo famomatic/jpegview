@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Helpers.h"
+#include <cstdint>
 
 class CDirectoryWatcher;
 
@@ -46,7 +47,7 @@ private:
 	LPCTSTR m_sTitle;
 	FILETIME m_lastModTime;
 	FILETIME m_creationTime;
-	int m_nRandomOrderNumber;
+	uint64_t m_nRandomOrderNumber;
 	__int64 m_fileSize;
 };
 

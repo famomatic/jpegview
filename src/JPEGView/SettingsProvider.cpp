@@ -4,6 +4,8 @@
 #include <float.h>
 #include <shlobj.h>
 #include <algorithm>
+#include <cerrno>
+#include <cwctype>
 
 static const TCHAR* DEFAULT_INI_FILE_NAME = _T("JPEGView.ini");
 static const TCHAR* SECTION_NAME = _T("JPEGView");
@@ -181,7 +183,7 @@ CSettingsProvider::CSettingsProvider(void) {
 	m_nMaxSlideShowFileListSize = GetInt(_T("MaxSlideShowFileListSizeKB"), 200, 100, 10000);
 	m_nSlideShowEffectTimeMs = GetInt(_T("SlideShowEffectTime"), 200, 100, 5000);
 	m_bForceGDIPlus = GetBool(_T("ForceGDIPlus"), false);
-	m_bEnableGPUImageProcessing = GetBool(_T("EnableGPUImageProcessing"), false);
+	m_bEnableGPUImageProcessing = GetBool(_T("EnableGPUImageProcessing"), true);
 	m_bSingleInstance = GetBool(_T("SingleInstance"), false);
 	m_bSingleFullScreenInstance = GetBool(_T("SingleFullScreenInstance"), true);
 	m_nJPEGSaveQuality = GetInt(_T("JPEGSaveQuality"), 85, 0, 100);
@@ -203,6 +205,8 @@ CSettingsProvider::CSettingsProvider(void) {
 	m_bZoomToMouseDefault = GetBool(_T("ZoomToMouseDefault"), true);
 	m_nMinZoomPercent = GetInt(_T("MinZoomPercent"), 1, 1, 10000);
 	m_nMaxZoomPercent = GetInt(_T("MaxZoomPercent"), 6553500, 1, 6553500);
+	if (m_nMinZoomPercent > m_nMaxZoomPercent)
+		std::swap(m_nMinZoomPercent, m_nMaxZoomPercent);
 	m_dPanSpeed = GetDouble(_T("PanSpeed"), 1.0, 0.1, 100.0);
 	m_bShowZoomInTitle = GetBool(_T("ShowZoomInTitle"), false);
 	m_bSmoothZoom = GetBool(_T("SmoothZoom"), false);
@@ -213,6 +217,10 @@ CSettingsProvider::CSettingsProvider(void) {
 	m_nZoomNavThumbMaxW = GetInt(_T("ZoomNavigatorThumbMaxWidth"), 320, 50, 2000);
 	m_nZoomNavThumbNormalW = GetInt(_T("ZoomNavigatorThumbNormalWidth"), 200, 50, 2000);
 	m_nZoomNavThumbMinW = GetInt(_T("ZoomNavigatorThumbMinWidth"), 133, 50, 2000);
+	if (m_nZoomNavThumbMinW > m_nZoomNavThumbMaxW)
+		std::swap(m_nZoomNavThumbMinW, m_nZoomNavThumbMaxW);
+	m_nZoomNavThumbNormalW = max(m_nZoomNavThumbMinW,
+		min(m_nZoomNavThumbMaxW, m_nZoomNavThumbNormalW));
 	// --- Zoom timing settings ---
 	m_nZoomRefineTimeoutMs = GetInt(_T("ZoomRefineTimeoutMs"), 200, 0, 10000);
 	m_nZoomTextTimeoutMs = GetInt(_T("ZoomTextTimeoutMs"), 1000, 0, 60000);
@@ -435,6 +443,11 @@ CSettingsProvider::CSettingsProvider(void) {
 	m_nBatchConvertQuality = GetInt(_T("BatchConvertQuality"), 85, 0, 100);
 	m_bShowPixelProbeByDefault = GetBool(_T("ShowPixelProbeByDefault"), false);
 	m_bCheckForUpdates = GetBool(_T("CheckForUpdates"), false);
+	// Partial decode is the safe default for very large lazy-backed images.
+	// It is initialized with the rest of the settings (not lazily from
+	// LandscapeModeParams) so every consumer sees a deterministic value.
+	m_bEnableROIDecode = GetBool(_T("EnableROIDecode"), true);
+	m_nROIDecodeThresholdMP = GetInt(_T("ROIDecodeThresholdMP"), 50, 1, 1000);
 	m_nMaxZoomHistory = GetInt(_T("MaxZoomHistory"), 20, 0, 100);
 
 }
@@ -442,10 +455,6 @@ CSettingsProvider::CSettingsProvider(void) {
 CImageProcessingParams CSettingsProvider::LandscapeModeParams(const CImageProcessingParams& templParams) {
 	const float cfUndefined = -1;
 
-	// ROI decode: decode only the viewport for ultra-high-res images backed
-	// by a lazy source, instead of the full image.
-	m_bEnableROIDecode = GetBool(_T("EnableROIDecode"), false);
-	m_nROIDecodeThresholdMP = GetInt(_T("ROIDecodeThresholdMP"), 50, 1, 1000);
 	const int cnParams = 12;
 	float fParams[cnParams];
 	for (int i = 0; i < cnParams; i++) fParams[i] = cfUndefined;
@@ -825,8 +834,15 @@ int CSettingsProvider::GetInt(LPCTSTR sKey, int nDefault, int nMin, int nMax) {
 	if (s.IsEmpty()) {
 		return nDefault;
 	}
-	int nValue = (int)_wtof((LPCTSTR)s);
-	return min(nMax, max(nMin, nValue));
+	errno = 0;
+	wchar_t* end = nullptr;
+	const wchar_t* begin = (LPCTSTR)s;
+	__int64 nValue = _wcstoi64(begin, &end, 10);
+	while (end != nullptr && iswspace(*end))
+		++end;
+	if (begin == end || end == nullptr || *end != L'\0' || errno == ERANGE)
+		return nDefault;
+	return (int)min((__int64)nMax, max((__int64)nMin, nValue));
 }
 
 double CSettingsProvider::GetDouble(LPCTSTR sKey, double dDefault, double dMin, double dMax) {
