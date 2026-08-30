@@ -1,0 +1,14 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 7a43187..9f34e19 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -753,6 +753,9 @@ if(WITH_TURBOJPEG OR WITH_TOOLS OR WITH_TESTS)
+     find_package(ZLIB REQUIRED)
+     unset(ZLIB_STATIC_SOURCES)
+     set(ZLIB_LIBRARY ZLIB::ZLIB)
++    if(WITH_SYSTEM_ZLIB)
++      target_link_libraries(spng-static PRIVATE ZLIB::ZLIB)
++    endif()
+   else()
+     set(ZLIB_STATIC_SOURCES $<TARGET_OBJECTS:zlib-static>)
+     unset(ZLIB_LIBRARY)

@@ -82,6 +82,16 @@ target_include_directories(LazySourceTest PRIVATE "${WTL_INCLUDE_DIR}")
 target_compile_definitions(LazySourceTest PRIVATE
     WIN32 _WINDOWS STRICT UNICODE _UNICODE _CRT_SECURE_NO_DEPRECATE)
 
+# Verify SVG rasterization, including the gzip-wrapped .svgz form. Keep
+# TurboJPEG in this link so the test also catches a second zlib implementation
+# being archived into turbojpeg.lib, which otherwise fails only in JPEGView.exe.
+add_gpu_test(SvgReaderTest SOURCES SvgReaderTest.cpp
+    "${_gpu_src_dir}/SVGWrapper.cpp"
+    LIBS libjpeg-turbo::turbojpeg-static ThorVG::thorvg ZLIB::ZLIB REGISTER_TEST)
+target_include_directories(SvgReaderTest PRIVATE "${WTL_INCLUDE_DIR}")
+target_compile_definitions(SvgReaderTest PRIVATE
+    WIN32 _WINDOWS STRICT UNICODE _UNICODE _CRT_SECURE_NO_DEPRECATE)
+
 # ShaderDiag prints D3DCompile errors for debugging. Dev-only, not a test.
 # Off by default so it never appears in any output tree; enable explicitly
 # during development with -DJPEGVIEW_BUILD_SHADER_DIAG=ON.

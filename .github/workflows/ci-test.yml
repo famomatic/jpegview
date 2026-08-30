@@ -18,7 +18,7 @@ jobs:
 
       - name: Init build-required submodules
         shell: cmd
-        run: git submodule update --init deps/WTL-sf extras/third_party/qoi extras/third_party/nanosvg
+        run: git submodule update --init deps/WTL-sf extras/third_party/qoi
 
       - name: Fetch vcpkg baseline commit
         shell: powershell

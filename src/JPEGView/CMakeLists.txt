@@ -122,12 +122,11 @@ target_precompile_headers(JPEGView PRIVATE stdafx.h)
 
 # WTL is a vendored header-only submodule; image codec deps come from vcpkg.
 # QOI is a header-only submodule kept under extras/third_party/qoi.
+# SVG is handled by ThorVG (vcpkg), which replaced the vendored NanoSVG.
 target_include_directories(JPEGView PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${WTL_INCLUDE_DIR}"
-    "${CMAKE_SOURCE_DIR}/extras/third_party/qoi"
-    "${CMAKE_SOURCE_DIR}/extras/third_party/nanosvg/src"
-    "${CMAKE_SOURCE_DIR}/extras/third_party/nanosvg/src")
+    "${CMAKE_SOURCE_DIR}/extras/third_party/qoi")
 
 set_target_properties(JPEGView PROPERTIES
     OUTPUT_NAME "JPEGView"

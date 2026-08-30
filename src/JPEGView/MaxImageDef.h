@@ -51,6 +51,14 @@ const unsigned int MAX_SVG_FILE_SIZE = 1024 * 1024 * 100;
 const unsigned int MAX_SVG_FILE_SIZE = 1024 * 1024 * 50;
 #endif
 
+// Upper bound for the XML actually handed to the rasterizer.  A .svgz inflates
+// to more than its file size, so the decompressed form gets its own cap.
+#ifdef _WIN64
+const size_t MAX_SVG_SOURCE_SIZE = (size_t)1024 * 1024 * 400;
+#else
+const size_t MAX_SVG_SOURCE_SIZE = (size_t)1024 * 1024 * 100;
+#endif
+
 // DDS (game textures)
 #ifdef _WIN64
 const unsigned int MAX_DDS_FILE_SIZE = 1024 * 1024 * 200;

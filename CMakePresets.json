@@ -23,6 +23,7 @@
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x64-windows-static-jpegview",
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-triplets",
         "JPEGVIEW_BUILD_TESTS": "ON"
       }
     },
@@ -32,7 +33,8 @@
       "architecture": "x64",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x64-windows-static-jpegview",
-        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets"
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-triplets"
       }
     },
     {

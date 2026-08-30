@@ -1,0 +1,112 @@
+diff --git a/src/loaders/svg/tvgSvgLoader.cpp b/src/loaders/svg/tvgSvgLoader.cpp
+index a6b2c10..0e06973 100644
+--- a/src/loaders/svg/tvgSvgLoader.cpp
++++ b/src/loaders/svg/tvgSvgLoader.cpp
+@@ -3386,9 +3386,97 @@ static void _svgLoaderParserXmlOpen(SvgParserContext* ctx, const char* content,
+     }
+ }
+ 
+-static void _svgLoaderParserText(SvgParserContext* ctx, const char* content, unsigned int length)
++//Expands the five predefined XML entities plus numeric character references.
++//Text content reaches the loader raw, so without this a document containing
++//&x; renders the escape itself instead of the character it stands for.
++static char* _decodeXmlEntities(const char* content, unsigned int length, unsigned int* outLength)
++{
++    auto out = tvg::malloc<char>(length + 1);
++    if (!out) return nullptr;
++
++    unsigned int w = 0;
++    for (unsigned int i = 0; i < length; ) {
++        if (content[i] != '&') {
++            out[w++] = content[i++];
++            continue;
++        }
++        //Entity names are short; anything longer is not one and is copied as-is.
++        unsigned int end = i + 1;
++        while (end < length && end - i <= 10 && content[end] != ';') ++end;
++        if (end >= length || content[end] != ';') {
++            out[w++] = content[i++];
++            continue;
++        }
++
++        auto name = content + i + 1;
++        auto nameLen = end - i - 1;
++        uint32_t code = 0;
++
++        if (nameLen > 1 && name[0] == '#') {
++            auto digits = name + 1;
++            auto digitLen = nameLen - 1;
++            auto hex = (digits[0] == 'x' || digits[0] == 'X');
++            if (hex) { ++digits; --digitLen; }
++            if (digitLen == 0) code = 0;
++            else for (unsigned int d = 0; d < digitLen; ++d) {
++                auto c = digits[d];
++                uint32_t v;
++                if (c >= '0' && c <= '9') v = c - '0';
++                else if (hex && c >= 'a' && c <= 'f') v = c - 'a' + 10;
++                else if (hex && c >= 'A' && c <= 'F') v = c - 'A' + 10;
++                else { code = 0; break; }
++                code = code * (hex ? 16 : 10) + v;
++                if (code > 0x10FFFF) { code = 0; break; }
++            }
++        } else if (nameLen == 2 && !memcmp(name, "lt", 2)) code = '<';
++        else if (nameLen == 2 && !memcmp(name, "gt", 2)) code = '>';
++        else if (nameLen == 3 && !memcmp(name, "amp", 3)) code = '&';
++        else if (nameLen == 4 && !memcmp(name, "quot", 4)) code = '\"';
++        else if (nameLen == 4 && !memcmp(name, "apos", 4)) code = '\'';
++
++        if (code == 0) {
++            out[w++] = content[i++];
++            continue;
++        }
++
++        //Emit as UTF-8; the replacement is never longer than the escape it replaces.
++        if (code < 0x80) out[w++] = (char)code;
++        else if (code < 0x800) {
++            out[w++] = (char)(0xC0 | (code >> 6));
++            out[w++] = (char)(0x80 | (code & 0x3F));
++        } else if (code < 0x10000) {
++            out[w++] = (char)(0xE0 | (code >> 12));
++            out[w++] = (char)(0x80 | ((code >> 6) & 0x3F));
++            out[w++] = (char)(0x80 | (code & 0x3F));
++        } else {
++            out[w++] = (char)(0xF0 | (code >> 18));
++            out[w++] = (char)(0x80 | ((code >> 12) & 0x3F));
++            out[w++] = (char)(0x80 | ((code >> 6) & 0x3F));
++            out[w++] = (char)(0x80 | (code & 0x3F));
++        }
++        i = end + 1;
++    }
++
++    out[w] = '\0';
++    *outLength = w;
++    return out;
++}
++
++
++static void _svgLoaderParserText(SvgParserContext* ctx, const char* content, unsigned int length, bool decode)
+ {
+     auto& text = ctx->parser->node->node.text;
++
++    //CDATA sections are literal by definition, so only parsed character data
++    //goes through entity expansion.
++    if (decode) {
++        unsigned int decodedLength = 0;
++        if (auto decoded = _decodeXmlEntities(content, length, &decodedLength)) {
++            text.text = append(text.text, decoded, decodedLength);
++            tvg::free(decoded);
++            return;
++        }
++    }
+     text.text = append(text.text, content, length);
+ }
+ 
+@@ -3636,7 +3724,7 @@ static bool _svgLoaderParser(void* data, XMLType type, const char* content, unsi
+         case XMLType::Data:
+         case XMLType::CData: {
+             if (ctx->openedTag == OpenedTagType::Style) _svgLoaderParserXmlCssStyle(ctx, content, length);
+-            else if (ctx->openedTag == OpenedTagType::Text) _svgLoaderParserText(ctx, content, length);
++            else if (ctx->openedTag == OpenedTagType::Text) _svgLoaderParserText(ctx, content, length, type == XMLType::Data);
+             break;
+         }
+         case XMLType::DoctypeChild: {

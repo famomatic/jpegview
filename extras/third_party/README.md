@@ -149,14 +149,6 @@ It is built and included in `src\JPEGView\lcms2`
 License: [MIT License](https://github.com/mm2/Little-CMS/blob/master/COPYING)
 
 
-## nanosvg
-
-NanoSVG - Small standalone SVG parser and rasterizer
-
-License: [zlib License](https://github.com/memononen/nanosvg/blob/master/LICENSE.txt)
-
-NanoSVG source is directly compiled into JPEGView (header-only) from `src/nanosvg.h` and `src/nanosvgrast.h`.
-SVG is rasterized at load time; the parser supports a useful subset of SVG (paths, shapes, gradients, transforms) but not filters, animations, or complex text layout.
 ## qoi
 
 Quite OK Image Format

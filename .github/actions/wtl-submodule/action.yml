@@ -1,11 +1,10 @@
 name: Action - Setup WTL via Submodule
 description: Action to set up WTL includes by submodule init
 
-# The build references headers from three submodules, so this action
+# The build references headers from two submodules, so this action
 # initializes exactly those and nothing else to keep the checkout lean:
 #   deps/WTL-sf                - WTL headers
 #   extras/third_party/qoi     - QOI header-only codec (QOIWrapper)
-#   extras/third_party/nanosvg - NanoSVG header-only rasterizer (SVGWrapper)
 #
 # actions/checkout has no way to fetch a subset of submodules, so we run
 # `git submodule update --init` with the explicit paths instead.
@@ -16,4 +15,4 @@ runs:
     - name: Init build-required submodules
       shell: cmd
       # Run git commands directly without using the GH checkout action.
-      run: git submodule update --init deps/WTL-sf extras/third_party/qoi extras/third_party/nanosvg
+      run: git submodule update --init deps/WTL-sf extras/third_party/qoi

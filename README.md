@@ -21,7 +21,7 @@ JPEGView has built-in support for the following formats:
 * Popular: JPEG, GIF, ICO/CUR
 * Lossless: BMP, PNG (incl. animated PNG), TIFF (incl. BigTIFF, multi-page, all compression modes), PSD (8/16/32-bit, all compression modes)
 * Web: WEBP (incl. animated), JXL (incl. animated), HEIF/HEIC, AVIF (incl. animated)
-* Vector: SVG, SVGZ (NanoSVG)
+* Vector: SVG, SVGZ (ThorVG)
 * Game/CG: DDS (BC1/BC3 + uncompressed), EXR (OpenEXR), HDR/PIC (Radiance RGBE)
 * Legacy: TGA, WDP, HDP, JXR (libjxr), JPEG 2000 (JP2/J2K/J2C, OpenJPEG), QOI
 * Camera RAW formats:

@@ -1,0 +1,183 @@
+diff --git a/src/loaders/svg/tvgSvgCommon.h b/src/loaders/svg/tvgSvgCommon.h
+index 7732db7..a6243eb 100644
+--- a/src/loaders/svg/tvgSvgCommon.h
++++ b/src/loaders/svg/tvgSvgCommon.h
+@@ -169,7 +169,9 @@ enum struct SvgStyleFlags
+     StrokeDashOffset = 0x40000,
+     Filter = 0x80000,
+     BlendMode = 0x100000,
+-    TextAnchor = 0x200000
++    TextAnchor = 0x200000,
++    FontFamily = 0x400000,
++    FontSize = 0x800000
+ };
+ 
+ constexpr bool operator&(SvgStyleFlags a, SvgStyleFlags b)
+@@ -522,6 +524,8 @@ struct SvgStyleProperty
+     SvgColor color;
+     char* cssClass;
+     float textAnchor;  // 0=start, 0.5=middle, 1=end
++    char* fontFamily;
++    float fontSize;
+     SvgStyleFlags flags;
+     SvgStyleFlags flagsImportance; //indicates the importance of the flag - if set, higher priority is applied (https://drafts.csswg.org/css-cascade-4/#importance)
+     bool curColorSet;
+diff --git a/src/loaders/svg/tvgSvgCssStyle.cpp b/src/loaders/svg/tvgSvgCssStyle.cpp
+index 2522afd..7ac67fd 100644
+--- a/src/loaders/svg/tvgSvgCssStyle.cpp
++++ b/src/loaders/svg/tvgSvgCssStyle.cpp
+@@ -150,6 +150,16 @@ static void _copyStyle(SvgStyleProperty* to, const SvgStyleProperty* from, bool
+         to->flags |= SvgStyleFlags::TextAnchor;
+         if (from->flagsImportance & SvgStyleFlags::TextAnchor) to->flagsImportance |= SvgStyleFlags::TextAnchor;
+     }
++    if (((from->flags & SvgStyleFlags::FontFamily) && (overwrite || !(to->flags & SvgStyleFlags::FontFamily))) || _isImportanceApplicable(to->flagsImportance, from->flagsImportance, SvgStyleFlags::FontFamily)) {
++        svgUtilReplace(&to->fontFamily, from->fontFamily);
++        to->flags |= SvgStyleFlags::FontFamily;
++        if (from->flagsImportance & SvgStyleFlags::FontFamily) to->flagsImportance |= SvgStyleFlags::FontFamily;
++    }
++    if (((from->flags & SvgStyleFlags::FontSize) && (overwrite || !(to->flags & SvgStyleFlags::FontSize))) || _isImportanceApplicable(to->flagsImportance, from->flagsImportance, SvgStyleFlags::FontSize)) {
++        to->fontSize = from->fontSize;
++        to->flags |= SvgStyleFlags::FontSize;
++        if (from->flagsImportance & SvgStyleFlags::FontSize) to->flagsImportance |= SvgStyleFlags::FontSize;
++    }
+ }
+ 
+ 
+@@ -171,6 +181,16 @@ void cssCopyStyleAttr(SvgNode* to, const SvgNode* from, bool overwrite)
+ 
+     if (from->style->clipPath.url) svgUtilReplace(&to->style->clipPath.url, from->style->clipPath.url);
+     if (from->style->mask.url) svgUtilReplace(&to->style->mask.url, from->style->mask.url);
++
++    //Font properties live on the text node itself; the builder reads them from there.
++    //Skipped when overwrite is set: that path targets the temporary node used to
++    //merge class declarations, whose node.text is never freed.
++    if (!overwrite && (to->type == SvgNodeType::Text || to->type == SvgNodeType::Tspan)) {
++        if ((to->style->flags & SvgStyleFlags::FontFamily) && to->style->fontFamily) {
++            svgUtilReplace(&to->node.text.fontFamily, to->style->fontFamily);
++        }
++        if (to->style->flags & SvgStyleFlags::FontSize) to->node.text.fontSize = to->style->fontSize;
++    }
+ }
+ 
+ 
+diff --git a/src/loaders/svg/tvgSvgLoader.cpp b/src/loaders/svg/tvgSvgLoader.cpp
+index d43633b..a6b2c10 100644
+--- a/src/loaders/svg/tvgSvgLoader.cpp
++++ b/src/loaders/svg/tvgSvgLoader.cpp
+@@ -1086,6 +1086,42 @@ static void _handleTextAnchorAttr(TVG_UNUSED SvgParserContext* ctx, SvgNode* nod
+     else node->style->textAnchor = 0.0f;
+ }
+ 
++
++//font-family is quoted in CSS ('Arial'); the raw attribute form is not.
++static void _handleFontFamilyAttr(TVG_UNUSED SvgParserContext* ctx, SvgNode* node, const char* value)
++{
++    auto len = value ? strlen(value) : 0;
++    if (len == 0) return;
++
++    node->style->flags |= SvgStyleFlags::FontFamily;
++
++    char* name;
++    auto quote = value[0];
++    if (len >= 2 && (quote == '\'' || quote == '"') && value[len - 1] == quote) {
++        name = duplicate(value + 1, len - 2);
++    } else name = duplicate(value);
++    if (!name) return;
++
++    tvg::free(node->style->fontFamily);
++    node->style->fontFamily = name;
++
++    //A text node carries its own font; apply it directly so the builder picks it up.
++    if (node->type == SvgNodeType::Text || node->type == SvgNodeType::Tspan) {
++        svgUtilReplace(&node->node.text.fontFamily, node->style->fontFamily);
++    }
++}
++
++
++static void _handleFontSizeAttr(SvgParserContext* ctx, SvgNode* node, const char* value)
++{
++    node->style->flags |= SvgStyleFlags::FontSize;
++    node->style->fontSize = _toFontSize(ctx->parser, value);
++
++    if (node->type == SvgNodeType::Text || node->type == SvgNodeType::Tspan) {
++        node->node.text.fontSize = node->style->fontSize;
++    }
++}
++
+ static void _handleCssClassAttr(SvgParserContext* ctx, SvgNode* node, const char* value)
+ {
+     auto cssClass = &node->style->cssClass;
+@@ -1130,7 +1166,9 @@ static constexpr struct
+     STYLE_DEF(paint-order, PaintOrder, SvgStyleFlags::PaintOrder),
+     STYLE_DEF(filter, Filter, SvgStyleFlags::Filter),
+     STYLE_DEF(mix-blend-mode, MixBlendMode, SvgStyleFlags::BlendMode),
+-    STYLE_DEF(text-anchor, TextAnchor, SvgStyleFlags::TextAnchor)};
++    STYLE_DEF(text-anchor, TextAnchor, SvgStyleFlags::TextAnchor),
++    STYLE_DEF(font-family, FontFamily, SvgStyleFlags::FontFamily),
++    STYLE_DEF(font-size, FontSize, SvgStyleFlags::FontSize)};
+ 
+ static SvgXmlSpace _toXmlSpace(const char* str)
+ {
+@@ -2138,8 +2176,8 @@ static bool _attrParseTextNode(void* data, const char* key, const char* value)
+         }
+     }
+ 
+-    if (STR_AS(key, "font-size")) text->fontSize = _toFontSize(ctx->parser, value);
+-    else if (STR_AS(key, "font-family")) svgUtilReplace(&text->fontFamily, value);
++    if (STR_AS(key, "font-size")) _handleFontSizeAttr(ctx, node, value);
++    else if (STR_AS(key, "font-family")) _handleFontFamilyAttr(ctx, node, value);
+     else if (STR_AS(key, "style")) return xmlParseW3CAttribute(value, strlen(value), _parseStyleAttr, ctx);
+     else if (STR_AS(key, "clip-path")) _handleClipPathAttr(ctx, node, value);
+     else if (STR_AS(key, "mask")) _handleMaskAttr(ctx, node, value);
+@@ -2933,6 +2971,15 @@ static void _styleInherit(SvgStyleProperty* child, const SvgStyleProperty* paren
+     if (!(child->stroke.flags & SvgStrokeFlags::Join)) child->stroke.join = parent->stroke.join;
+     if (!(child->stroke.flags & SvgStrokeFlags::Miterlimit)) child->stroke.miterlimit = parent->stroke.miterlimit;
+     if (!(child->flags & SvgStyleFlags::TextAnchor)) child->textAnchor = parent->textAnchor;
++
++    //font-family and font-size are inherited properties. The flag is left alone
++    //so a descendant keeps seeing the value as inherited rather than its own.
++    if (!(child->flags & SvgStyleFlags::FontFamily) && parent->fontFamily) {
++        svgUtilReplace(&child->fontFamily, parent->fontFamily);
++    }
++    if (!(child->flags & SvgStyleFlags::FontSize) && parent->fontSize > 0.0f) {
++        child->fontSize = parent->fontSize;
++    }
+ }
+ 
+ 
+@@ -2950,6 +2997,8 @@ static void _styleCopy(SvgStyleProperty* to, const SvgStyleProperty* from)
+     if (from->flags & SvgStyleFlags::Display) to->display = from->display;
+     if (from->flags & SvgStyleFlags::BlendMode) to->blendMode = from->blendMode;
+     if (from->flags & SvgStyleFlags::TextAnchor) to->textAnchor = from->textAnchor;
++    if (from->flags & SvgStyleFlags::FontSize) to->fontSize = from->fontSize;
++    if (from->flags & SvgStyleFlags::FontFamily) svgUtilReplace(&to->fontFamily, from->fontFamily);
+ 
+     //Fill
+     to->fill.flags = (to->fill.flags | from->fill.flags);
+@@ -3379,6 +3428,7 @@ static void _free(SvgStyleProperty* style)
+     tvg::free(style->mask.url);
+     tvg::free(style->filter.url);
+     tvg::free(style->cssClass);
++    tvg::free(style->fontFamily);
+ 
+     if (style->fill.paint.gradient) {
+         style->fill.paint.gradient->clear();
+@@ -3609,6 +3659,18 @@ static bool _svgLoaderParser(void* data, XMLType type, const char* content, unsi
+ static void _updateStyle(SvgNode* node, SvgStyleProperty* parentStyle)
+ {
+     _styleInherit(node->style, parentStyle);
++
++    //A font inherited from an ancestor group reaches the node only here, after
++    //the cascade has run; a font set on the node itself is already in place.
++    if (node->type == SvgNodeType::Text || node->type == SvgNodeType::Tspan) {
++        if (node->style->fontFamily && !node->node.text.fontFamily) {
++            svgUtilReplace(&node->node.text.fontFamily, node->style->fontFamily);
++        }
++        if (!(node->style->flags & SvgStyleFlags::FontSize) && node->style->fontSize > 0.0f) {
++            node->node.text.fontSize = node->style->fontSize;
++        }
++    }
++
+     ARRAY_FOREACH(p, node->child) {
+         _updateStyle(*p, node->style);
+     }

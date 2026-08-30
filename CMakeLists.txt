@@ -159,6 +159,37 @@ set_property(TARGET JpegXL::jxl APPEND PROPERTY INTERFACE_LINK_LIBRARIES
     "$<$<CONFIG:Release>:${BROTLICOMMON_REL}>"
     "$<$<CONFIG:Debug>:${BROTLICOMMON_DBG}>")
 
+# ThorVG rasterizes SVG.  The vcpkg port installs only a pkg-config file (it is
+# built with meson), so the header dir and library are located by hand the same
+# way libjxl is above.  Headers live in include/thorvg-1 and the static lib is
+# named thorvg-1.lib.
+#
+# NOTE: the build uses the patched overlay port in vcpkg-triplets/thorvg, which
+# teaches the SVG loader to honour font-family/font-size coming from CSS.  Stock
+# thorvg only reads them as direct XML attributes, which loses the font on any
+# Illustrator-exported SVG.
+find_path(THORVG_INCLUDE_DIR
+    NAMES thorvg.h
+    PATHS "${_vcpkg_installed}/${VCPKG_TARGET_TRIPLET}/include/thorvg-1"
+    NO_DEFAULT_PATH REQUIRED)
+find_library(THORVG_LIBRARY_REL
+    NAMES thorvg-1
+    PATHS "${_vcpkg_lib}"
+    NO_DEFAULT_PATH REQUIRED)
+find_library(THORVG_LIBRARY_DBG
+    NAMES thorvg-1
+    PATHS "${_vcpkg_libdbg}"
+    NO_DEFAULT_PATH REQUIRED)
+
+add_library(ThorVG::thorvg STATIC IMPORTED)
+set_target_properties(ThorVG::thorvg PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${THORVG_INCLUDE_DIR}"
+    IMPORTED_LOCATION "${THORVG_LIBRARY_REL}"
+    IMPORTED_LOCATION_DEBUG "${THORVG_LIBRARY_DBG}"
+    IMPORTED_LOCATION_RELEASE "${THORVG_LIBRARY_REL}")
+# thorvg.h only drops its dllimport attributes when TVG_STATIC is defined.
+target_compile_definitions(ThorVG::thorvg INTERFACE TVG_STATIC)
+
 # Collect the dependency targets into a single variable for the JPEGView target.
 set(JPEGVIEW_DEP_TARGETS
     libjpeg-turbo::turbojpeg-static
@@ -175,6 +206,7 @@ set(JPEGVIEW_DEP_TARGETS
     openjp2
     OpenEXR::OpenEXR
     TIFF::TIFF
+    ThorVG::thorvg
 )
 
 add_subdirectory(src/WICLoader)

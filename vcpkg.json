@@ -20,6 +20,7 @@
     },
     "libavif",
     "openjpeg",
+    "thorvg",
     "openexr",
     "jxrlib",
     {
