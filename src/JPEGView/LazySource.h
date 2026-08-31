@@ -94,6 +94,9 @@ protected:
 	virtual bool DecodeTile(int tileX, int tileY, uint8* pDst) = 0;
 	virtual bool SetPyramidLevel(int level) = 0;
 	virtual bool ReadSinglePixel(int x, int y, uint8 outBGRA[4]);
+	virtual bool ResampleStripped(const std::vector<int>& sourceX,
+	                             const std::vector<int>& sourceY,
+	                             uint8* pDst, CSize dstSize);
 	void InvalidateSinglePixelCache();
 
 	// Acquire/release the source's internal serialization lock around a
@@ -122,9 +125,6 @@ protected:
 	bool m_bCachedUnitTiled;
 
 private:
-	bool ResampleStripped(const std::vector<int>& sourceX,
-	                     const std::vector<int>& sourceY,
-	                     uint8* pDst, CSize dstSize);
 	bool ResampleTiled(const std::vector<int>& sourceX,
 	                  const std::vector<int>& sourceY,
 	                  uint8* pDst, CSize dstSize);

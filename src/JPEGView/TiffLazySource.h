@@ -39,6 +39,11 @@ public:
 	void LockSource() override { m_tifLock.lock(); }
 	void UnlockSource() override { m_tifLock.unlock(); }
 
+protected:
+	bool ResampleStripped(const std::vector<int>& sourceX,
+	                     const std::vector<int>& sourceY,
+	                     uint8* pDst, CSize dstSize) override;
+
 private:
 	CTiffLazySource();
 	bool OpenAndReadMetadata(LPCTSTR strFileName, int nFrameIndex);
@@ -46,10 +51,12 @@ private:
 	bool UpdateDirectoryFormat();
 	void UpdateICCProfile();
 	int DetectPyramidLevels();
-	bool DecodeSingleStrip(int stripIndex, uint8* pDst, int dstStride);
+	bool DecodeSingleStrip(TIFF* tif, int stripIndex, uint8* pDst, int dstStride,
+	                       std::vector<uint8>& scratch) const;
+	TIFF* OpenWorkerHandle() const;
 	void ConvertStripToBGRA(const uint8* pSrc, uint8* pDst,
 	                         int width, int rowsInStrip,
-	                         int srcStride, int dstStride);
+	                         int srcStride, int dstStride) const;
 
 	TIFF* m_tif;
 	CString m_sFileName;

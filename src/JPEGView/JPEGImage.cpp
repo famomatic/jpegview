@@ -578,21 +578,36 @@ void CJPEGImage::ResampleWithPan(void* & pDIBPixels, void* & pDIBPixelsLUTProces
 			return;
 		}
 
-		// Copy the reusable part of original DIB pixels
-		void* pPannedPixels = (bCanUseLUTProcDIB == false) ? 
-			CBasicProcessing::CopyRect32bpp(NULL, pDIBPixels, clippingSize, targetRect, oldSize, sourceRect) :
-			NULL;
+		// A pan keeps the viewport size unchanged. Move the reusable pixels inside
+		// the existing DIB instead of allocating and copying a full-screen buffer
+		// for every mouse-move event.
+		if (oldSize != clippingSize) {
+			delete[] pDIBPixels; pDIBPixels = NULL;
+			delete[] pDIBPixelsLUTProcessed; pDIBPixelsLUTProcessed = NULL;
+			return;
+		}
 
-		// get rid of original DIB, will we recreated automatically when needed
-		delete[] pDIBPixels; pDIBPixels = NULL;
-
-		// Copy the reusable part of processed DIB pixels
-		void* pPannedPixelsLUTProcessed = bCanUseLUTProcDIB ? 
-			CBasicProcessing::CopyRect32bpp(NULL, pDIBPixelsLUTProcessed, clippingSize, targetRect, oldSize, sourceRect) :
-			NULL;
-
-		// Delete old LUT processed DIB, we copied the part that can be reused to a new DIB (pPannedPixelsLUTProcessed)
-		delete[] pDIBPixelsLUTProcessed; pDIBPixelsLUTProcessed = NULL;
+		void* pPannedPixels = NULL;
+		void* pPannedPixelsLUTProcessed = NULL;
+		if (bCanUseLUTProcDIB) {
+			delete[] pDIBPixels; pDIBPixels = NULL;
+			if (!CBasicProcessing::MoveRect32bpp(pDIBPixelsLUTProcessed, clippingSize,
+				sourceRect, targetRect.TopLeft())) {
+				delete[] pDIBPixelsLUTProcessed; pDIBPixelsLUTProcessed = NULL;
+				return;
+			}
+			pPannedPixelsLUTProcessed = pDIBPixelsLUTProcessed;
+			pDIBPixelsLUTProcessed = NULL;
+		} else {
+			delete[] pDIBPixelsLUTProcessed; pDIBPixelsLUTProcessed = NULL;
+			if (!CBasicProcessing::MoveRect32bpp(pDIBPixels, clippingSize,
+				sourceRect, targetRect.TopLeft())) {
+				delete[] pDIBPixels; pDIBPixels = NULL;
+				return;
+			}
+			pPannedPixels = pDIBPixels;
+			pDIBPixels = NULL;
+		}
 
 		if (targetRect.top > 0) {
 			CSize clipSize(clippingSize.cx, targetRect.top);
@@ -1149,9 +1164,13 @@ void* CJPEGImage::GetDIBInternal(CSize fullTargetSize, CSize clippingSize, CPoin
 	}
 	// ApplyCorrectionLUTandLDC() could have failed, then recreate the DIBs
 	if (pDIB == NULL) {
-		// if the image is reprocessed more than once, it is worth to convert the original to 4 channels
-		// as this is faster for further processing
-		if (!m_bFirstReprocessing) {
+		// If the image is reprocessed more than once, converting an existing
+		// contiguous source buffer to four channels speeds up further processing.
+		// A lazy source has no such buffer: converting it here would materialize
+		// the entire image merely because the user zoomed a second time. For a
+		// 93761x26305 TIFF that means a blocking 9+ GiB decode before the normal
+		// viewport-only path gets a chance to run.
+		if (!m_bFirstReprocessing && OriginalPixels() != NULL) {
 			ConvertSrcTo4Channels();
 		}
 

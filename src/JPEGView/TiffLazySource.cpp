@@ -2,8 +2,11 @@
 #include "TiffLazySource.h"
 #include "Helpers.h"
 #include "MaxImageDef.h"
+#include "SettingsProvider.h"
 #include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <thread>
 
 // TIFFGetFieldDefaulted forwards its va_list to TIFFVGetFieldDefaulted, which
 // crashes in Release when libtiff is linked statically with a mismatched CRT.
@@ -451,8 +454,128 @@ CRawMetadata* CTiffLazySource::RawMetadata() const
 	return m_pRawMetadata;
 }
 
-bool CTiffLazySource::DecodeSingleStrip(int stripIndex, uint8* pDst, int dstStride)
+TIFF* CTiffLazySource::OpenWorkerHandle() const
 {
+	TIFF* tif = TIFFOpenW(m_sFileName, "rm");
+	if (tif == nullptr)
+		return nullptr;
+	if (TIFFSetDirectory(tif, static_cast<tdir_t>(m_nCurrentFrame)) == 0 ||
+		(m_nCurrentPyramidLevel > 0 &&
+		 (m_nCurrentPyramidLevel > static_cast<int>(m_pyramidIFDOffsets.size()) ||
+		  TIFFSetSubDirectory(tif, m_pyramidIFDOffsets[(size_t)m_nCurrentPyramidLevel - 1]) == 0)))
+	{
+		TIFFClose(tif);
+		return nullptr;
+	}
+	return tif;
+}
+
+bool CTiffLazySource::ResampleStripped(const std::vector<int>& sourceX,
+	                                    const std::vector<int>& sourceY,
+	                                    uint8* pDst, CSize dstSize)
+{
+	if (m_nRowsPerStrip <= 0 || m_nWidth <= 0 || sourceX.empty() || sourceY.empty() ||
+		m_nWidth > INT_MAX / 4)
+		return false;
+
+	struct StripJob {
+		int stripIndex;
+		int yBegin;
+		int yEnd;
+	};
+	std::vector<StripJob> jobs;
+	try {
+		for (int yBegin = 0; yBegin < dstSize.cy;) {
+			const int stripIndex = sourceY[(size_t)yBegin] / m_nRowsPerStrip;
+			int yEnd = yBegin + 1;
+			while (yEnd < dstSize.cy && sourceY[(size_t)yEnd] / m_nRowsPerStrip == stripIndex)
+				++yEnd;
+			if (stripIndex < 0 || stripIndex >= m_nStripsPerImage)
+				return false;
+			jobs.push_back({stripIndex, yBegin, yEnd});
+			yBegin = yEnd;
+		}
+	} catch (const std::bad_alloc&) {
+		return false;
+	}
+
+	const size_t stride = (size_t)m_nWidth * 4;
+	const size_t stripBytes = stride * (size_t)m_nRowsPerStrip;
+	if (stride / 4 != (size_t)m_nWidth ||
+		stripBytes / stride != (size_t)m_nRowsPerStrip)
+		return false;
+	// Each worker owns one BGRA strip and one decode scratch buffer. Bound the
+	// aggregate to 256 MiB even when a TIFF uses unusually tall strips.
+	const size_t perWorkerBytes = stripBytes > SIZE_MAX / 2 ? SIZE_MAX : stripBytes * 2;
+	const size_t memoryBudget = 256ULL * 1024 * 1024;
+	const int threadsByMemory = (int)std::max<size_t>(1,
+		std::min<size_t>(8, memoryBudget / perWorkerBytes));
+	const int configuredThreads = CSettingsProvider::This().NumberOfCoresToUse();
+	const int threadCount = std::min<int>(threadsByMemory,
+		std::min<int>(configuredThreads, (int)jobs.size()));
+	// For a small viewport, opening extra TIFF handles costs more than the work
+	// it saves. Large row-per-strip images normally take this path as well.
+	if (threadCount <= 1 || jobs.size() < 32)
+		return CLazySource::ResampleStripped(sourceX, sourceY, pDst, dstSize);
+
+	std::atomic<size_t> nextJob(0);
+	std::atomic<bool> failed(false);
+	auto worker = [&]() {
+		TIFF* tif = OpenWorkerHandle();
+		if (tif == nullptr) {
+			failed = true;
+			return;
+		}
+		try {
+			std::vector<uint8> strip(stripBytes);
+			std::vector<uint8> scratch;
+			while (!failed.load(std::memory_order_relaxed)) {
+				const size_t jobIndex = nextJob.fetch_add(1, std::memory_order_relaxed);
+				if (jobIndex >= jobs.size())
+					break;
+				const StripJob& job = jobs[jobIndex];
+				if (!DecodeSingleStrip(tif, job.stripIndex, strip.data(), (int)stride, scratch)) {
+					failed = true;
+					break;
+				}
+				for (int dy = job.yBegin; dy < job.yEnd; ++dy) {
+					const int localY = sourceY[(size_t)dy] - job.stripIndex * m_nRowsPerStrip;
+					const uint8* srcRow = strip.data() + (size_t)localY * stride;
+					uint8* dstRow = pDst + (size_t)dy * dstSize.cx * 4;
+					for (int dx = 0; dx < dstSize.cx; ++dx) {
+						const uint8* src = srcRow + (size_t)sourceX[(size_t)dx] * 4;
+						memcpy(dstRow + (size_t)dx * 4, src, 4);
+					}
+				}
+			}
+		} catch (const std::exception&) {
+			failed = true;
+		}
+		TIFFClose(tif);
+	};
+
+	std::vector<std::thread> threads;
+	bool launchedAll = true;
+	try {
+		threads.reserve((size_t)threadCount);
+		for (int i = 0; i < threadCount; ++i)
+			threads.emplace_back(worker);
+	} catch (const std::exception&) {
+		failed = true;
+		launchedAll = false;
+	}
+	for (std::thread& thread : threads)
+		thread.join();
+	if (!launchedAll || failed)
+		return CLazySource::ResampleStripped(sourceX, sourceY, pDst, dstSize);
+	return true;
+}
+
+bool CTiffLazySource::DecodeSingleStrip(TIFF* tif, int stripIndex, uint8* pDst,
+	                                    int dstStride, std::vector<uint8>& scratch) const
+{
+	if (tif == nullptr)
+		return false;
 	// 이 스트립의 행 수 (마지막 스트립은 더 짧을 수 있음).
 	int rowsInStrip = m_nRowsPerStrip;
 	int stripStartRow = stripIndex * m_nRowsPerStrip;
@@ -468,14 +591,17 @@ bool CTiffLazySource::DecodeSingleStrip(int stripIndex, uint8* pDst, int dstStri
 	{
 		// TIFFReadRGBAStrip은 전체 이미지 너비 * rowsInStrip 크기의
 		// uint32(ABGR) 버퍼를 채운다. 마지막 스트립은 나머지 행만 유효.
-		uint32* pRGBA = (uint32*)_TIFFmalloc((tmsize_t)m_nWidth * rowsInStrip * sizeof(uint32));
-		if (pRGBA == nullptr)
+		const size_t rgbaBytes = (size_t)m_nWidth * rowsInStrip * sizeof(uint32);
+		try {
+			scratch.resize(rgbaBytes);
+		} catch (const std::bad_alloc&) {
 			return false;
+		}
+		uint32* pRGBA = reinterpret_cast<uint32*>(scratch.data());
 		// TIFFReadRGBAStrip takes the first ROW of the strip, not the strip
 		// index; libtiff rejects any row that is not a multiple of rowsPerStrip.
-		if (TIFFReadRGBAStrip(m_tif, (uint32)stripIndex * m_nRowsPerStrip, pRGBA) == 0)
+		if (TIFFReadRGBAStrip(tif, (uint32)stripIndex * m_nRowsPerStrip, pRGBA) == 0)
 		{
-			_TIFFfree(pRGBA);
 			return false;
 		}
 		// libtiff's RGBA raster packs R into byte 0 (PACK: r | g<<8 | b<<16 |
@@ -498,37 +624,36 @@ bool CTiffLazySource::DecodeSingleStrip(int stripIndex, uint8* pDst, int dstStri
 				pDstRow[x * 4 + 3] = (uint8)((px >> 24) & 0xFF); // A (TIFFGetA)
 			}
 		}
-		_TIFFfree(pRGBA);
 		return true;
 	}
 
 	// 8비트 RGB/MINISBLACK fast path: 수동 변환이 TIFFReadRGBAStrip보다 빠르다.
-	tmsize_t stripSize = TIFFStripSize(m_tif);
+	tmsize_t stripSize = TIFFStripSize(tif);
 	if (stripSize <= 0)
 		return false;
 
-	uint8* pStripBuf = (uint8*)_TIFFmalloc(stripSize);
-	if (pStripBuf == nullptr)
+	try {
+		scratch.resize((size_t)stripSize);
+	} catch (const std::bad_alloc&) {
 		return false;
+	}
+	uint8* pStripBuf = scratch.data();
 
-	tmsize_t bytesRead = TIFFReadEncodedStrip(m_tif, (uint32)stripIndex, pStripBuf, stripSize);
+	tmsize_t bytesRead = TIFFReadEncodedStrip(tif, (uint32)stripIndex, pStripBuf, stripSize);
 	if (bytesRead < 0)
 	{
-		_TIFFfree(pStripBuf);
 		return false;
 	}
 
 	// BGRA로 변환.
-	int srcStride = TIFFScanlineSize(m_tif);
+	int srcStride = TIFFScanlineSize(tif);
 	ConvertStripToBGRA(pStripBuf, pDst, m_nWidth, rowsInStrip, (int)srcStride, dstStride);
-
-	_TIFFfree(pStripBuf);
 	return true;
 }
 
 void CTiffLazySource::ConvertStripToBGRA(const uint8* pSrc, uint8* pDst,
                                           int width, int rowsInStrip,
-                                          int srcStride, int dstStride)
+                                          int srcStride, int dstStride) const
 {
 	// This method is only reached for 8-bit RGB/MINISBLACK/MINISWHITE
 	// (the RGBA fast path in DecodeSingleStrip/DecodeTile handles palette,
@@ -588,6 +713,7 @@ bool CTiffLazySource::DecodeStrips(int startStrip, int stripCount,
 	if (m_tif == nullptr || m_bReleased)
 		return false;
 
+	std::vector<uint8> scratch;
 	for (int i = 0; i < stripCount; i++)
 	{
 		int stripIndex = startStrip + i;
@@ -599,7 +725,7 @@ bool CTiffLazySource::DecodeStrips(int startStrip, int stripCount,
 		// images larger than ~2 GB (well within the x64 dimension limit),
 		// producing a wrapped/negative offset and an out-of-bounds write.
 		size_t stripOffset = (size_t)i * m_nRowsPerStrip * dstStride;
-		if (!DecodeSingleStrip(stripIndex, pDst + stripOffset, dstStride))
+		if (!DecodeSingleStrip(m_tif, stripIndex, pDst + stripOffset, dstStride, scratch))
 		{
 			// 실패한 스트립은 검은색으로 채운다.
 			int rows = m_nRowsPerStrip;

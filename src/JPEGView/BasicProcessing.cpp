@@ -840,6 +840,34 @@ void* CBasicProcessing::Convert3To4Channels(int nWidth, int nHeight, const void*
 	return pTarget;
 }
 
+bool CBasicProcessing::MoveRect32bpp(void* pDIB, CSize size, CRect sourceRect, CPoint targetTopLeft) {
+	CRect targetRect(targetTopLeft, sourceRect.Size());
+	if (pDIB == NULL || size.cx <= 0 || size.cy <= 0 || sourceRect.IsRectEmpty() ||
+		sourceRect.left < 0 || sourceRect.right > size.cx ||
+		sourceRect.top < 0 || sourceRect.bottom > size.cy ||
+		targetRect.left < 0 || targetRect.right > size.cx ||
+		targetRect.top < 0 || targetRect.bottom > size.cy) {
+		return false;
+	}
+
+	uint32* pPixels = static_cast<uint32*>(pDIB);
+	int firstRow = 0;
+	int lastRow = sourceRect.Height();
+	int rowStep = 1;
+	if (targetRect.top > sourceRect.top) {
+		firstRow = sourceRect.Height() - 1;
+		lastRow = -1;
+		rowStep = -1;
+	}
+
+	for (int row = firstRow; row != lastRow; row += rowStep) {
+		uint32* pSource = pPixels + (size_t)(sourceRect.top + row) * size.cx + sourceRect.left;
+		uint32* pTarget = pPixels + (size_t)(targetRect.top + row) * size.cx + targetRect.left;
+		memmove(pTarget, pSource, (size_t)sourceRect.Width() * sizeof(uint32));
+	}
+	return true;
+}
+
 void* CBasicProcessing::Crop32bpp(int nWidth, int nHeight, const void* pDIBPixels, CRect cropRect) {
 	if (pDIBPixels == NULL || cropRect.Width() == 0 || cropRect.Height() == 0) {
 		return NULL;

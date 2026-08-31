@@ -171,14 +171,64 @@ static bool RunLargeDimensionKernelTest() {
     return ok;
 }
 
+static bool RunLargeDimensionResampleTest() {
+#ifdef _WIN64
+	// Exercise the filter, not only kernel construction. During the horizontal
+	// pass the 16.16 source position reaches about 6.1 billion, which overflowed
+	// ApplyFilterKernel's int accumulator and produced an out-of-bounds AVX2
+	// load for the 93761-pixel-wide TIFF from the crash report.
+	return RunDown("down 93761x64 -> 1920x32 ch4", 93761, 64, 1920, 32, 4, 0.15);
+#else
+	printf("%-52s %s\n", "down 93761x64 -> 1920x32 ch4", "SKIP (x64 regression)");
+	return true;
+#endif
+}
+
+static bool RunMoveRectTestCase(const char* name, CRect sourceRect, CPoint targetTopLeft) {
+	const CSize size(7, 6);
+	std::vector<uint32> original((size_t)size.cx * size.cy);
+	for (int y = 0; y < size.cy; ++y) {
+		for (int x = 0; x < size.cx; ++x) {
+			original[(size_t)y * size.cx + x] = (uint32)(y * 100 + x);
+		}
+	}
+
+	std::vector<uint32> expected = original;
+	for (int y = 0; y < sourceRect.Height(); ++y) {
+		for (int x = 0; x < sourceRect.Width(); ++x) {
+			expected[(size_t)(targetTopLeft.y + y) * size.cx + targetTopLeft.x + x] =
+				original[(size_t)(sourceRect.top + y) * size.cx + sourceRect.left + x];
+		}
+	}
+
+	std::vector<uint32> actual = original;
+	bool ok = CBasicProcessing::MoveRect32bpp(actual.data(), size, sourceRect, targetTopLeft) && actual == expected;
+	printf("%-52s %s\n", name, ok ? "PASS" : "FAIL");
+	return ok;
+}
+
+static bool RunMoveRectTests() {
+	bool ok = true;
+	ok &= RunMoveRectTestCase("in-place pan copy down-right", CRect(0, 0, 6, 5), CPoint(1, 1));
+	ok &= RunMoveRectTestCase("in-place pan copy up-left", CRect(1, 1, 7, 6), CPoint(0, 0));
+	ok &= RunMoveRectTestCase("in-place pan copy up-right", CRect(0, 1, 6, 6), CPoint(1, 0));
+	ok &= RunMoveRectTestCase("in-place pan copy down-left", CRect(1, 0, 7, 5), CPoint(0, 1));
+	std::vector<uint32> pixels(42, 0);
+	bool rejected = !CBasicProcessing::MoveRect32bpp(pixels.data(), CSize(7, 6), CRect(0, 0, 7, 6), CPoint(1, 0));
+	printf("%-52s %s\n", "in-place pan copy rejects out-of-bounds target", rejected ? "PASS" : "FAIL");
+	return ok && rejected;
+}
+
 int main() {
     setvbuf(stdout, NULL, _IONBF, 0);
     int64_t sup = hwy::SupportedTargets();
     int64_t best = sup & (-sup);
     printf("hwy best target: %s\n", hwy::TargetName(best));
 
-    bool all = true;
+	bool all = true;
 	all &= RunLargeDimensionKernelTest();
+	all &= RunLargeDimensionResampleTest();
+	all &= RunMoveRectTests();
 
     // Default (best) dispatch.
     all &= RunSuite("best");

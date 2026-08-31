@@ -456,6 +456,8 @@ CSettingsProvider::CSettingsProvider(void) {
 	// LandscapeModeParams) so every consumer sees a deterministic value.
 	m_bEnableROIDecode = GetBool(_T("EnableROIDecode"), true);
 	m_nROIDecodeThresholdMP = GetInt(_T("ROIDecodeThresholdMP"), 50, 1, 1000);
+	m_nLargeImagePanRenderThresholdMP = GetInt(_T("LargeImagePanRenderThresholdMP"), 500, 1, 1000000);
+	m_nLargeImagePanRenderIntervalMs = GetInt(_T("LargeImagePanRenderIntervalMs"), 33, 0, 1000);
 	m_nMaxZoomHistory = GetInt(_T("MaxZoomHistory"), 20, 0, 100);
 
 }

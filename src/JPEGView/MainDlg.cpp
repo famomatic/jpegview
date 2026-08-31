@@ -246,6 +246,11 @@ CMainDlg::CMainDlg(bool bForceFullScreen) {
 	m_dZoomMult = -1.0;
 	m_bDragging = false;
 	m_bDoDragging = false;
+	m_bLargeImagePanTimerActive = false;
+	m_bLargeImagePanRenderPending = false;
+	m_bLargeImagePanRenderNow = false;
+	m_bLargeImagePanTimerArmed = false;
+	m_largeImagePanRenderedOffsets = CPoint(0, 0);
 	m_offsets = CPoint(0, 0);
 	m_DIBOffsets = CPoint(0, 0);
 	m_nCapturedX = m_nCapturedY = 0;
@@ -524,7 +529,16 @@ LRESULT CMainDlg::OnPaint(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, B
 		CPoint offsetsInImage = m_pCurrentImage->ConvertOffset(newSize, clippedSize, m_offsets);
 
 		void* pDIBData;
-		if (m_pUnsharpMaskPanelCtl->IsVisible()) {
+		bool bUseLargeImagePanPreview = m_bLargeImagePanTimerActive && m_bDragging &&
+			!m_bLargeImagePanRenderNow && !m_bZoomMode &&
+			!m_pUnsharpMaskPanelCtl->IsVisible() && !m_pRotationPanelCtl->IsVisible() &&
+			!m_pTiltCorrectionPanelCtl->IsVisible() &&
+			m_pCurrentImage->DIBWidth() == clippedSize.cx && m_pCurrentImage->DIBHeight() == clippedSize.cy &&
+			m_pCurrentImage->DIBPixelsLastDisplayed() != NULL;
+		if (bUseLargeImagePanPreview) {
+			pDIBData = m_pCurrentImage->DIBPixelsLastDisplayed();
+			m_DIBOffsets = m_offsets - m_largeImagePanRenderedOffsets;
+		} else if (m_pUnsharpMaskPanelCtl->IsVisible()) {
 			pDIBData = m_pUnsharpMaskPanelCtl->GetUSMDIBForPreview(clippedSize, offsetsInImage, 
 				*m_pImageProcParams, CreateProcessingFlags(m_bHQResampling && !m_bTemporaryLowQ && !m_bZoomMode, m_bAutoContrast, m_bAutoContrastSection, m_bLDC, false, m_bLandscapeMode));
 		} else if (m_pRotationPanelCtl->IsVisible()) {
@@ -537,6 +551,15 @@ LRESULT CMainDlg::OnPaint(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, B
 			pDIBData = m_pCurrentImage->GetDIB(newSize, clippedSize, offsetsInImage, 
 				*m_pImageProcParams, 
 				CreateProcessingFlags(m_bHQResampling && !m_bTemporaryLowQ && !m_bZoomMode, m_bAutoContrast, m_bAutoContrastSection, m_bLDC, false, m_bLandscapeMode));
+		}
+		if (m_bLargeImagePanTimerActive && m_bDragging && !bUseLargeImagePanPreview) {
+			m_largeImagePanRenderedOffsets = m_offsets;
+			m_bLargeImagePanRenderPending = false;
+			m_bLargeImagePanRenderNow = false;
+			if (m_bLargeImagePanTimerArmed) {
+				::KillTimer(this->m_hWnd, LARGE_IMAGE_PAN_RENDER_TIMER_EVENT_ID);
+				m_bLargeImagePanTimerArmed = false;
+			}
 		}
 
 		// Zoom navigator - check if visible and create exclusion rectangle
@@ -1231,6 +1254,13 @@ LRESULT CMainDlg::OnTimer(UINT /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/, BOOL&
 		::KillTimer(this->m_hWnd, UPDATE_TEXT_TIMER_EVENT_ID);
 		m_bShowUpdateNotification = false;
 		this->Invalidate(FALSE);
+	} else if (wParam == LARGE_IMAGE_PAN_RENDER_TIMER_EVENT_ID) {
+		::KillTimer(this->m_hWnd, LARGE_IMAGE_PAN_RENDER_TIMER_EVENT_ID);
+		m_bLargeImagePanTimerArmed = false;
+		if (m_bLargeImagePanTimerActive && m_bDragging && m_bLargeImagePanRenderPending) {
+			m_bLargeImagePanRenderNow = true;
+			this->Invalidate(FALSE);
+		}
 	} else {
 		if (!m_pCropCtl->OnTimer((int)wParam)) {
 			m_pPanelMgr->OnTimer((int)wParam);
@@ -2862,6 +2892,18 @@ void CMainDlg::ExecuteUserCommand(CUserCommand* pUserCommand) {
 void CMainDlg::StartDragging(int nX, int nY, bool bDragWithZoomNavigator) {
 	m_startMouse.x = m_startMouse.y = -1;
 	m_bDragging = true;
+	m_bLargeImagePanRenderPending = false;
+	m_bLargeImagePanRenderNow = false;
+	::KillTimer(this->m_hWnd, LARGE_IMAGE_PAN_RENDER_TIMER_EVENT_ID);
+	m_bLargeImagePanTimerArmed = false;
+	m_bLargeImagePanTimerActive = false;
+	if (!bDragWithZoomNavigator && m_pCurrentImage != NULL) {
+		CSettingsProvider& settings = CSettingsProvider::This();
+		unsigned long long sourcePixels = (unsigned long long)m_pCurrentImage->OrigWidth() * m_pCurrentImage->OrigHeight();
+		unsigned long long thresholdPixels = (unsigned long long)settings.LargeImagePanRenderThresholdMP() * 1000000ULL;
+		m_bLargeImagePanTimerActive = settings.LargeImagePanRenderIntervalMs() > 0 && sourcePixels >= thresholdPixels;
+	}
+	m_largeImagePanRenderedOffsets = m_offsets;
 	if (bDragWithZoomNavigator) {
 		m_pZoomNavigatorCtl->StartDragging(nX, nY);
 	}
@@ -2884,6 +2926,17 @@ void CMainDlg::DoDragging() {
 			if (PerformPan(nXDelta, nYDelta, false)) {
 				m_nCapturedX = m_nMouseX;
 				m_nCapturedY = m_nMouseY;
+				if (m_bLargeImagePanTimerActive) {
+					m_bLargeImagePanRenderPending = true;
+					if (!m_bLargeImagePanTimerArmed) {
+						m_bLargeImagePanTimerArmed = ::SetTimer(this->m_hWnd,
+							LARGE_IMAGE_PAN_RENDER_TIMER_EVENT_ID,
+							CSettingsProvider::This().LargeImagePanRenderIntervalMs(), NULL) != 0;
+						if (!m_bLargeImagePanTimerArmed) {
+							m_bLargeImagePanRenderNow = true;
+						}
+					}
+				}
 			}
 		}
 	}
@@ -2898,13 +2951,22 @@ void CMainDlg::EndDragging() {
 			GetNavPanelCtl()->HideNavPanelTemporary();
 		}
 	}
+	if (m_bLargeImagePanTimerArmed) {
+		::KillTimer(this->m_hWnd, LARGE_IMAGE_PAN_RENDER_TIMER_EVENT_ID);
+	}
+	bool bMustFinishLargeImagePan = m_bLargeImagePanTimerActive &&
+		(m_bLargeImagePanRenderPending || m_DIBOffsets != CPoint(0, 0));
+	m_bLargeImagePanTimerArmed = false;
+	m_bLargeImagePanRenderPending = false;
+	m_bLargeImagePanRenderNow = false;
+	m_bLargeImagePanTimerActive = false;
 	m_bDragging = false;
 	m_bDoDragging = false;
 	m_pZoomNavigatorCtl->EndDragging();
 	if (m_pCurrentImage != NULL) {
 		m_pCurrentImage->VerifyDIBPixelsCreated();
 	}
-	if (m_DIBOffsets != CPoint(0, 0)) {
+	if (bMustFinishLargeImagePan || m_DIBOffsets != CPoint(0, 0)) {
 		Invalidate(FALSE);
 	} else {
 		this->InvalidateRect(m_pNavPanelCtl->PanelRect(), FALSE);

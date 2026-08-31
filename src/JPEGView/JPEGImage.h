@@ -238,6 +238,11 @@ public:
 
 	// Gets the DIB last processed. If none, the last used parameters are taken to generate the DIB - if bGenerateDIBIfNeeded is true 
 	void* DIBPixelsLastProcessed(bool bGenerateDIBIfNeeded);
+	// Gets the exact DIB last returned for display, including the monitor color profile when active.
+	// The pointer is owned by this image and remains valid only until the next image processing call.
+	void* DIBPixelsLastDisplayed() {
+		return (m_pMonitorDIB != NULL && m_pMonitorDIBSource == m_pLastDIB) ? m_pMonitorDIB : m_pLastDIB;
+	}
 
 	// Gets the DIB pixels of the last processed thumbnail image, NULL if none or invalid
 	void* DIBPixelsLastThumbnail() { return (m_pThumbnail == NULL) ? NULL : m_pThumbnail->DIBPixelsLastProcessed(false); }

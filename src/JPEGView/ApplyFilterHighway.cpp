@@ -32,7 +32,7 @@ namespace HWY_NAMESPACE {
 static const int16 FP_ONE_MINUS_ROUND = 16383 - 42;
 
 CXMMImage* ApplyFilterKernel(int /*nSourceHeight*/, int nTargetHeight, int nWidth,
-	int nStartY_FP, int nStartX, intfp nIncrementY_FP,
+	intfp nStartY_FP, int nStartX, intfp nIncrementY_FP,
 	const XMMFilterKernelBlock& filter,
 	int nFilterOffset, const CXMMImage* pSourceImg) {
 
@@ -64,7 +64,12 @@ CXMMImage* ApplyFilterKernel(int /*nSourceHeight*/, int nTargetHeight, int nWidt
 		return NULL;
 	}
 
-	int nCurY = nStartY_FP;
+	// Keep the 16.16 position in the platform fixed-point type. On x64 a
+	// downsample from a source wider than 65535 crosses INT_MAX during the
+	// horizontal pass even though the source row itself is valid. Truncating
+	// this accumulator to int wrapped the row address and caused an AVX2 load
+	// access violation after a large TIFF had been materialized.
+	intfp nCurY = nStartY_FP;
 	int nChannelLenBytes = pSourceImg->GetPaddedWidth() * sizeof(int16);
 	int nRowLenBytes = nChannelLenBytes * nChannels;
 	// The output format contract (consumed by RotateBlock/RotateBlockToDIB) is
@@ -82,13 +87,19 @@ CXMMImage* ApplyFilterKernel(int /*nSourceHeight*/, int nTargetHeight, int nWidt
 	int16* pDest = (int16*)tempImage->AlignedPtr();
 
 	for (int y = 0; y < nTargetHeight; y++) {
-		uint32 nCurYInt = (uint32)(nCurY >> 16);
+		intfp nCurYInt = nCurY >> 16;
 		int filterIndex = y + nFilterOffset;
 		XMMFilterKernel* pKernel = pKernelIndexStart[filterIndex];
 		int filterLen = pKernel->FilterLen;
 		int filterOffset = pKernel->FilterOffset;
 		const uint8* pFilterStart = (const uint8*)&(pKernel->Kernel);
-		const uint8* pSourceBlock = pSourceStart + ((int)nCurYInt - filterOffset) * nRowLenBytes;
+		intfp sourceRow = nCurYInt - filterOffset;
+		if (sourceRow < 0 || sourceRow + filterLen > pSourceImg->GetHeight()) {
+			delete tempImage;
+			return NULL;
+		}
+		const uint8* pSourceBlock = pSourceStart +
+			static_cast<size_t>(sourceRow) * static_cast<size_t>(nRowLenBytes);
 
 		for (int x = 0; x < nNumberOfBlocksX; x++) {
 			for (int g = 0; g < nGroupsPerBlock; g++) {
@@ -182,7 +193,7 @@ HWY_EXPORT(ApplyFilterKernel);
 // Runtime-dispatched entry point. Lives in the same namespace as the HWY_EXPORT
 // table so the unqualified dispatch-table reference resolves.
 CXMMImage* ApplyFilter_Highway(int nSourceHeight, int nTargetHeight, int nWidth,
-	int nStartY_FP, int nStartX, intfp nIncrementY_FP,
+	intfp nStartY_FP, int nStartX, intfp nIncrementY_FP,
 	const XMMFilterKernelBlock& filter,
 	int nFilterOffset, const CXMMImage* pSourceImg) {
 	return HWY_DYNAMIC_DISPATCH(ApplyFilterKernel)(

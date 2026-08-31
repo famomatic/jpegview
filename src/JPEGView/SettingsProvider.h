@@ -168,6 +168,10 @@ public:
 	// this threshold are decoded fully (the overhead isn't worth it for small
 	// images). Default: 50 megapixels.
 	int  ROIDecodeThresholdMP() { return m_nROIDecodeThresholdMP; }
+	// For extremely large source images, pan previews move the cached viewport
+	// immediately while expensive edge rendering is limited by a timer.
+	int  LargeImagePanRenderThresholdMP() { return m_nLargeImagePanRenderThresholdMP; }
+	int  LargeImagePanRenderIntervalMs() { return m_nLargeImagePanRenderIntervalMs; }
 
 	double ZoomPauseFactor() { return m_zoomPauseFactor; }  // while internally this is represented in doubles, using a whole number percent simplifies it for the user... configuring doubles is not user friendly at all
 
@@ -450,6 +454,8 @@ private:
 	bool m_bCheckForUpdates;        // query GitHub releases for a newer version on startup
 	bool m_bEnableROIDecode;          // decode only viewport for ultra-high-res
 	int  m_nROIDecodeThresholdMP;     // megapixel threshold for ROI decode
+	int  m_nLargeImagePanRenderThresholdMP; // source size threshold for timed pan rendering
+	int  m_nLargeImagePanRenderIntervalMs;  // 0 disables timed pan rendering
 	int  m_nMaxZoomHistory;         // max zoom/pan history entries (0=disable)
 
 	std::list<CUserCommand*> m_userCommands;

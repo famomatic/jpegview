@@ -281,6 +281,11 @@ private:
 
 	bool m_bDragging;
 	bool m_bDoDragging;
+	bool m_bLargeImagePanTimerActive;
+	bool m_bLargeImagePanRenderPending;
+	bool m_bLargeImagePanRenderNow;
+	bool m_bLargeImagePanTimerArmed;
+	CPoint m_largeImagePanRenderedOffsets;
 	bool m_bMovieMode;
 	double m_dMovieFPS;
 	bool m_bProcFlagsTouched;

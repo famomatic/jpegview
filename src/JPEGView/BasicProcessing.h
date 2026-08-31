@@ -54,6 +54,9 @@ public:
 	static void* CopyRect32bpp(void* pTarget, const void* pSource,  CSize targetSize, CRect targetRect,
 		CSize sourceSize, CRect sourceRect);
 
+	// Move a rectangular pixel block inside the same 32 bpp bitmap. Source and target may overlap.
+	static bool MoveRect32bpp(void* pDIB, CSize size, CRect sourceRect, CPoint targetTopLeft);
+
 	// Clockwise rotation of a 32 bit DIB. The rotation angle must be 90, 180 or 270 degrees, in all other
 	// cases the return value is NULL
 	static void* Rotate32bpp(int nWidth, int nHeight, const void* pDIBPixels, int nRotationAngleCW);

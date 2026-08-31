@@ -23,7 +23,7 @@ struct XMMFilterKernelBlock;
 // Returns a new CXMMImage owned by the caller.
 namespace hwy_ext {
 CXMMImage* ApplyFilter_Highway(int nSourceHeight, int nTargetHeight, int nWidth,
-	int nStartY_FP, int nStartX, intfp nIncrementY_FP,
+	intfp nStartY_FP, int nStartX, intfp nIncrementY_FP,
 	const XMMFilterKernelBlock& filter,
 	int nFilterOffset, const CXMMImage* pSourceImg);
 }  // namespace hwy_ext
