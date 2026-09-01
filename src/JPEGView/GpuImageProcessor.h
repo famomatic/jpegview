@@ -60,9 +60,9 @@ public:
 
 private:
     bool m_deviceAvailable;
-    // Lazily-compiled compute shaders. Released in the dtor. Getters use a
-    // non-blocking lock so UI work falls back to the CPU while background
-    // precompilation owns the mutex.
+    // Background-compiled compute shaders. Released in the dtor. Foreground
+    // getters only inspect completed results under a non-blocking lock; they
+    // never invoke D3DCompile themselves.
     std::mutex m_csShaders;
     std::thread m_precompileThread;
     ID3D11ComputeShader* m_pApply3ChannelLUT_CS;
@@ -75,6 +75,7 @@ private:
     ID3D11ComputeShader* m_pGaussFilter1C16_CS;
     ID3D11ComputeShader* m_pGaussFilter1C16Y_CS;
 
+    void PrecompileShaders();
     ID3D11ComputeShader* GetApply3ChannelLUTShader();
     ID3D11ComputeShader* GetApplyLDC32bppShader();
     ID3D11ComputeShader* GetApplyLDC32bppSatShader();

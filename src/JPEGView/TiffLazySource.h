@@ -14,8 +14,11 @@
 
 #include "LazySource.h"
 #include <tiffio.h>
-#include <vector>
+#include <memory>
 #include <mutex>
+#include <vector>
+
+class CTiffResampleExecutor;
 
 class CTiffLazySource : public CLazySource
 {
@@ -71,6 +74,9 @@ private:
 	// One libtiff handle per persistent resample worker. Each fixed worker index
 	// has exclusive access to its handle while the source lock is held.
 	TIFF* m_workerTifs[8];
+	// Kept per source so read-ahead work for another TIFF cannot serialize a
+	// foreground viewport render behind a process-wide executor lock.
+	std::unique_ptr<CTiffResampleExecutor> m_resampleExecutor;
 
 	// Serializes all access to m_tif. libtiff is not thread-safe and a single
 	// TIFF* cannot be touched concurrently; viewport resampling and

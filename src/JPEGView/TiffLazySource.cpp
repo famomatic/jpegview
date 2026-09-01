@@ -8,6 +8,8 @@
 #include <condition_variable>
 #include <cstring>
 #include <functional>
+#include <memory>
+#include <stdexcept>
 #include <thread>
 
 // TIFFGetFieldDefaulted forwards its va_list to TIFFVGetFieldDefaulted, which
@@ -20,16 +22,20 @@ inline void TiffGetOrDefault(TIFF* tif, uint32 tag, T& out, const T& defVal) {
     if (TIFFGetField(tif, tag, &out) != 1)
         out = defVal;
 }
+}
 
 // Reuses a small, fixed set of threads across viewport resamples. Run() is
-// serialized because a worker has one stable index, which also lets each TIFF
-// source cache one independent libtiff handle per worker without contention.
+// serialized per TIFF source because a worker has one stable index, which lets
+// that source cache one independent libtiff handle per worker without
+// contention. Each source owns its own executor, so background read-ahead for
+// one TIFF cannot block foreground rendering of another TIFF.
 class CTiffResampleExecutor {
 public:
-	CTiffResampleExecutor() : m_generation(0), m_activeThreads(0), m_remaining(0), m_shutdown(false) {
+	explicit CTiffResampleExecutor(int workerCount)
+		: m_generation(0), m_activeThreads(0), m_remaining(0), m_shutdown(false) {
 		try {
-			m_threads.reserve(8);
-			for (int i = 0; i < 8; ++i)
+			m_threads.reserve((size_t)workerCount);
+			for (int i = 0; i < workerCount; ++i)
 				m_threads.emplace_back(&CTiffResampleExecutor::WorkerLoop, this, i);
 		} catch (...) {
 			{
@@ -55,6 +61,8 @@ public:
 	}
 
 	void Run(int threadCount, const std::function<void(int)>& task) {
+		if (threadCount <= 0 || threadCount > (int)m_threads.size())
+			throw std::invalid_argument("invalid TIFF resample thread count");
 		std::lock_guard<std::mutex> runLock(m_runMutex);
 		std::unique_lock<std::mutex> lock(m_mutex);
 		m_task = task;
@@ -100,12 +108,6 @@ private:
 	bool m_shutdown;
 };
 
-CTiffResampleExecutor& TiffResampleExecutor() {
-	static CTiffResampleExecutor executor;
-	return executor;
-}
-}
-
 CTiffLazySource::CTiffLazySource()
 	: m_tif(nullptr)
 	, m_nFrameIndex(0)
@@ -131,6 +133,8 @@ void CTiffLazySource::Release()
 		return;
 	m_bReleased = true;
 
+	// Stop this source's workers before closing the handles they own.
+	m_resampleExecutor.reset();
 	if (m_tif != nullptr)
 	{
 		TIFFClose(m_tif);
@@ -648,7 +652,10 @@ bool CTiffLazySource::ResampleStripped(const std::vector<int>& sourceX,
 	};
 
 	try {
-		TiffResampleExecutor().Run(threadCount, worker);
+		if (!m_resampleExecutor)
+			m_resampleExecutor = std::make_unique<CTiffResampleExecutor>(
+				min(8, configuredThreads));
+		m_resampleExecutor->Run(threadCount, worker);
 	} catch (...) {
 		failed = true;
 	}

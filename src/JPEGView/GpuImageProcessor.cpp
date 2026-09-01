@@ -89,15 +89,7 @@ GpuImageProcessor::GpuImageProcessor()
         // Shader compilation only touches the D3D11 device (free-threaded),
         // never the immediate context.
         m_precompileThread = std::thread([this]() {
-            GetResampleXShader();
-            GetResampleYShader();
-            GetApplySaturationAnd3ChannelLUTShader();
-            GetApply3ChannelLUTShader();
-            GetApplyLDC32bppShader();
-            GetApplyLDC32bppSatShader();
-            GetUnsharpMaskShader();
-            GetGaussFilter1C16Shader();
-            GetGaussFilter1C16YShader();
+            try { PrecompileShaders(); } catch (...) { }
         });
     }
 }
@@ -117,17 +109,41 @@ GpuImageProcessor::~GpuImageProcessor() {
     if (m_pGaussFilter1C16Y_CS) { m_pGaussFilter1C16Y_CS->Release(); m_pGaussFilter1C16Y_CS = nullptr; }
 }
 
+void GpuImageProcessor::PrecompileShaders() {
+    // Hold the lock for the complete batch. Foreground getters use try_lock,
+    // so they immediately select the CPU fallback until every shader is ready.
+    // Keeping compilation out of the getters guarantees the UI never becomes
+    // the thread that executes D3DCompile merely because it won the mutex race.
+    std::lock_guard<std::mutex> lock(m_csShaders);
+    ID3D11Device* device = CGpuDevice::Instance().Device();
+    if (device == nullptr) return;
+
+    m_pResampleX_CS = gpu_shaders::CompileComputeShader(
+        device, gpu_shaders::kResampleX_CS, "main", "cs_5_0");
+    m_pResampleY_CS = gpu_shaders::CompileComputeShader(
+        device, gpu_shaders::kResampleY_CS, "main", "cs_5_0");
+    m_pApplySaturationAnd3ChannelLUT_CS = gpu_shaders::CompileComputeShader(
+        device, gpu_shaders::kApplySaturationAnd3ChannelLUT_CS, "main", "cs_5_0");
+    m_pApply3ChannelLUT_CS = gpu_shaders::CompileComputeShader(
+        device, gpu_shaders::kApply3ChannelLUT_CS, "main", "cs_5_0");
+    m_pApplyLDC32bpp_CS = gpu_shaders::CompileComputeShader(
+        device, gpu_shaders::kApplyLDC32bpp_CS, "main", "cs_5_0");
+    m_pApplyLDC32bppSat_CS = gpu_shaders::CompileComputeShader(
+        device, gpu_shaders::kApplyLDC32bppSat_CS, "main", "cs_5_0");
+    m_pUnsharpMask_CS = gpu_shaders::CompileComputeShader(
+        device, gpu_shaders::kUnsharpMask_CS, "main", "cs_5_0");
+    m_pGaussFilter1C16_CS = gpu_shaders::CompileComputeShader(
+        device, gpu_shaders::kGaussFilter1C16_CS, "main", "cs_5_0");
+    m_pGaussFilter1C16Y_CS = gpu_shaders::CompileComputeShader(
+        device, gpu_shaders::kGaussFilter1C16Y_CS, "main", "cs_5_0");
+}
+
 ID3D11ComputeShader* GpuImageProcessor::GetApply3ChannelLUTShader() {
     if (!m_deviceAvailable) {
         return nullptr;
     }
     std::unique_lock<std::mutex> lock(m_csShaders, std::try_to_lock);
     if (!lock.owns_lock()) return nullptr;
-    if (m_pApply3ChannelLUT_CS == nullptr) {
-        m_pApply3ChannelLUT_CS = gpu_shaders::CompileComputeShader(
-            CGpuDevice::Instance().Device(), gpu_shaders::kApply3ChannelLUT_CS,
-            "main", "cs_5_0");
-    }
     return m_pApply3ChannelLUT_CS;
 }
 
@@ -137,11 +153,6 @@ ID3D11ComputeShader* GpuImageProcessor::GetApplyLDC32bppShader() {
     }
     std::unique_lock<std::mutex> lock(m_csShaders, std::try_to_lock);
     if (!lock.owns_lock()) return nullptr;
-    if (m_pApplyLDC32bpp_CS == nullptr) {
-        m_pApplyLDC32bpp_CS = gpu_shaders::CompileComputeShader(
-            CGpuDevice::Instance().Device(), gpu_shaders::kApplyLDC32bpp_CS,
-            "main", "cs_5_0");
-    }
     return m_pApplyLDC32bpp_CS;
 }
 
@@ -149,10 +160,6 @@ ID3D11ComputeShader* GpuImageProcessor::GetApplyLDC32bppSatShader() {
     if (!m_deviceAvailable) return nullptr;
     std::unique_lock<std::mutex> lock(m_csShaders, std::try_to_lock);
     if (!lock.owns_lock()) return nullptr;
-    if (m_pApplyLDC32bppSat_CS == nullptr) {
-        m_pApplyLDC32bppSat_CS = gpu_shaders::CompileComputeShader(
-            CGpuDevice::Instance().Device(), gpu_shaders::kApplyLDC32bppSat_CS, "main", "cs_5_0");
-    }
     return m_pApplyLDC32bppSat_CS;
 }
 
@@ -160,10 +167,6 @@ ID3D11ComputeShader* GpuImageProcessor::GetApplySaturationAnd3ChannelLUTShader()
     if (!m_deviceAvailable) return nullptr;
     std::unique_lock<std::mutex> lock(m_csShaders, std::try_to_lock);
     if (!lock.owns_lock()) return nullptr;
-    if (m_pApplySaturationAnd3ChannelLUT_CS == nullptr) {
-        m_pApplySaturationAnd3ChannelLUT_CS = gpu_shaders::CompileComputeShader(
-            CGpuDevice::Instance().Device(), gpu_shaders::kApplySaturationAnd3ChannelLUT_CS, "main", "cs_5_0");
-    }
     return m_pApplySaturationAnd3ChannelLUT_CS;
 }
 
@@ -173,11 +176,6 @@ ID3D11ComputeShader* GpuImageProcessor::GetResampleXShader() {
     }
     std::unique_lock<std::mutex> lock(m_csShaders, std::try_to_lock);
     if (!lock.owns_lock()) return nullptr;
-    if (m_pResampleX_CS == nullptr) {
-        m_pResampleX_CS = gpu_shaders::CompileComputeShader(
-            CGpuDevice::Instance().Device(), gpu_shaders::kResampleX_CS,
-            "main", "cs_5_0");
-    }
     return m_pResampleX_CS;
 }
 
@@ -187,11 +185,6 @@ ID3D11ComputeShader* GpuImageProcessor::GetResampleYShader() {
     }
     std::unique_lock<std::mutex> lock(m_csShaders, std::try_to_lock);
     if (!lock.owns_lock()) return nullptr;
-    if (m_pResampleY_CS == nullptr) {
-        m_pResampleY_CS = gpu_shaders::CompileComputeShader(
-            CGpuDevice::Instance().Device(), gpu_shaders::kResampleY_CS,
-            "main", "cs_5_0");
-    }
     return m_pResampleY_CS;
 }
 
@@ -199,10 +192,6 @@ ID3D11ComputeShader* GpuImageProcessor::GetUnsharpMaskShader() {
     if (!m_deviceAvailable) return nullptr;
     std::unique_lock<std::mutex> lock(m_csShaders, std::try_to_lock);
     if (!lock.owns_lock()) return nullptr;
-    if (m_pUnsharpMask_CS == nullptr) {
-        m_pUnsharpMask_CS = gpu_shaders::CompileComputeShader(
-            CGpuDevice::Instance().Device(), gpu_shaders::kUnsharpMask_CS, "main", "cs_5_0");
-    }
     return m_pUnsharpMask_CS;
 }
 
@@ -210,10 +199,6 @@ ID3D11ComputeShader* GpuImageProcessor::GetGaussFilter1C16Shader() {
     if (!m_deviceAvailable) return nullptr;
     std::unique_lock<std::mutex> lock(m_csShaders, std::try_to_lock);
     if (!lock.owns_lock()) return nullptr;
-    if (m_pGaussFilter1C16_CS == nullptr) {
-        m_pGaussFilter1C16_CS = gpu_shaders::CompileComputeShader(
-            CGpuDevice::Instance().Device(), gpu_shaders::kGaussFilter1C16_CS, "main", "cs_5_0");
-    }
     return m_pGaussFilter1C16_CS;
 }
 
@@ -221,10 +206,6 @@ ID3D11ComputeShader* GpuImageProcessor::GetGaussFilter1C16YShader() {
     if (!m_deviceAvailable) return nullptr;
     std::unique_lock<std::mutex> lock(m_csShaders, std::try_to_lock);
     if (!lock.owns_lock()) return nullptr;
-    if (m_pGaussFilter1C16Y_CS == nullptr) {
-        m_pGaussFilter1C16Y_CS = gpu_shaders::CompileComputeShader(
-            CGpuDevice::Instance().Device(), gpu_shaders::kGaussFilter1C16Y_CS, "main", "cs_5_0");
-    }
     return m_pGaussFilter1C16Y_CS;
 }
 
