@@ -65,6 +65,30 @@ CThumbnailCache::~CThumbnailCache() {
 	}
 }
 
+// Path-only hash (lowercased, no size/mtime). Keeping this as the filename
+// prefix makes invalidation proportional to entries for one source file.
+static CString MakePathHash(LPCTSTR sFilePath) {
+	CString sPath(sFilePath);
+	sPath.MakeLower();
+	uint64_t h = Fnv1a64((LPCTSTR)sPath, sPath.GetLength() * sizeof(TCHAR));
+	CString sHex;
+	sHex.Format(_T("%016I64x"), h);
+	return sHex;
+}
+
+static bool SourceIdentityMatches(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& lastModTime) {
+	HANDLE hFile = ::CreateFile(sFilePath, FILE_READ_ATTRIBUTES,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+	if (hFile == INVALID_HANDLE_VALUE) return false;
+	FILETIME ftMod{};
+	LARGE_INTEGER liSize{};
+	const bool matches = ::GetFileTime(hFile, NULL, NULL, &ftMod) != FALSE &&
+		::GetFileSizeEx(hFile, &liSize) != FALSE && liSize.QuadPart == nFileSize &&
+		::CompareFileTime(&ftMod, &lastModTime) == 0;
+	::CloseHandle(hFile);
+	return matches;
+}
+
 CString CThumbnailCache::MakeKey(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& lastModTime) const {
 	CString sKeyInput(sFilePath);
 	sKeyInput.MakeLower();
@@ -76,19 +100,7 @@ CString CThumbnailCache::MakeKey(LPCTSTR sFilePath, __int64 nFileSize, const FIL
 
 	uint64_t h = Fnv1a64((LPCTSTR)sIdentity, sIdentity.GetLength() * sizeof(TCHAR));
 	CString sHex;
-	sHex.Format(_T("%016I64x"), h);
-	return sHex;
-}
-
-// Path-only hash (lowercased, no size/mtime). Used as a PNG text chunk so
-// Invalidate() can find and delete stale entries whose key (path+size+mtime)
-// no longer matches after an in-place edit.
-static CString MakePathHash(LPCTSTR sFilePath) {
-	CString sPath(sFilePath);
-	sPath.MakeLower();
-	uint64_t h = Fnv1a64((LPCTSTR)sPath, sPath.GetLength() * sizeof(TCHAR));
-	CString sHex;
-	sHex.Format(_T("%016I64x"), h);
+	sHex.Format(_T("%s_%016I64x"), (LPCTSTR)MakePathHash(sFilePath), h);
 	return sHex;
 }
 
@@ -294,15 +306,13 @@ bool CThumbnailCache::TryGet(LPCTSTR sFilePath, __int64 nFileSize, const FILETIM
 	nOrigWidth = 0;
 	nOrigHeight = 0;
 	if (!m_bEnabled || sFilePath == NULL || *sFilePath == 0) return false;
-	// Serialize against concurrent Put/Invalidate/EnforceSizeLimit from the
-	// read-ahead loader thread.
-	std::lock_guard<std::mutex> lock(m_csLock);
 
 	CString sKey = MakeKey(sFilePath, nFileSize, lastModTime);
 	CString sCacheFile;
 	if (!GetCacheFilePath(sKey, sCacheFile)) return false;
 
-	HANDLE hFile = ::CreateFile(sCacheFile, GENERIC_READ, FILE_SHARE_READ, NULL,
+	HANDLE hFile = ::CreateFile(sCacheFile, GENERIC_READ,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
 		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (hFile == INVALID_HANDLE_VALUE) return false;
 
@@ -335,14 +345,18 @@ bool CThumbnailCache::TryGet(LPCTSTR sFilePath, __int64 nFileSize, const FILETIM
 	if (sSignature != kSignatureValue) {
 		// Stale/incompatible cache entry - discard it.
 		delete[] pPixels;
-		::DeleteFile(sCacheFile);
-		m_bCacheSizeKnown = false;
+		{
+			std::lock_guard<std::mutex> lock(m_csLock);
+			::DeleteFile(sCacheFile);
+			m_bCacheSizeKnown = false;
+		}
 		return false;
 	}
 
 	// Touch the file's last-access/write time so LRU eviction sees recent use.
 	::SetFileAttributes(sCacheFile, FILE_ATTRIBUTE_NORMAL);
-	HANDLE hTouch = ::CreateFile(sCacheFile, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ,
+	HANDLE hTouch = ::CreateFile(sCacheFile, FILE_WRITE_ATTRIBUTES,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (hTouch != INVALID_HANDLE_VALUE) {
 		FILETIME ftNow;
@@ -354,8 +368,13 @@ bool CThumbnailCache::TryGet(LPCTSTR sFilePath, __int64 nFileSize, const FILETIM
 	// DecodePngBGRA now allocates with new[], matching CJPEGImage's delete[]
 	// ownership model, so the buffer can be handed over directly without a
 	// copy.
-	ppThumbnail = new CJPEGImage(nThumbW, nThumbH, pPixels, NULL, 4, 0,
-		IF_CLIPBOARD, false, 0, 1, 0, NULL, true, NULL);
+	try {
+		ppThumbnail = new CJPEGImage(nThumbW, nThumbH, pPixels, NULL, 4, 0,
+			IF_CLIPBOARD, false, 0, 1, 0, NULL, true, NULL);
+	} catch (...) {
+		delete[] pPixels;
+		return false;
+	}
 
 	// The decoded thumbnail is always 32bpp BGRA (png_set_add_alpha), so the
 	// stored nOrigChannels is informational only. nOrigWidth/nOrigHeight are
@@ -517,6 +536,12 @@ void CThumbnailCache::StoreEntry(LPCTSTR sFilePath, __int64 nFileSize, const FIL
 
 	if (!bFailed && ctx.buffer != NULL && ctx.size > 0 && ctx.size <= MAXDWORD) {
 		std::lock_guard<std::mutex> lock(m_csLock);
+		// Encoding happens outside the lock. Revalidate immediately before the
+		// atomic write so an invalidation cannot recreate a stale entry.
+		if (!SourceIdentityMatches(sFilePath, nFileSize, lastModTime)) {
+			free(ctx.buffer);
+			return;
+		}
 		// Write atomically: temp file then rename, so a crash mid-write cannot
 		// leave a half-written cache entry that would fail to decode later.
 		static volatile LONG sTempSequence = 0;
@@ -554,77 +579,20 @@ void CThumbnailCache::Invalidate(LPCTSTR sFilePath) {
 	if (!m_bEnabled || sFilePath == NULL) return;
 	std::lock_guard<std::mutex> lock(m_csLock);
 
-	// An in-place edit (e.g. lossless JPEG transform) changes the file size
-	// and/or mtime, so the cache key (path+size+mtime) no longer matches the
-	// old entry. Scan all cache files and delete any whose stored path-only
-	// hash matches, so stale entries don't linger until LRU eviction.
-	CStringA sTargetPathHashA;
-	{
-		CString sPathHash = MakePathHash(sFilePath);
-		sTargetPathHashA = CStringA(sPathHash);
-	}
-
+	// The path-only hash is the key prefix, so the filesystem filters entries
+	// for this source without opening and PNG-decoding the entire cache.
 	CString sDir(CacheDir());
-	CString sPattern = sDir + _T("*.png");
+	CString sPattern = sDir + MakePathHash(sFilePath) + _T("_*.png");
 	WIN32_FIND_DATA fd;
 	HANDLE hFind = ::FindFirstFile(sPattern, &fd);
 	if (hFind != INVALID_HANDLE_VALUE) {
 		do {
 			if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue;
 			CString sCacheFile = sDir + fd.cFileName;
-			HANDLE hFile = ::CreateFile(sCacheFile, GENERIC_READ, FILE_SHARE_READ, NULL,
-				OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-			if (hFile == INVALID_HANDLE_VALUE) continue;
-			DWORD nSize = ::GetFileSize(hFile, NULL);
-			if (nSize == INVALID_FILE_SIZE || nSize == 0) {
-				::CloseHandle(hFile);
-				continue;
-			}
-			uint8* pBuffer = (uint8*)malloc(nSize);
-			if (pBuffer == NULL) {
-				::CloseHandle(hFile);
-				continue;
-			}
-			DWORD nRead = 0;
-			BOOL bOk = ::ReadFile(hFile, pBuffer, nSize, &nRead, NULL);
-			::CloseHandle(hFile);
-			if (!bOk || nRead != nSize) {
-				free(pBuffer);
-				continue;
-			}
-			// Decode just to read the text chunks; discard the pixels.
-			int nW = 0, nH = 0;
-			CStringA sStoredPathHash;
-			uint8* pPixels = DecodePngBGRAEx(pBuffer, nSize, nW, nH, NULL, NULL, NULL, NULL, &sStoredPathHash);
-			free(pBuffer);
-			if (pPixels != NULL) delete[] pPixels;
-			if (sStoredPathHash == sTargetPathHashA) {
-				::SetFileAttributes(sCacheFile, FILE_ATTRIBUTE_NORMAL);
-				::DeleteFile(sCacheFile);
-			}
+			::SetFileAttributes(sCacheFile, FILE_ATTRIBUTE_NORMAL);
+			::DeleteFile(sCacheFile);
 		} while (::FindNextFile(hFind, &fd));
 		::FindClose(hFind);
-	}
-
-	// Also delete the entry matching the current file stat (the common case
-	// where the file hasn't been edited since caching).
-	__int64 nFileSize = 0;
-	HANDLE hFile = ::CreateFile(sFilePath, GENERIC_READ, FILE_SHARE_READ, NULL,
-		OPEN_EXISTING, 0, NULL);
-	if (hFile != INVALID_HANDLE_VALUE) {
-		FILETIME ftMod;
-		BOOL bGotTime = ::GetFileTime(hFile, NULL, NULL, &ftMod);
-		LARGE_INTEGER li;
-		if (::GetFileSizeEx(hFile, &li)) nFileSize = li.QuadPart;
-		::CloseHandle(hFile);
-		if (bGotTime && nFileSize > 0) {
-			CString sKey = MakeKey(sFilePath, nFileSize, ftMod);
-			CString sCacheFile;
-			if (GetCacheFilePath(sKey, sCacheFile)) {
-				::SetFileAttributes(sCacheFile, FILE_ATTRIBUTE_NORMAL);
-				::DeleteFile(sCacheFile);
-			}
-		}
 	}
 	m_bCacheSizeKnown = false;
 }

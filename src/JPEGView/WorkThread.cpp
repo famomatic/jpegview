@@ -53,8 +53,9 @@ bool CWorkThread::ProcessAndWait(CRequestBase* pRequest) {
 		::CloseHandle(pRequest->EventFinished);
 		pRequest->EventFinished = NULL;
 	}
+	const bool succeeded = waitResult == WAIT_OBJECT_0 && !pRequest->Failed.load(std::memory_order_acquire);
 	pRequest->Deleted.store(true, std::memory_order_release); // worker owns and removes it
-	return waitResult == WAIT_OBJECT_0;
+	return succeeded;
 }
 
 bool CWorkThread::ProcessAsync(CRequestBase* pRequest) {
@@ -122,7 +123,11 @@ unsigned __stdcall CWorkThread::ThreadFunc(void* arg) {
 
 		// process this request
 		if (requestHandled != NULL) {
-			try { thisPtr->ProcessRequest(*requestHandled); } catch (...) { }
+			try {
+				thisPtr->ProcessRequest(*requestHandled);
+			} catch (...) {
+				requestHandled->Failed.store(true, std::memory_order_release);
+			}
 			requestHandled->Processed.store(true, std::memory_order_release);
 			SignalRequest(requestHandled);
 			if (!thisPtr->m_bTerminate.load(std::memory_order_acquire)) {
@@ -162,7 +167,10 @@ unsigned __stdcall CWorkThread::ThreadFunc(void* arg) {
 	// Wake callers waiting on requests that were queued but not started before termination.
 	::EnterCriticalSection(&thisPtr->m_csList);
 	for (CRequestBase* request : thisPtr->m_requestList) {
-		if (!request->Processed.exchange(true, std::memory_order_acq_rel)) SignalRequest(request);
+		if (!request->Processed.exchange(true, std::memory_order_acq_rel)) {
+			request->Failed.store(true, std::memory_order_release);
+			SignalRequest(request);
+		}
 	}
 	::LeaveCriticalSection(&thisPtr->m_csList);
 	thisPtr->BeforeThreadExit();

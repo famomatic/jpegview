@@ -219,6 +219,22 @@ static bool RunMoveRectTests() {
 	return ok && rejected;
 }
 
+static bool RunNegativeOffsetValidationTests() {
+	const CSize fullSize(4, 4);
+	const CSize clippedSize(2, 2);
+	std::vector<uint32> pixels(16, 0xFFFFFFFFu);
+	const CPoint negativeY(0, -1);
+	bool ok = CBasicProcessing::PointSample(fullSize, negativeY, clippedSize,
+		fullSize, pixels.data(), 4) == NULL;
+	ok &= CBasicProcessing::PointSampleWithRotation(fullSize, negativeY, clippedSize,
+		fullSize, 0.1, pixels.data(), 4, RGB(0, 0, 0)) == NULL;
+	const CTrapezoid trapezoid(0, 3, 0, 0, 3, 3);
+	ok &= CBasicProcessing::PointSampleTrapezoid(fullSize, trapezoid, negativeY,
+		clippedSize, fullSize, pixels.data(), 4, RGB(0, 0, 0)) == NULL;
+	printf("%-52s %s\n", "point samplers reject a negative Y offset", ok ? "PASS" : "FAIL");
+	return ok;
+}
+
 int main() {
     setvbuf(stdout, NULL, _IONBF, 0);
     int64_t sup = hwy::SupportedTargets();
@@ -229,6 +245,7 @@ int main() {
 	all &= RunLargeDimensionKernelTest();
 	all &= RunLargeDimensionResampleTest();
 	all &= RunMoveRectTests();
+	all &= RunNegativeOffsetValidationTests();
 
     // Default (best) dispatch.
     all &= RunSuite("best");

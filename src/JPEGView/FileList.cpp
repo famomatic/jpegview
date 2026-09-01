@@ -862,14 +862,16 @@ void CFileList::FindFiles() {
 	m_fileList.clear();
 	if (!m_sDirectory.IsEmpty()) {
 		CFindFile fileFind;
-		LPCTSTR* allFileEndings = GetSupportedFileEndingList();
-		for (int i = 0; i < nNumEndings; i++) {
-			if (fileFind.FindFile(m_sDirectory + _T("\\*.") + allFileEndings[i])) {
-				AddToFileList(m_fileList, fileFind, allFileEndings[i]);
-				while (fileFind.FindNextFile()) {
-					AddToFileList(m_fileList, fileFind, allFileEndings[i]);
+		if (fileFind.FindFile(m_sDirectory + _T("\\*"))) {
+			do {
+				if (!fileFind.IsDirectory()) {
+					CString fileName = fileFind.GetFileName();
+					const int lastDot = fileName.ReverseFind(_T('.'));
+					if (lastDot >= 0 && IsImageFile(fileName.Mid(lastDot + 1))) {
+						AddToFileList(m_fileList, fileFind, NULL);
+					}
 				}
-			}
+			} while (fileFind.FindNextFile());
 		}
 	}
 

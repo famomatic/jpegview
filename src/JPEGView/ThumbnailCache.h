@@ -71,7 +71,7 @@ private:
 	void EnforceSizeLimit();
 
 	// Computes the lookup key from file identity (path + size + mtime).
-	// The key is a stable 16-char hex string, safe to use as a file name.
+	// The key is a stable path-hash + identity-hash string, safe as a filename.
 	CString MakeKey(LPCTSTR sFilePath, __int64 nFileSize, const FILETIME& lastModTime) const;
 
 	// PNG-encodes and writes one cache entry, then enforces the size limit.
@@ -99,9 +99,8 @@ private:
 	__int64 m_nKnownCacheBytes;
 	unsigned int m_nStoresSinceSweep;
 	bool m_bCacheSizeKnown;
-	// Guards all cache file I/O and m_sCacheDir lazy init: CreateThumbnailImage()
-	// can be reached from both the UI thread and the read-ahead loader thread,
-	// so Put/TryGet/Invalidate/EnforceSizeLimit must be serialized.
+	// Serializes cache mutations and the size-accounting fields. Reads use
+	// share-delete handles and decode outside this lock.
 	mutable std::mutex m_csLock;
 	// Async write worker. Started lazily on the first PutAsync; joined in the
 	// destructor (pending jobs are dropped, an in-flight write completes).

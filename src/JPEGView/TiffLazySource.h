@@ -53,7 +53,7 @@ private:
 	int DetectPyramidLevels();
 	bool DecodeSingleStrip(TIFF* tif, int stripIndex, uint8* pDst, int dstStride,
 	                       std::vector<uint8>& scratch) const;
-	TIFF* OpenWorkerHandle() const;
+	TIFF* GetWorkerHandle(int workerIndex);
 	void ConvertStripToBGRA(const uint8* pSrc, uint8* pDst,
 	                         int width, int rowsInStrip,
 	                         int srcStride, int dstStride) const;
@@ -68,10 +68,13 @@ private:
 	std::vector<uint64> m_pyramidIFDOffsets;
 	int m_nCurrentPyramidLevel;
 	bool m_bUseRGBA;
+	// One libtiff handle per persistent resample worker. Each fixed worker index
+	// has exclusive access to its handle while the source lock is held.
+	TIFF* m_workerTifs[8];
 
 	// Serializes all access to m_tif. libtiff is not thread-safe and a single
-	// TIFF* cannot be touched concurrently; the resampler (ProcessingThreadPool)
-	// and LDC/histogram (SamplePoint) can both reach this source at once.
+	// TIFF* cannot be touched concurrently; viewport resampling and
+	// LDC/histogram (SamplePoint) can both reach this source at once.
 	// Recursive so that SamplePoint/DecodeRegion can hold the lock across the
 	// SetPyramidLevel + decode sequence, preventing another thread from
 	// switching the IFD between the level-set and the pixel read.

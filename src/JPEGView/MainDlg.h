@@ -8,6 +8,7 @@
 #include "Helpers.h"
 #include "CropCtl.h"
 #include <list>
+#include <vector>
 
 class CFileList;
 class CJPEGProvider;
@@ -237,6 +238,9 @@ private:
 	CDirectoryWatcher* m_pDirectoryWatcher; // notifies the main window when the current file changed or a file in the current directory was added or deleted
 	CJPEGProvider * m_pJPEGProvider; // reads image (of any format, not only JPEGs) files, using read ahead
 	CJPEGImage * m_pCurrentImage; // currently displayed image
+	// Reused for alpha compositing to avoid allocating a full viewport buffer
+	// for every WM_PAINT.
+	std::vector<uint32> m_compositedPixels;
 	bool m_bOutOfMemoryLastImage; // true if the last image could not be requested because not enough memory
 	bool m_bExceptionErrorLastImage; // true if the last image could not be requested because of an unhandled exception
 	int m_nLastLoadError; // one of HelpersGUI::EFileLoadError

@@ -51,7 +51,7 @@ CProcessingThreadPool& CProcessingThreadPool::This() {
 }
 
 void CProcessingThreadPool::CreateThreadPoolThreads() {
-	std::lock_guard<std::mutex> processLock(m_processMutex);
+	std::unique_lock<std::shared_mutex> processLock(m_processMutex);
 	const int desiredThreadCount = max(0, CSettingsProvider::This().NumberOfCoresToUse() - 1);
 	std::unique_ptr<CProcessingThread*[]> newThreads;
 	int createdThreads = 0;
@@ -79,7 +79,7 @@ CProcessingThreadPool::~CProcessingThreadPool() {
 }
 
 void CProcessingThreadPool::StopAllThreads() {
-	std::lock_guard<std::mutex> processLock(m_processMutex);
+	std::unique_lock<std::shared_mutex> processLock(m_processMutex);
 	for (int i = 0; i < m_nNumThreads; i++) {
 		m_threads[i]->Terminate();
 		delete m_threads[i];
@@ -90,7 +90,7 @@ void CProcessingThreadPool::StopAllThreads() {
 }
 
 bool CProcessingThreadPool::Process(CProcessingRequest* pRequest) {
-	std::lock_guard<std::mutex> processLock(m_processMutex);
+	std::shared_lock<std::shared_mutex> processLock(m_processMutex);
 	if (pRequest == NULL || pRequest->ClippedTargetSize.cx <= 0 || pRequest->ClippedTargetSize.cy <= 0 ||
 		pRequest->FullTargetSize.cx <= 0 || pRequest->FullTargetSize.cy <= 0 || pRequest->StripPadding <= 0 ||
 		(pRequest->StripPadding & (pRequest->StripPadding - 1)) != 0) return false;
@@ -167,6 +167,7 @@ bool CProcessingThread::StartProcess(CWrappedRequest* pRequest) {
 }
 
 void CProcessingThread::DoProcess(CProcessingRequest* pRequest, int nOffsetY, int nSizeY) {
+	if (pRequest->Success == 0) return;
 	// Processing is done in strips to reduce memory consumption and increase cache hit rate.
 	// The following constant gives the number of pixels to process per strip.
 	const uint32 MAX_SRC_PIXELS_PER_STRIP = 1024 * 100;
@@ -184,7 +185,13 @@ void CProcessingThread::DoProcess(CProcessingRequest* pRequest, int nOffsetY, in
 	int nCurrentSizeY = nStripHeight;
 	while (nSizeProcessed < nSizeY) {
 		int nCurrentOffsetY = nOffsetY + nSizeProcessed;
-		if (!pRequest->ProcessStrip(nCurrentOffsetY, nCurrentSizeY)) {
+		bool stripSucceeded = false;
+		try {
+			stripSucceeded = pRequest->ProcessStrip(nCurrentOffsetY, nCurrentSizeY);
+		} catch (...) {
+			stripSucceeded = false;
+		}
+		if (!stripSucceeded) {
 			// InterlockedExchange provides a release barrier so the main
 			// thread sees the partial output before observing the failure.
 			::InterlockedExchange(&pRequest->Success, 0);

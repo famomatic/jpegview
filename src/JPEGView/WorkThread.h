@@ -10,6 +10,7 @@ public:
 		EventFinishedCounter = NULL;
 		Processed = false;
 		Deleted = false;
+		Failed = false;
 		Type = 0;
 	}
 
@@ -18,6 +19,7 @@ public:
 		EventFinishedCounter = NULL;
 		Processed = false;
 		Deleted = false;
+		Failed = false;
 		Type = 0;
 	}
 	virtual ~CRequestBase() = default;
@@ -27,6 +29,7 @@ public:
 	volatile LONG* EventFinishedCounter; // if not NULL, this counter is decremented after having handled the request and the event is not fired until it gets zero
 	std::atomic_bool Processed; // Set to true when processing is finished
 	std::atomic_bool Deleted; // Marks requests for deletion from the request queue
+	std::atomic_bool Failed; // Set when ProcessRequest throws
 };
 
 

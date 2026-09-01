@@ -3,6 +3,7 @@
 #include "WorkThread.h"
 #include "Helpers.h"
 #include <mutex>
+#include <shared_mutex>
 
 class CProcessingThread;
 
@@ -60,7 +61,9 @@ public:
 private:
 	CProcessingThread** m_threads;
 	int m_nNumThreads;
-	std::mutex m_processMutex;
+	// Keeps the pool lifetime stable while allowing independent processing
+	// requests to queue concurrently on the worker threads.
+	std::shared_mutex m_processMutex;
 
 	CProcessingThreadPool(void);
 	~CProcessingThreadPool();

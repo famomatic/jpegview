@@ -497,7 +497,11 @@ void* CBasicProcessing::ApplyLDC32bpp(CSize fullTargetSize, CPoint fullTargetOff
 		ldcMapSize, pSatLUTs, pLUT, pLDCMap, fBlackPt, fWhitePt, fBlackPtSteepness);
 	bool bSuccess = threadPool.Process(&request);
 
-	return bSuccess ? pTarget : NULL;
+	if (!bSuccess) {
+		delete[] pTarget;
+		return NULL;
+	}
+	return pTarget;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -885,7 +889,7 @@ void* CBasicProcessing::PointSample(CSize fullTargetSize, CPoint fullTargetOffse
 	CSize sourceSize, const void* pPixels, int nChannels) {
 	if (fullTargetSize.cx < 1 || fullTargetSize.cy < 1 ||
 		clippedTargetSize.cx < 1 || clippedTargetSize.cy < 1 ||
-		fullTargetOffset.x < 0 || fullTargetOffset.x < 0 ||
+		fullTargetOffset.x < 0 || fullTargetOffset.y < 0 ||
 		clippedTargetSize.cx + fullTargetOffset.x > fullTargetSize.cx ||
 		clippedTargetSize.cy + fullTargetOffset.y > fullTargetSize.cy ||
 		pPixels == NULL || (nChannels != 3 && nChannels != 4)) {
@@ -995,7 +999,7 @@ void* CBasicProcessing::PointSampleWithRotation(CSize fullTargetSize, CPoint ful
 	CSize sourceSize, double dRotation, const void* pPixels, int nChannels, COLORREF backColor) {
 	if (fullTargetSize.cx < 1 || fullTargetSize.cy < 1 ||
 		clippedTargetSize.cx < 1 || clippedTargetSize.cy < 1 ||
-		fullTargetOffset.x < 0 || fullTargetOffset.x < 0 ||
+		fullTargetOffset.x < 0 || fullTargetOffset.y < 0 ||
 		clippedTargetSize.cx + fullTargetOffset.x > fullTargetSize.cx ||
 		clippedTargetSize.cy + fullTargetOffset.y > fullTargetSize.cy ||
 		pPixels == NULL || (nChannels != 3 && nChannels != 4)) {
@@ -1146,7 +1150,7 @@ void* CBasicProcessing::PointSampleTrapezoid(CSize fullTargetSize, const CTrapez
 		(fullTargetTrapezoid.x1e - fullTargetTrapezoid.x1s) <= 0  ||
 		(fullTargetTrapezoid.x2e - fullTargetTrapezoid.x2s) <= 0  ||
 		clippedTargetSize.cx < 1 || clippedTargetSize.cy < 1 ||
-		fullTargetOffset.x < 0 || fullTargetOffset.x < 0 ||
+		fullTargetOffset.x < 0 || fullTargetOffset.y < 0 ||
 		clippedTargetSize.cx + fullTargetOffset.x > fullTargetSize.cx ||
 		clippedTargetSize.cy + fullTargetOffset.y > fullTargetSize.cy ||
 		pPixels == NULL || (nChannels != 3 && nChannels != 4)) {
@@ -1380,7 +1384,11 @@ void* CBasicProcessing::RotateHQ(CPoint targetOffset, CSize targetSize, double d
 	CRequestRotate request(pSourcePixels, targetOffset, targetSize, dRotation, sourceSize, pTargetPixels, nChannels, backColor);
 	bool bSuccess = threadPool.Process(&request);
 
-	return bSuccess ? pTargetPixels : NULL;
+	if (!bSuccess) {
+		delete[] pTargetPixels;
+		return NULL;
+	}
+	return pTargetPixels;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -1531,7 +1539,11 @@ void* CBasicProcessing::TrapezoidHQ(CPoint targetOffset, CSize targetSize, const
 	CRequestTrapezoid request(pSourcePixels, targetOffset, targetSize, trapezoid, sourceSize, pTargetPixels, nChannels, backColor);
 	bool bSuccess = threadPool.Process(&request);
 
-	return bSuccess ? pTargetPixels : NULL;
+	if (!bSuccess) {
+		delete[] pTargetPixels;
+		return NULL;
+	}
+	return pTargetPixels;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -1674,7 +1686,11 @@ int16* CBasicProcessing::GaussFilter16bpp1Channel(CSize fullSize, CPoint offset,
 	bool bSuccess = threadPool.Process(&requestY);
 	delete[] pIntermediate;
 
-	return bSuccess ? pTargetPixels : NULL;
+	if (!bSuccess) {
+		delete[] pTargetPixels;
+		return NULL;
+	}
+	return pTargetPixels;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -2097,7 +2113,11 @@ void* CBasicProcessing::SampleDown_HQ_SIMD(CSize fullTargetSize, CPoint fullTarg
 		nChannels, dSharpen, eFilter);
 	bool bSuccess = threadPool.Process(&request);
 
-	return bSuccess ? pTarget : NULL;
+	if (!bSuccess) {
+		delete[] pTarget;
+		return NULL;
+	}
+	return pTarget;
 }
 
 void* CBasicProcessing::SampleUp_HQ_SIMD(CSize fullTargetSize, CPoint fullTargetOffset, CSize clippedTargetSize,
@@ -2113,7 +2133,11 @@ void* CBasicProcessing::SampleUp_HQ_SIMD(CSize fullTargetSize, CPoint fullTarget
 		nChannels, 0.0, Filter_Upsampling_Bicubic);
 	bool bSuccess = threadPool.Process(&request);
 
-	return bSuccess ? pTarget : NULL;
+	if (!bSuccess) {
+		delete[] pTarget;
+		return NULL;
+	}
+	return pTarget;
 }
 
 
