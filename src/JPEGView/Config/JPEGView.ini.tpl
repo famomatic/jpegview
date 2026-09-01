@@ -341,6 +341,12 @@ AutoZoomModeFullscreen=
 ; set to 0 to disable the pause
 ZoomPausePercent=100
 
+; For extremely large source images, dragging moves the cached viewport immediately
+; and renders newly exposed areas at this interval. Set 0 to disable throttling.
+; Default threshold: 500 megapixels. Default interval: 33 ms.
+LargeImagePanRenderThresholdMP=500
+LargeImagePanRenderIntervalMs=33
+
 ; -----------------------------------------------
 ; - ADVANCED IMAGE CORRECTION PARAMETERS
 ; -----------------------------------------------

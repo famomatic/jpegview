@@ -578,11 +578,15 @@ LRESULT CMainDlg::OnPaint(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, B
 			// For images carrying transparency, composite the alpha onto the current background mode
 			// (black/white/checkerboard) into a temporary buffer so the live background shows through.
 			void* pDIBToPaint = pDIBData;
-			uint32* pComposited = NULL;
 			if (m_pCurrentImage != NULL && m_pCurrentImage->HasAlphaChannel()) {
-				int nPixels = clippedSize.cx * clippedSize.cy;
-				pComposited = new(std::nothrow) uint32[nPixels];
-				if (pComposited != NULL) {
+				const size_t nPixels = (size_t)clippedSize.cx * clippedSize.cy;
+				try {
+					m_compositedPixels.resize(nPixels);
+				} catch (...) {
+					m_compositedPixels.clear();
+				}
+				if (m_compositedPixels.size() == nPixels) {
+					uint32* pComposited = m_compositedPixels.data();
 					memcpy(pComposited, pDIBData, nPixels * sizeof(uint32));
 					// Screen-space origin of the DIB (mirrors DrawDIB32bppWithBlackBorders centering).
 					int xDest = (m_clientRect.Width() - clippedSize.cx) / 2 + m_DIBOffsets.x;
@@ -595,7 +599,6 @@ LRESULT CMainDlg::OnPaint(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, B
 			CPoint ptDIBStart = HelpersGUI::DrawDIB32bppWithBlackBorders(dc, bmInfo, pDIBToPaint, backBrush, m_clientRect, clippedSize, m_DIBOffsets);
 			// The DIB is also blitted into the memory DCs of the panels
 			memDCMgr.BlitImageToMemDC(pDIBToPaint, &bmInfo, ptDIBStart, m_pNavPanelCtl->CurrentBlendingFactor());
-			delete[] pComposited;
 		}
 		if (m_bZoomMode) m_offsets = unlimitedOffsets;
 	}
@@ -689,11 +692,15 @@ void CMainDlg::PaintToDC(CDC& dc) {
 			BITMAPINFO bmInfo{ 0 };
 			// Composite transparency onto the background for alpha-carrying images (see OnPaint).
 			void* pDIBToPaint = pDIBData;
-			uint32* pComposited = NULL;
 			if (pCurrentImage->HasAlphaChannel()) {
-				int nPixels = clippedSize.cx * clippedSize.cy;
-				pComposited = new(std::nothrow) uint32[nPixels];
-				if (pComposited != NULL) {
+				const size_t nPixels = (size_t)clippedSize.cx * clippedSize.cy;
+				try {
+					m_compositedPixels.resize(nPixels);
+				} catch (...) {
+					m_compositedPixels.clear();
+				}
+				if (m_compositedPixels.size() == nPixels) {
+					uint32* pComposited = m_compositedPixels.data();
 					memcpy(pComposited, pDIBData, nPixels * sizeof(uint32));
 					int xDest = (m_clientRect.Width() - clippedSize.cx) / 2;
 					int yDest = (m_clientRect.Height() - clippedSize.cy) / 2;
@@ -703,7 +710,6 @@ void CMainDlg::PaintToDC(CDC& dc) {
 				}
 			}
 			CPoint ptDIBStart = HelpersGUI::DrawDIB32bppWithBlackBorders(dc, bmInfo, pDIBToPaint, backBrush, m_clientRect, clippedSize, CPoint(0, 0));
-			delete[] pComposited;
 		}
 
 		CRect imageProcessingArea = m_pImageProcPanelCtl->PanelRect();

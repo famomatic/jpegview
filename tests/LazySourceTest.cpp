@@ -7,8 +7,8 @@ CAppModule _Module;
 
 class CFakeLazySource final : public CLazySource {
 public:
-    CFakeLazySource(int width, int height, bool tiled)
-        : m_decodeCalls(0) {
+    CFakeLazySource(int width, int height, bool tiled, bool failTile = false)
+        : m_decodeCalls(0), m_failTile(failTile) {
         m_nWidth = m_nBaseWidth = width;
         m_nHeight = m_nBaseHeight = height;
         m_nChannels = 4;
@@ -48,6 +48,7 @@ protected:
 
     bool DecodeTile(int tileX, int tileY, uint8* dst) override {
         ++m_decodeCalls;
+        if (m_failTile && tileX == 0 && tileY == 0) return false;
         for (int y = 0; y < m_nTileHeight; ++y) {
             for (int x = 0; x < m_nTileWidth; ++x) {
                 PutPixel(dst + ((size_t)y * m_nTileWidth + x) * 4,
@@ -67,6 +68,7 @@ private:
         p[3] = 255;
     }
     int m_decodeCalls;
+    bool m_failTile;
 };
 
 static int SourceCoordinate(int sourceSize, int targetSize, int target) {
@@ -95,6 +97,15 @@ static bool RunCase(const char* name, int sourceW, int sourceH, bool tiled,
     return ok;
 }
 
+static bool RunTileFailureCase() {
+    CFakeLazySource source(32, 16, true, true);
+    std::vector<uint8> pixels(32 * 16 * 4, 0xA5);
+    bool rejected = !source.DecodeRegion(CRect(0, 0, 32, 16), 0,
+        pixels.data(), CSize(32, 16));
+    printf("%-48s %s\n", "tiled decode propagates a tile failure", rejected ? "PASS" : "FAIL");
+    return rejected;
+}
+
 int main() {
     bool ok = true;
     ok &= RunCase("stripped full viewport", 100, 50, false,
@@ -103,5 +114,6 @@ int main() {
         CSize(10, 5), CPoint(2, 1), CSize(3, 2));
     ok &= RunCase("tiled full viewport", 32, 16, true,
         CSize(8, 4), CPoint(0, 0), CSize(8, 4));
+    ok &= RunTileFailureCase();
     return ok ? 0 : 1;
 }

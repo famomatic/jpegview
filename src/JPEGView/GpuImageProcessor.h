@@ -60,9 +60,9 @@ public:
 
 private:
     bool m_deviceAvailable;
-    // Lazily-compiled compute shaders. Released in the dtor. Guarded by
-    // m_csShaders: the getters can race between the UI thread (first paint)
-    // and the background precompile thread started in the ctor.
+    // Lazily-compiled compute shaders. Released in the dtor. Getters use a
+    // non-blocking lock so UI work falls back to the CPU while background
+    // precompilation owns the mutex.
     std::mutex m_csShaders;
     std::thread m_precompileThread;
     ID3D11ComputeShader* m_pApply3ChannelLUT_CS;

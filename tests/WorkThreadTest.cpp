@@ -34,7 +34,7 @@ protected:
 int main() {
     TestThread worker;
     for (int i = 0; i < 200; ++i) if (!worker.Run(i)) return 1;
-    if (!worker.Run(-1)) return 2; // exceptions must still signal the waiter
+    if (worker.Run(-1)) return 2; // exceptions must signal the waiter and report failure
 
     HANDLE gate = ::CreateEvent(NULL, TRUE, FALSE, NULL);
     HANDLE firstDone = ::CreateEvent(NULL, TRUE, FALSE, NULL);

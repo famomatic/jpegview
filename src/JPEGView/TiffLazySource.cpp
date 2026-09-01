@@ -5,7 +5,9 @@
 #include "SettingsProvider.h"
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstring>
+#include <functional>
 #include <thread>
 
 // TIFFGetFieldDefaulted forwards its va_list to TIFFVGetFieldDefaulted, which
@@ -17,6 +19,90 @@ template <typename T>
 inline void TiffGetOrDefault(TIFF* tif, uint32 tag, T& out, const T& defVal) {
     if (TIFFGetField(tif, tag, &out) != 1)
         out = defVal;
+}
+
+// Reuses a small, fixed set of threads across viewport resamples. Run() is
+// serialized because a worker has one stable index, which also lets each TIFF
+// source cache one independent libtiff handle per worker without contention.
+class CTiffResampleExecutor {
+public:
+	CTiffResampleExecutor() : m_generation(0), m_activeThreads(0), m_remaining(0), m_shutdown(false) {
+		try {
+			m_threads.reserve(8);
+			for (int i = 0; i < 8; ++i)
+				m_threads.emplace_back(&CTiffResampleExecutor::WorkerLoop, this, i);
+		} catch (...) {
+			{
+				std::lock_guard<std::mutex> lock(m_mutex);
+				m_shutdown = true;
+			}
+			m_ready.notify_all();
+			for (std::thread& thread : m_threads)
+				if (thread.joinable()) thread.join();
+			throw;
+		}
+	}
+
+	~CTiffResampleExecutor() {
+		std::lock_guard<std::mutex> runLock(m_runMutex);
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			m_shutdown = true;
+		}
+		m_ready.notify_all();
+		for (std::thread& thread : m_threads)
+			thread.join();
+	}
+
+	void Run(int threadCount, const std::function<void(int)>& task) {
+		std::lock_guard<std::mutex> runLock(m_runMutex);
+		std::unique_lock<std::mutex> lock(m_mutex);
+		m_task = task;
+		m_activeThreads = threadCount;
+		m_remaining = threadCount;
+		++m_generation;
+		m_ready.notify_all();
+		m_done.wait(lock, [this]() { return m_remaining == 0; });
+		m_task = std::function<void(int)>();
+	}
+
+private:
+	void WorkerLoop(int workerIndex) {
+		uint64_t observedGeneration = 0;
+		for (;;) {
+			std::unique_lock<std::mutex> lock(m_mutex);
+			m_ready.wait(lock, [this, observedGeneration]() {
+				return m_shutdown || m_generation != observedGeneration;
+			});
+			if (m_shutdown) return;
+			observedGeneration = m_generation;
+			if (workerIndex >= m_activeThreads) continue;
+			lock.unlock();
+			try {
+				m_task(workerIndex);
+			} catch (...) {
+				// The caller-owned task records its own failure. Always rendezvous.
+			}
+			lock.lock();
+			if (--m_remaining == 0) m_done.notify_one();
+		}
+	}
+
+	std::vector<std::thread> m_threads;
+	std::mutex m_runMutex;
+	std::mutex m_mutex;
+	std::condition_variable m_ready;
+	std::condition_variable m_done;
+	std::function<void(int)> m_task;
+	uint64_t m_generation;
+	int m_activeThreads;
+	int m_remaining;
+	bool m_shutdown;
+};
+
+CTiffResampleExecutor& TiffResampleExecutor() {
+	static CTiffResampleExecutor executor;
+	return executor;
 }
 }
 
@@ -30,6 +116,7 @@ CTiffLazySource::CTiffLazySource()
 	, m_nCurrentPyramidLevel(0)
 	, m_bUseRGBA(false)
 {
+	for (TIFF*& tif : m_workerTifs) tif = nullptr;
 }
 
 CTiffLazySource::~CTiffLazySource()
@@ -48,6 +135,10 @@ void CTiffLazySource::Release()
 	{
 		TIFFClose(m_tif);
 		m_tif = nullptr;
+	}
+	for (TIFF*& tif : m_workerTifs) {
+		if (tif != nullptr) TIFFClose(tif);
+		tif = nullptr;
 	}
 
 	delete[] m_pICCProfile;
@@ -454,9 +545,11 @@ CRawMetadata* CTiffLazySource::RawMetadata() const
 	return m_pRawMetadata;
 }
 
-TIFF* CTiffLazySource::OpenWorkerHandle() const
+TIFF* CTiffLazySource::GetWorkerHandle(int workerIndex)
 {
-	TIFF* tif = TIFFOpenW(m_sFileName, "rm");
+	if (workerIndex < 0 || workerIndex >= 8) return nullptr;
+	TIFF*& tif = m_workerTifs[workerIndex];
+	if (tif == nullptr) tif = TIFFOpenW(m_sFileName, "rm");
 	if (tif == nullptr)
 		return nullptr;
 	if (TIFFSetDirectory(tif, static_cast<tdir_t>(m_nCurrentFrame)) == 0 ||
@@ -465,6 +558,7 @@ TIFF* CTiffLazySource::OpenWorkerHandle() const
 		  TIFFSetSubDirectory(tif, m_pyramidIFDOffsets[(size_t)m_nCurrentPyramidLevel - 1]) == 0)))
 	{
 		TIFFClose(tif);
+		tif = nullptr;
 		return nullptr;
 	}
 	return tif;
@@ -520,8 +614,8 @@ bool CTiffLazySource::ResampleStripped(const std::vector<int>& sourceX,
 
 	std::atomic<size_t> nextJob(0);
 	std::atomic<bool> failed(false);
-	auto worker = [&]() {
-		TIFF* tif = OpenWorkerHandle();
+	auto worker = [&](int workerIndex) {
+		TIFF* tif = GetWorkerHandle(workerIndex);
 		if (tif == nullptr) {
 			failed = true;
 			return;
@@ -548,25 +642,17 @@ bool CTiffLazySource::ResampleStripped(const std::vector<int>& sourceX,
 					}
 				}
 			}
-		} catch (const std::exception&) {
+		} catch (...) {
 			failed = true;
 		}
-		TIFFClose(tif);
 	};
 
-	std::vector<std::thread> threads;
-	bool launchedAll = true;
 	try {
-		threads.reserve((size_t)threadCount);
-		for (int i = 0; i < threadCount; ++i)
-			threads.emplace_back(worker);
-	} catch (const std::exception&) {
+		TiffResampleExecutor().Run(threadCount, worker);
+	} catch (...) {
 		failed = true;
-		launchedAll = false;
 	}
-	for (std::thread& thread : threads)
-		thread.join();
-	if (!launchedAll || failed)
+	if (failed)
 		return CLazySource::ResampleStripped(sourceX, sourceY, pDst, dstSize);
 	return true;
 }
@@ -710,16 +796,16 @@ bool CTiffLazySource::DecodeStrips(int startStrip, int stripCount,
                                     uint8* pDst, int dstStride)
 {
 	std::lock_guard<std::recursive_mutex> lock(m_tifLock);
-	if (m_tif == nullptr || m_bReleased)
+	if (m_tif == nullptr || m_bReleased || pDst == nullptr || m_nWidth > INT_MAX / 4 ||
+		dstStride < m_nWidth * 4 || startStrip < 0 || stripCount < 0 ||
+		startStrip > m_nStripsPerImage || stripCount > m_nStripsPerImage - startStrip)
 		return false;
 
 	std::vector<uint8> scratch;
+	bool decodedAll = true;
 	for (int i = 0; i < stripCount; i++)
 	{
 		int stripIndex = startStrip + i;
-		if (stripIndex >= m_nStripsPerImage)
-			break;
-
 		// 각 스트립을 pDst의 해당 오프셋에 디코드.
 		// 64-bit offset: i*rowsPerStrip*dstStride overflows a 32-bit int for
 		// images larger than ~2 GB (well within the x64 dimension limit),
@@ -727,6 +813,7 @@ bool CTiffLazySource::DecodeStrips(int startStrip, int stripCount,
 		size_t stripOffset = (size_t)i * m_nRowsPerStrip * dstStride;
 		if (!DecodeSingleStrip(m_tif, stripIndex, pDst + stripOffset, dstStride, scratch))
 		{
+			decodedAll = false;
 			// 실패한 스트립은 검은색으로 채운다.
 			int rows = m_nRowsPerStrip;
 			int stripStartRow = stripIndex * m_nRowsPerStrip;
@@ -736,7 +823,7 @@ bool CTiffLazySource::DecodeStrips(int startStrip, int stripCount,
 				memset(pDst + stripOffset + (size_t)y * dstStride, 0, m_nWidth * 4);
 		}
 	}
-	return true;
+	return decodedAll;
 }
 
 bool CTiffLazySource::DecodeTile(int tileX, int tileY, uint8* pDst)

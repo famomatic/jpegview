@@ -462,7 +462,7 @@ bool CLazySource::DecodeRegionTiled(const CRect& sourceRect, int zoomLevel,
 			if (!DecodeTile(tx, ty, pTile))
 			{
 				delete[] pTile;
-				continue; // 일부 타일 실패해도 계속
+				return false;
 			}
 
 			// 타일의 전역 좌표.
